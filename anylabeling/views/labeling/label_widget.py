@@ -38,6 +38,7 @@ from anylabeling.services.auto_labeling import _THUMBNAIL_RENDER_MODELS
 from anylabeling.views.training import UltralyticsDialog
 from anylabeling.custom.model_validation import launch_model_validation
 from anylabeling.custom.edit_extras import install_edit_extras
+from anylabeling.custom.ensure_label_file import install_ensure_label_file
 
 from ...app_info import (
     __appname__,
@@ -2596,6 +2597,8 @@ class LabelingWidget(LabelDialog):
         # Populate the File menu dynamically.
         self.update_file_menu()
 
+        install_ensure_label_file(self)  # 自动创建空标注文件
+
         # Since loading the file may take some time,
         # make sure it runs in the background.
         if self.filename is not None:
@@ -2613,7 +2616,7 @@ class LabelingWidget(LabelDialog):
             preview_keys={"shape.line_width", "canvas.crosshair.width"},
         )
         self._settings_runtime_applier.build_shortcut_action_map()
-        install_edit_extras(self)  # 滚轮缩放 + B 键标记背景图
+        install_edit_extras(self)  # 滚轮缩放
 
         self.set_text_editing(False)
 
