@@ -37,6 +37,7 @@ from anylabeling.services.auto_labeling.types import AutoLabelingMode
 from anylabeling.services.auto_labeling import _THUMBNAIL_RENDER_MODELS
 from anylabeling.views.training import UltralyticsDialog
 from anylabeling.custom.model_validation import launch_model_validation
+from anylabeling.custom.edit_extras import install_edit_extras
 
 from ...app_info import (
     __appname__,
@@ -2612,6 +2613,7 @@ class LabelingWidget(LabelDialog):
             preview_keys={"shape.line_width", "canvas.crosshair.width"},
         )
         self._settings_runtime_applier.build_shortcut_action_map()
+        install_edit_extras(self)  # 滚轮缩放 + B 键标记背景图
 
         self.set_text_editing(False)
 
