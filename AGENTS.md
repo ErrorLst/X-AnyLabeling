@@ -31,14 +31,16 @@
   - 只跑与本次改动直接相关的测试文件，例如：
     `python -m pytest -p no:cacheprovider tests/custom/edit_extras -v`
   - 只有当某个既有测试文件**确实会执行到**改动路径时，才额外跑那一个文件
-- 静态检查同样只针对改动文件：`black --check <changed files>`、`flake8 --jobs 1 <changed files>`
+- **不做静态检查**：不要跑 `black` / `flake8`（太耗时，收益低）。新增/修改的 Python 文件靠人工保证格式：行长 ≤ 79 列、缩进 4 空格、import 顺序与相邻代码一致。
 - 跨模块回归风险靠 **diff 评审 + 手工冒烟** 兜底，不靠全量测试。
 
 ## 3. 环境与操作习惯
 
 - 解释器：`C:\Users\zhoujin\miniconda3\envs\xal-cpu\python.exe`
-- pytest 一律带 `-p no:cacheprovider`；flake8 一律带 `--jobs 1`
-- black `line-length = 79`、flake8 `max-line-length = 79`（见 `pyproject.toml`）
+- pytest 一律带 `-p no:cacheprovider`
+- **查找文件用 `glob` 工具，不要做全树递归扫描**：`Get-ChildItem -Recurse` / `find` 在本仓库一次要 30–40 秒
+  （仓库里有 10 万行的 `resources.py`）。glob 的模式按「工作区相对路径」匹配，例如 `**/custom/*/__init__.py`、`**/canvas*.py`。
+- 代码风格沿用仓库既有约定：`line-length = 79`、4 空格缩进（见 `pyproject.toml`），但**不用工具校验**
 - **不要在仓库内创建任何临时/中间文件**（`.diff`、`.log`、临时脚本等）；需要临时文件时写到系统 TEMP
 - **不要直接删除文件**：需要移除时移动到 `%TEMP%\dsh-trash\<时间戳>-<名字>`，并在回复里给出目标完整路径
 - 不使用 `git clean` / `git checkout -- ` / `git reset --hard` / `git stash`
