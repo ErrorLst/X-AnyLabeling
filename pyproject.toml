@@ -92,6 +92,7 @@ dependencies = [
     "requests",
     "darkdetect>=0.8.0",
     "matplotlib",
+    "albumentations>=2.0",
 ]
 
 # Optional dependencies ------------------------------------------------------------------------------------------------

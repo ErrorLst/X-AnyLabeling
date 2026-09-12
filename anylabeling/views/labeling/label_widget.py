@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 from anylabeling.services.auto_labeling.types import AutoLabelingMode
 from anylabeling.services.auto_labeling import _THUMBNAIL_RENDER_MODELS
 from anylabeling.views.training import UltralyticsDialog
+from anylabeling.custom.model_validation import launch_model_validation
 
 from ...app_info import (
     __appname__,
@@ -1109,6 +1110,12 @@ class LabelingWidget(LabelDialog):
             icon="convert",
             tip=self.tr("Open shape converter"),
         )
+        model_validation = action(
+            self.tr("模型验证"),
+            self.open_model_validation,
+            icon="convert",
+            tip=self.tr("打开模型验证窗口"),
+        )
         open_chatbot = action(
             self.tr("ChatBot"),
             self.open_chatbot,
@@ -2095,6 +2102,8 @@ class LabelingWidget(LabelDialog):
                 shape_manager,
                 None,
                 shape_converter,
+                None,
+                model_validation,
             ),
         )
         utils.add_actions(
@@ -3347,6 +3356,16 @@ class LabelingWidget(LabelDialog):
 
     def on_training_dialog_destroyed(self, _dialog=None):
         self.training_dialog = None
+
+    # 模型验证
+    def open_model_validation(self):
+        try:
+            launch_model_validation(self)
+        except Exception as e:
+            self.error_message(
+                "模型验证错误",
+                f"打开模型验证窗口失败：{str(e)}",
+            )
 
     # Tools
     def overview(self):
