@@ -24,10 +24,9 @@ Interaction, as approved in the plan:
   the activation the user started runs the action right after -- once,
   the tool never triggers it a second time. Every way out -- the
   button, the escape key, another mode taking the canvas -- gives
-  the editing mode back. A menu carrying one of those actions (the
-  Edit menu and the canvas context menus) is taken over as well: its
-  entries are filtered, the menu is closed, the mode is left and only
-  then does the action run.
+  the editing mode back. Every mode switch goes through
+  ``Canvas.set_editing``, and the tool leaves the mode from there,
+  before the switch runs.
 
 While the mode is off the event filter returns ``False`` for every event,
 so the behaviour of the window is exactly the one it had before.
@@ -80,10 +79,13 @@ MODE_CURSOR = QtCore.Qt.CursorShape.CrossCursor
 #: as long as the mode is on, and the tool leaves the mode before the
 #: action runs. They are *not* disabled: ``setEnabled(False)`` takes
 #: the shortcut of the action down with it, and a shortcut is exactly
-#: what has to keep working. The two editing actions are in the list
-#: as well, because a click on them has to leave the mode the same
-#: way. Every name is read with getattr, so a widget without an
-#: actions object (the unit tests) has nothing to take over.
+#: what has to keep working. The two editing actions are *not* in the
+#: list: ``set_edit_mode`` and ``toggle_brush_mode`` both reach the
+#: canvas through ``toggle_draw_mode(True)`` and therefore through
+#: ``Canvas.set_editing``, where the tool gives way -- once; a
+#: handover slot on them would be redundant.
+#: Every name is read with getattr, so a widget without an actions
+#: object (the unit tests) has nothing to take over.
 DRAW_ACTION_NAMES = (
     "create_mode",
     "create_brush_polygon_mode",
@@ -96,8 +98,6 @@ DRAW_ACTION_NAMES = (
     "create_line_mode",
     "create_point_mode",
     "create_line_strip_mode",
-    "edit_mode",
-    "edit_brush_mode",
 )
 
 #: Undo steps kept for one image.
@@ -286,7 +286,6 @@ class SmudgeController(QtCore.QObject):
         self._mode_switched = False
         self._handing_over = None
         self._draw_connections = {}
-        self._menu_filters = {}
         self._populate_wrapper = None
         self._overlay = None
         self._rubber = None
@@ -334,9 +333,10 @@ class SmudgeController(QtCore.QObject):
 
         Args:
             use_action: passed to the way out of the mode; ``False``
-                means the caller is a drawing action the user just
-                activated, which runs the editing action itself and
-                must not have it run a second time here.
+                means the caller brings its own upstream side effect --
+                the drawing action the user just activated, or the
+                upstream switch that is taking the canvas over -- so
+                this exit must not run the editing action as well.
         """
         enabled = bool(enabled)
         if self._canvas is None:
@@ -407,25 +407,25 @@ class SmudgeController(QtCore.QObject):
         """Give the canvas and the toolbar back to the editing mode.
 
         The upstream editing action is the safe way back for every way
-        out that is *not* an activation of a drawing action: it is the
-        one the labeling widget offers and it keeps the toolbar
-        bookkeeping in step. The fallbacks cover a widget without that
-        action (the unit tests), one whose action is not wired to the
-        canvas any more, and one whose action is disabled -- triggering
-        a disabled ``QAction`` is a silent no-op, so it does not count
-        as fired; the canvas is checked last and switched by hand when
-        the actions left it drawing, so the mode never hands out a
-        create-mode canvas.
+        out that is *not* a handover: it is the one the labeling widget
+        offers and it keeps the toolbar bookkeeping in step. The
+        fallbacks cover a widget without that action (the unit tests),
+        one whose action is not wired to the canvas any more, and one
+        whose action is disabled -- triggering a disabled ``QAction``
+        is a silent no-op, so it does not count as fired; the canvas is
+        checked last and switched by hand when the actions left it
+        drawing, so the mode never hands out a create-mode canvas.
 
         Args:
-            use_action: ``False`` on the handover paths, where the user
-                is activating a drawing action right now. That
-                activation runs the action itself and the widget
-                connects the editing action to the same canvas switch,
-                so both the action and the editing method of the
-                widget would run an upstream handler of their own for
-                one gesture. Only the canvas is put back in its
-                editing mode, by hand, and the activation that follows
+            use_action: ``False`` on the handover paths, where the
+                caller brings its own upstream side effect -- the
+                drawing action the user just activated, or the upstream
+                switch that is taking the canvas over. Running the
+                editing action here as well would add a second upstream
+                handler to one gesture, and its nested canvas switch
+                can leave the canvas in editing mode instead of the
+                mode the user asked for. Only the canvas is put back in
+                its editing mode, by hand, and the switch that follows
                 takes it to the mode the user asked for.
         """
         if not self._mode_switched:
@@ -486,22 +486,6 @@ class SmudgeController(QtCore.QObject):
             connect(slot)
             self._draw_connections[name] = (signal, slot)
 
-    def _draw_action_name(self, action):
-        """Return the name of an action, or None when it is not ours.
-
-        The menus hold the very action objects of the actions object,
-        so the thirteen names are tried one by one and matched by
-        identity. A widget without an actions object (the unit tests)
-        simply has no name to give.
-        """
-        actions = getattr(self._widget, "actions", None)
-        if actions is None:
-            return None
-        for name in DRAW_ACTION_NAMES:
-            if getattr(actions, name, None) is action:
-                return name
-        return None
-
     def _disconnect_draw_actions(self):
         """Give every upstream drawing action its own trigger back.
 
@@ -558,7 +542,6 @@ class SmudgeController(QtCore.QObject):
         refused leaves the canvas exactly as it was.
         """
         canvas = self._canvas
-        self._install_menu_filters()
         if getattr(canvas, "is_brush_mode", False) or getattr(
             canvas, "is_magic_wand_mode", False
         ):
@@ -798,17 +781,8 @@ class SmudgeController(QtCore.QObject):
 
         ``populate_mode_actions`` clears the toolbar before it adds the
         upstream actions, so the wrapper is the place to add the button
-        again. The rebuild goes through the menus as well, so the
-        filter of the tool is installed on them here again. Upstream
-        currently rebuilds those menus in place -- it clears
-        ``self.canvas.menus[0]`` and ``self.menus.edit`` and fills them
-        again, reusing the very same ``QMenu`` objects -- and it runs
-        once, in the constructor of the window, before the tool is
-        installed: this re-install is a safety net, and it only
-        matters once upstream builds new ``QMenu`` objects, or runs
-        ``populate_mode_actions`` after the installation. The upstream
-        method keeps its whole body and stays the only builder of the
-        toolbar.
+        again. The upstream method keeps its whole body and stays the
+        only builder of the toolbar.
         """
         if self._populate_wrapper is not None:
             return
@@ -819,7 +793,6 @@ class SmudgeController(QtCore.QObject):
         def populate_mode_actions():
             original()
             self._install_action()
-            self._install_menu_filters()
 
         self._populate_wrapper = populate_mode_actions
         self._widget.populate_mode_actions = populate_mode_actions
@@ -932,13 +905,13 @@ class SmudgeController(QtCore.QObject):
         other way out gives the cursor back in :meth:``_exit_mode``.
 
         Every switch that arrives here comes from an upstream caller
-        that is already running its own action -- the drawing action or
-        the editing action the user activated -- so the canvas is
-        handed back without running the editing action again: that
-        action is the activation itself, and running it here would give
-        one user gesture two side effects. The canvas is put back in
-        its editing mode by hand all the same, so the caller finds the
-        safe state.
+        that is already running its own mode switch -- the drawing or
+        editing action the user activated, a digit shortcut, or the
+        canvas entering the brush or auto labeling mode itself -- so
+        the canvas is handed back without running the editing action
+        again: that switch is the activation itself, and running it
+        here would give one gesture two side effects. The canvas is
+        put back in its editing mode by hand all the same.
         """
         if not self._mode or self._busy:
             return
@@ -1282,129 +1255,17 @@ class SmudgeController(QtCore.QObject):
         else:
             self._status(message)
 
-    # --------------------------------------------------------------- menu
-
-    def _install_menu_filters(self):
-        """Take the drawing entries of every menu over, once.
-
-        A click on a menu entry is not a click on the canvas: Qt runs
-        the action straight from the popup, so the canvas event filter
-        never sees it. The menus carrying a drawing action are
-        filtered themselves -- those of the labeling widget (a Struct,
-        walked safely) and the pair of the canvas -- and an entry that
-        is hit releases the mode before it runs.
-
-        Only menus with a drawing action are taken: a menu without one
-        keeps working as it did, and an already filtered menu is
-        remembered in the map, so the call may run again after every
-        rebuild of a menu. A menu whose C++ object is gone with its
-        parent is no candidate at all (it is asked for its actions on
-        the way in, which raises and skips it) and is dropped from the
-        map by :meth:`_hide_menu_windows` when it is visited.
-        """
-        candidates = []
-        for owner in (self._widget, self._canvas):
-            for menu in _menu_candidates(owner):
-                if menu not in candidates:
-                    candidates.append(menu)
-        for menu in candidates:
-            if menu in self._menu_filters:
-                continue
-            if not _menu_has_draw_action(menu, self._draw_action_name):
-                continue
-            menu.installEventFilter(self)
-            self._menu_filters[menu] = True
-
-    def _leave_for_menu_action(self):
-        """Leave the mode for an entry of a menu, without running it.
-
-        The popup runs its entry itself, right after this filter, so
-        the tool does exactly what the button and the shortcut paths
-        do -- leave the mode first -- and lets Qt run the action once.
-        The handover flag says that the canvas takes the mode of that
-        action, so the cursor of the mode is left to upstream and the
-        editing action is not run a second time.
-        """
-        if not self._mode:
-            return
-        if self._action is not None:
-            self._action.setChecked(False)
-        self._handing_over = False
-        self.set_mode(False, use_action=False)
-
-    def _filter_menu_event(self, obj, event):
-        """Take the drawing entries of a filtered menu over.
-
-        The release is what Qt uses to run the entry of a popup, so
-        that is where the tool steps in: the mode is left before the
-        release reaches the menu, which then runs the entry on a
-        canvas that is back in its editing mode -- once, exactly the
-        way a button click or a shortcut runs it. The event is not
-        claimed: the popup has to run the action, and eating the
-        release would make the tool run it a second time instead.
-
-        The menus are closed afterwards, from a zero timer: a popup
-        that is hidden from inside this filter never runs its entry
-        (Qt needs the popup alive to activate the action on the very
-        release it is handling), and the popup closes itself in the
-        normal case anyway. An entry that is not a drawing action,
-        and every other event, is left to the menu as well, so
-        removing, copying and filtering keep working.
-        """
-        if not getattr(self, "_mode", False) or getattr(
-            self, "_busy", False
-        ):
-            return False
-        if event.type() != QtCore.QEvent.Type.MouseButtonRelease:
-            return False
-        if event.button() != QtCore.Qt.MouseButton.LeftButton:
-            return False
-        position = getattr(event, "position", None)
-        if not callable(position):
-            return False
-        action = obj.actionAt(position().toPoint())
-        if self._draw_action_name(action) is None:
-            return False
-        self._leave_for_menu_action()
-        self._hide_menus()
-        return False
-
-    def _hide_menus(self):
-        """Close the menus of the tool once the popup is done.
-
-        The call is deferred on purpose: Qt needs the popup alive
-        while it handles the release, and a menu hidden from inside
-        the filter of that very release never runs its entry. The
-        timer fires when the popup has finished, so a menu that is
-        still open -- a context menu, or the Edit menu of a window
-        the mode switch does not close -- goes away right after.
-        """
-        QtCore.QTimer.singleShot(0, self._hide_menu_windows)
-
-    def _hide_menu_windows(self):
-        """Hide every filtered menu that is still on screen."""
-        for menu in list(getattr(self, "_menu_filters", {})):
-            try:
-                menu.hide()
-            except RuntimeError:
-                # The menu is gone: forget it, do not ask it again.
-                self._menu_filters.pop(menu, None)
-
     # ------------------------------------------------------------- events
 
     def eventFilter(self, obj, event):
         """Handle the gestures of the mode, pass every other event on.
 
-        Two kinds of object are filtered: the canvas, for the gestures
-        of the mode, and every menu carrying a drawing action, whose
-        entries would otherwise run past the mode. Qt keeps an
-        installed filter alive on its object, so a canvas that
-        outlives a torn down controller still delivers events here:
-        every attribute is read defensively, and a controller whose
+        The canvas of the mode is the only object filtered. Qt keeps an
+        installed filter alive on its object, so a canvas that outlives
+        a torn down controller still delivers events here: every
+        attribute is read defensively, and a controller whose
         ``__init__`` never finished returns ``False`` right away.
         """
-        if obj in getattr(self, "_menu_filters", {}):
-            return self._filter_menu_event(obj, event)
         if (
             obj is not getattr(self, "_canvas", None)
             or not getattr(self, "_mode", False)
@@ -1595,52 +1456,6 @@ class SmudgeController(QtCore.QObject):
         self._work_format = None
         self._work_info = None
         self._work_signature = None
-
-
-def _menu_candidates(owner):
-    """Return the menus of an owner, in a safe order.
-
-    The menus of the labeling widget are held by a ``utils.Struct``
-    and those of the canvas are its pair of context menus; both are
-    walked with ``getattr``, so an owner without menus, or with an
-    attribute that is not a menu at all, gives nothing back. A menu
-    whose C++ object is gone with its parent is dropped as well.
-    """
-    menus = []
-    holder = getattr(owner, "menus", None)
-    entries = []
-    if isinstance(holder, (tuple, list)):
-        entries = list(holder)
-    elif holder is not None:
-        entries = [getattr(holder, name, None) for name in vars(holder)]
-    for menu in entries:
-        if not isinstance(menu, QtWidgets.QMenu):
-            continue
-        try:
-            menu.actions()
-        except RuntimeError:
-            # The C++ object of the menu is gone: it cannot be taken
-            # over, and asking it again would raise as well.
-            continue
-        if menu not in menus:
-            menus.append(menu)
-    return menus
-
-
-def _menu_has_draw_action(menu, name_of):
-    """Return ``True`` when a menu holds an action the mode takes over.
-
-    The menu is walked with the very identity test of
-    :meth:`SmudgeController._draw_action_name`, so a submenu of the
-    widget is taken over as soon as one of its own entries is a
-    drawing action. A menu whose entries cannot be read (a C++ object
-    that is gone) has no drawing action to give.
-    """
-    try:
-        actions = list(menu.actions())
-    except RuntimeError:
-        return False
-    return any(name_of(action) is not None for action in actions)
 
 
 def _qt_parent(widget):

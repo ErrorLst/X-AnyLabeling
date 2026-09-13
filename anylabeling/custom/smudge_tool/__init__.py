@@ -18,15 +18,15 @@ every entry of this list; a rename breaks the tool at runtime, not at
 import time:
 
 widget: ``canvas``, ``tools``, ``populate_mode_actions``,
-``import_image_folder``, ``menus`` (the menus carrying a drawing
-action are filtered themselves, so that a click on one of their
-entries leaves the mode before the entry runs),
-``actions`` (the drawing actions inside it
-included: eleven ``create_*`` names plus ``edit_mode`` and
-``edit_brush_mode``; their ``triggered`` signal is connected while the
-mode owns the canvas, so a click or a shortcut of one of them leaves
-the mode and then runs the action -- the exact list is
-``smudge_filter.DRAW_ACTION_NAMES``), ``set_edit_mode`` (the fallback
+``import_image_folder``, ``actions`` (the drawing actions inside it
+included: eleven ``create_*`` names; their ``triggered`` signal is
+connected while the mode owns the canvas, so a click or a shortcut of
+one of them leaves the mode and then runs the action -- the exact
+list is ``smudge_filter.DRAW_ACTION_NAMES``. ``edit_mode`` and
+``edit_brush_mode`` are *not* in that list: they reach the canvas
+through ``set_edit_mode`` / ``toggle_brush_mode``, hence through
+``toggle_draw_mode(True)`` and ``Canvas.set_editing``, where the
+tool gives way -- once), ``set_edit_mode`` (the fallback
 that takes the canvas back to editing when ``actions.edit_mode`` is
 missing or disabled), ``filename``, ``image_path``, ``image_data``,
 ``brightness_contrast_processor``,
@@ -34,7 +34,6 @@ missing or disabled), ``filename``, ``image_path``, ``image_data``,
 ``error_message``.
 
 canvas: ``transform_pos``, ``offset_to_center``, ``out_off_pixmap``,
-``menus`` (the pair of context menus, filtered the same way),
 ``override_cursor``, ``restore_cursor``, ``load_pixmap``, ``pixmap``,
 ``scale``, ``isEnabled``, ``is_loading``, ``is_brush_mode``,
 ``is_magic_wand_mode``, ``drawing``, ``editing``, ``update``,

@@ -37,12 +37,11 @@ class _Action:
     ``trigger`` call.
     """
 
-    def __init__(self, shortcut="", handler=None):
+    def __init__(self, handler=None):
         self.triggered = _Signal(self)
         self.calls = []
         self.triggers = 0
         self.handler = handler
-        self._shortcut = QtGui.QKeySequence(shortcut)
 
     def setEnabled(self, value):
         """Record a call, so a test can prove there is none."""
@@ -54,17 +53,13 @@ class _Action:
             return True
         return self.calls[-1]
 
-    def shortcut(self):
-        """Return the keyboard shortcut of the action."""
-        return self._shortcut
-
     def trigger(self):
         """Fire the action, like a real enabled ``QAction`` does.
 
         One call is one dialog of the caller with Qt: the counter is
-        bumped here, and the handover of the tool may trigger the
-        action once more, so the count is what the user asked for
-        plus what the tool ran on their behalf.
+        bumped here. The handover of the tool never triggers the action
+        again, so a count of two would mean the tool ran it twice --
+        which is what the tests assert never happens.
         """
         self.triggered.emit()
         if self.handler is not None:
@@ -110,8 +105,8 @@ def _rectangle_actions(canvas):
 
     return {
         "create_mode": _Action(),
-        "create_rectangle_mode": _Action("R", handler=to_rectangle),
-        "edit_mode": _Action("", handler=to_edit),
+        "create_rectangle_mode": _Action(handler=to_rectangle),
+        "edit_mode": _Action(handler=to_edit),
         "edit_brush_mode": _Action(),
     }
 
@@ -154,14 +149,19 @@ class _RealActions:
         for name in DRAW_NAMES:
             if name == "create_rectangle_mode":
                 slot = self._rectangle
-            elif name == "edit_mode":
-                slot = self._edit
             elif name == "create_circle_mode":
                 slot = self._circle
             else:
                 slot = self._plain(name)
             self.handlers[name] = slot
             setattr(self, name, QtGui.QAction(name, None))
+        # The widget has editing actions as well, and their handlers
+        # are the ones the canvas switches run; the tool never takes
+        # them over, so they are not among the taken names.
+        self.handlers["edit_mode"] = self._edit
+        self.edit_mode = QtGui.QAction("edit_mode", None)
+        self.handlers["edit_brush_mode"] = self._plain("edit_brush_mode")
+        self.edit_brush_mode = QtGui.QAction("edit_brush_mode", None)
         self._handler = handler
         if handler is not None:
             self.create_rectangle_mode.triggered.connect(
@@ -208,10 +208,11 @@ class _RealActions:
 def _real_tool(st_tool, handler=None):
     """Give the widget real drawing actions, the way upstream builds them.
 
-    The controller of the fixture is already built, so ``_with_actions``
-    cannot be used here: the actions are installed on the widget and
-    the mode is entered, which is what takes them over. The caller
-    connects the handlers of the widget afterwards, with
+    These tests need real ``QAction`` objects -- ``receivers()`` and the
+    real slot order of ``triggered`` -- which the fakes of
+    ``_with_actions`` cannot give: the actions are installed on the
+    widget and the mode is entered, which is what takes them over. The
+    caller connects the handlers of the widget afterwards, with
     :meth:`_RealActions.connect_handlers`, once the handover of the
     tool is in place.
     """
@@ -247,8 +248,17 @@ def _menu_actions(widget, handler):
     action does. What the tool sees -- the objects of the actions
     object, reached through ``getattr`` -- is the same either way,
     and ``widget.actions`` points at them: the menu is built from
-    that object.
+    that object. The rectangle entry is wired to the canvas the way
+    the real drawing action is: running it puts the canvas into the
+    mode the user asked for.
     """
+    canvas = widget.canvas
+
+    def to_rectangle():
+        handler()
+        canvas.create_mode = "rectangle"
+        canvas.set_editing(False)
+
     fields = {}
     for name in DRAW_NAMES:
         action = QtGui.QAction(name, None)
@@ -256,56 +266,12 @@ def _menu_actions(widget, handler):
             lambda checked=False, run=handler: run()
         )
         fields[name] = action
-    fields["create_rectangle_mode"] = _menu_rectangle(
-        widget.canvas, handler
-    )
-    fields["edit_mode"] = _menu_edit_mode(widget.canvas)
+    rectangle = QtGui.QAction("create_rectangle_mode", None)
+    rectangle.triggered.connect(lambda checked=False: to_rectangle())
+    fields["create_rectangle_mode"] = rectangle
     actions = SimpleNamespace(**fields)
     widget.actions = actions
     return actions
-
-
-def _menu_rectangle(canvas, handler):
-    """Return the rectangle action of a menu test, wired to canvas."""
-
-    def to_rectangle():
-        handler()
-        canvas.create_mode = "rectangle"
-        canvas.set_editing(False)
-
-    action = QtGui.QAction("Create Rectangle", None)
-    action.triggered.connect(lambda checked=False: to_rectangle())
-    return action
-
-
-def _menu_edit_mode(canvas):
-    """Return the editing action of a menu test, wired to canvas."""
-    action = QtGui.QAction("Edit Object", None)
-    action.triggered.connect(
-        lambda checked=False: canvas.set_editing(True)
-    )
-    return action
-
-
-def _menu_entry(actions):
-    """Return a real QMenu holding the drawing actions it is given.
-
-    The entries are the very QActions of ``actions``, the way the Edit
-    menu of the labeling widget holds its own actions: the rectangle
-    action, whose click the tests aim at, and the editing one.
-    """
-    menu = QtWidgets.QMenu("Edit")
-    menu.addAction(actions.create_rectangle_mode)
-    menu.addAction(actions.edit_mode)
-    return menu, actions.create_rectangle_mode
-
-
-def _plain_menu(*labels):
-    """Return a real QMenu holding entries that stand for no action."""
-    menu = QtWidgets.QMenu("Edit")
-    for label in labels:
-        menu.addAction(QtGui.QAction(label, menu))
-    return menu
 
 
 def _click(qapp, menu, qaction):
@@ -372,7 +338,7 @@ def test_the_entry_takes_over_every_action_without_disabling_it(st_tool):
     for name in DRAW_NAMES:
         assert getattr(actions, name).calls == []
         assert getattr(actions, name).isEnabled() is True
-    # Every one of the thirteen carries the handover of the tool.
+    # Every one of the eleven carries the handover of the tool.
     handover = [
         getattr(actions, name) for name in DRAW_NAMES
         if getattr(actions, name).triggered.receivers() == 1
@@ -697,14 +663,13 @@ def test_the_edit_action_of_a_menu_runs_exactly_once(st_tool, qapp):
     menu = QtWidgets.QMenu("Edit")
     menu.addAction(actions.create_rectangle_mode)
     menu.addAction(actions.edit_mode)
-    widget.menus = SimpleNamespace(edit=menu)
     controller = st_tool.controller
     controller._action.trigger()
     actions.connect_handlers()
     _click(qapp, menu, actions.edit_mode)
-    # The entry of a popup is run by Qt, once: the filter of the tool
-    # leaves the mode and lets the entry run, it does not run the
-    # editing action itself.
+    # The entry of a popup is run by Qt, once: the editing action it
+    # runs leaves the mode through the canvas switch, and the tool
+    # never runs the editing action a second time.
     assert actions.runs == ["edit_mode"]
     assert controller._is_active() is False
     assert canvas.editing() is True
@@ -719,7 +684,6 @@ def test_a_real_menu_click_runs_the_handler_exactly_once(st_tool, qapp):
     menu = QtWidgets.QMenu("Edit")
     menu.addAction(actions.create_rectangle_mode)
     menu.addAction(actions.edit_mode)
-    widget.menus = SimpleNamespace(edit=menu)
     controller = st_tool.controller
     controller._action.trigger()
     actions.connect_handlers()
@@ -810,23 +774,39 @@ def test_a_canvas_that_stayed_drawing_is_switched_by_hand(st_tool):
     assert controller._is_active() is False
 
 
-def test_ctrl_z_still_wins_over_a_matching_action(st_tool):
+def test_ctrl_z_still_wins_over_a_taken_over_action(st_tool):
     widget = st_tool.widget
     actions = _with_actions(widget, widget.canvas)
-    actions.create_mode = _Action("Ctrl+Z")
     controller = st_tool.controller
     canvas = widget.canvas
     controller._action.trigger()
+    undone = []
+    controller._can_undo = lambda: True
+    controller._undo = lambda: undone.append(1)
+    # Qt asks the canvas owner first with a ShortcutOverride: the mode
+    # claims Ctrl+Z itself instead of leaving it to the shortcut
+    # system, so the drawing action that is taken over never sees the
+    # key -- Ctrl+Z stays the undo of the mode.
+    override = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.ShortcutOverride,
+        QtCore.Qt.Key.Key_Z,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    QtWidgets.QApplication.sendEvent(canvas, override)
+    assert override.isAccepted() is True
     event = send_key(
         canvas,
         QtCore.Qt.Key.Key_Z,
         QtCore.Qt.KeyboardModifier.ControlModifier,
     )
     assert event.isAccepted() is True
+    assert undone == [1]
     assert controller._is_active() is True
+    for name in DRAW_NAMES:
+        assert getattr(actions, name).triggers == 0
 
 
-def test_escape_still_leaves_over_a_matching_action(st_tool):
+def test_escape_still_leaves_the_mode(st_tool):
     widget = st_tool.widget
     controller = st_tool.controller
     canvas = widget.canvas
@@ -902,99 +882,96 @@ def test_a_double_click_is_swallowed_while_the_mode_is_on(st_tool):
     assert shape.is_closed() is False
 
 
-def test_a_menu_entry_is_taken_over_and_runs_exactly_once(st_tool, qapp):
+def test_the_edit_action_leaves_the_mode_through_the_canvas_switch(
+    st_tool,
+):
+    widget = st_tool.widget
+    canvas = widget.canvas
+    actions = _real_tool(st_tool)
+    actions.connect_handlers()
+    controller = st_tool.controller
+    rectangle = actions.create_rectangle_mode
+    rectangle_before = rectangle.receivers(rectangle.triggered)
+    edit_before = actions.edit_mode.receivers(
+        actions.edit_mode.triggered
+    )
+    brush_before = actions.edit_brush_mode.receivers(
+        actions.edit_brush_mode.triggered
+    )
+    controller._action.trigger()
+    # Neither editing action is among the taken names: their handlers
+    # reach the mode through the canvas switch they make, so the tool
+    # connects no handover slot to them.
+    assert rectangle.receivers(rectangle.triggered) == (
+        rectangle_before + 1
+    )
+    assert actions.edit_mode.receivers(
+        actions.edit_mode.triggered
+    ) == edit_before
+    assert edit_before == 1
+    assert actions.edit_brush_mode.receivers(
+        actions.edit_brush_mode.triggered
+    ) == brush_before
+    assert brush_before == 1
+    actions.edit_mode.trigger()
+    assert actions.runs == ["edit_mode"]
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert controller._mode_switched is False
+    assert canvas.editing() is True
+    assert canvas.drawing() is False
+
+
+def test_a_handover_resets_the_cursor_flag_for_the_next_exit(st_tool):
+    widget = st_tool.widget
+    canvas = widget.canvas
+    actions = _with_actions(widget, canvas)
+    controller = st_tool.controller
+    controller._action.trigger()
+    assert controller._cursor_overridden is True
+    actions.create_rectangle_mode.trigger()
+    # The handover leaves the cursor to the drawing mode the action
+    # switches to, so it is still on the stack -- and the flag that
+    # describes that one exit is reset, or the cursor of the mode
+    # would stay behind on every later exit of the session.
+    assert controller._is_active() is False
+    assert controller._handing_over is None
+    assert _override_shape() == smudge_filter.MODE_CURSOR
+    canvas.set_editing(True)
+    controller._action.trigger()
+    assert controller._is_active() is True
+    controller._action.trigger()
+    assert controller._is_active() is False
+    assert _override_shape() is None
+    assert controller._cursor_overridden is False
+
+
+def test_a_menu_entry_of_a_drawing_action_leaves_the_mode_and_runs_once(
+    st_tool, qapp
+):
     widget = st_tool.widget
     canvas = widget.canvas
     runs = []
     actions = _menu_actions(widget, lambda: runs.append(1))
-    menu, qaction = _menu_entry(actions)
-    widget.menus = SimpleNamespace(edit=menu)
+    menu = QtWidgets.QMenu("Edit")
+    menu.addAction(actions.create_rectangle_mode)
     controller = st_tool.controller
     controller._action.trigger()
-    event = _click(qapp, menu, qaction)
-    # Qt runs the entry of a popup from the release, and that is the
-    # very event the tool steps in on: the popup closes, the mode is
-    # left, and the entry runs afterwards -- once. Running the action
-    # here as well would show up as a second run.
+    # No filter is installed on this menu: Qt runs the entry alone,
+    # and the mode leaves through the canvas switch of that very
+    # action, once.
+    event = _click(qapp, menu, actions.create_rectangle_mode)
     assert event.isAccepted() is True
     assert menu.isVisible() is False
+    assert runs == [1]
     assert controller._is_active() is False
     assert controller._action.isChecked() is False
-    assert canvas.editing() is False
-    assert canvas.drawing() is True
     assert canvas.create_mode == "rectangle"
-    assert runs == [1]
-
-
-def test_a_menu_entry_leaves_the_mode_before_the_action_runs(st_tool, qapp):
-    widget = st_tool.widget
-    canvas = widget.canvas
-    seen = []
-    actions = _menu_actions(
-        widget, lambda: seen.append(controller._is_active())
-    )
-    menu, qaction = _menu_entry(actions)
-    widget.menus = SimpleNamespace(edit=menu)
-    controller = st_tool.controller
-    controller._action.trigger()
-    assert controller._menu_filters == {menu: True}
-    _click(qapp, menu, qaction)
-    assert controller._is_active() is False
-    # The entry ran once, on a canvas the tool had already handed
-    # back: the mode was off when the action behind it ran.
-    assert seen == [False]
-
-
-def test_a_menu_handover_does_not_wedge_the_cursor_of_later_exits(
-    st_tool, qapp
-):
-    widget = st_tool.widget
-    actions = _menu_actions(widget, lambda: None)
-    menu, qaction = _menu_entry(actions)
-    widget.menus = SimpleNamespace(edit=menu)
-    controller = st_tool.controller
-    controller._action.trigger()
-    _click(qapp, menu, qaction)
-    # The entry of the menu is a handover: the cursor of the mode is
-    # left to the drawing mode the entry switches to. That flag
-    # describes that one exit alone, so the next entry and the button
-    # exit after it give the cursor back like any other exit.
-    assert controller._is_active() is False
-    controller._action.trigger()
-    assert controller._is_active() is True
-    controller._action.trigger()
-    assert controller._is_active() is False
-    assert controller._cursor_overridden is False
-    assert _override_shape() is None
-
-
-def test_an_entry_that_is_not_a_drawing_action_is_left_alone(st_tool, qapp):
-    widget = st_tool.widget
-    canvas = widget.canvas
-    _menu_actions(widget, lambda: None)
-    menu = _plain_menu("Duplicate", "Delete")
-    widget.menus = SimpleNamespace(edit=menu)
-    controller = st_tool.controller
-    controller._action.trigger()
-    # A menu without a drawing action is not taken over at all, so a
-    # release inside it is left to the menu and the mode stays on.
-    release = QtGui.QMouseEvent(
-        QtCore.QEvent.Type.MouseButtonRelease,
-        QtCore.QPointF(0.0, 0.0),
-        QtCore.QPointF(0.0, 0.0),
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.MouseButton.NoButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-    )
-    assert controller.eventFilter(menu, release) is False
-    assert controller._is_active() is True
+    assert canvas.drawing() is True
     assert canvas.editing() is False
-    controller.set_mode(False)
 
 
-def test_a_plain_entry_of_a_filtered_menu_is_left_to_the_menu(
-    st_tool, qapp
-):
+def test_a_plain_menu_entry_changes_nothing(st_tool, qapp):
     widget = st_tool.widget
     canvas = widget.canvas
     runs = []
@@ -1005,16 +982,12 @@ def test_a_plain_entry_of_a_filtered_menu_is_left_to_the_menu(
     plain = QtGui.QAction("Duplicate", menu)
     plain.triggered.connect(lambda checked=False: clicked.append(1))
     menu.addAction(plain)
-    widget.menus = SimpleNamespace(edit=menu)
     controller = st_tool.controller
     controller._action.trigger()
-    # The menu holds a drawing action, so the filter of the tool is on
-    # it: the plain entry is the one that filter has to leave alone.
-    assert controller._menu_filters == {menu: True}
     _click(qapp, menu, plain)
-    # The plain entry ran, once, and nothing else moved: only the
-    # drawing entries of a filtered menu leave the mode, not every
-    # entry of it.
+    # Nothing of the tool is connected to the menu any more: an entry
+    # that is not a drawing action runs, once, and leaves the mode --
+    # and the drawing entry next to it -- completely alone.
     assert clicked == [1]
     assert runs == []
     assert controller._is_active() is True
@@ -1022,66 +995,4 @@ def test_a_plain_entry_of_a_filtered_menu_is_left_to_the_menu(
     assert canvas.editing() is False
     assert canvas.drawing() is True
     controller.set_mode(False)
-
-
-def test_the_menu_filter_is_installed_once(st_tool, qapp):
-    widget = st_tool.widget
-    canvas = widget.canvas
-    actions = _menu_actions(widget, lambda: None)
-    menu, qaction = _menu_entry(actions)
-    widget.menus = SimpleNamespace(edit=menu)
-    controller = st_tool.controller
-    controller._action.trigger()
-    controller._action.trigger()
-    # A second entry must not install a second filter on the same menu:
-    # every entry into the mode runs the install step again.
-    installed = []
-    real_install = menu.installEventFilter
-    menu.installEventFilter = installed.append
-    controller._action.trigger()
-    menu.installEventFilter = real_install
-    assert installed == []
-    assert controller._is_active() is True
-    event = _click(qapp, menu, qaction)
-    assert event.isAccepted() is True
-    assert controller._is_active() is False
-    assert canvas.drawing() is True
-    assert canvas.create_mode == "rectangle"
-    controller.set_mode(False)
-
-
-def test_a_menu_rebuilt_while_the_mode_is_on_is_taken_over_too(
-    st_tool, qapp
-):
-    widget = st_tool.widget
-    canvas = widget.canvas
-    controller = st_tool.controller
-    seen = []
-    actions = _menu_actions(
-        widget, lambda: seen.append(controller._is_active())
-    )
-    menu, _first = _menu_entry(actions)
-    widget.menus = SimpleNamespace(edit=menu)
-    controller._action.trigger()
-    assert menu in controller._menu_filters
-    # This test simulates the rebuild that would need the re-install:
-    # upstream currently clears the Edit menu in place and fills the
-    # very same QMenu again, so the filter of the tool is still on it.
-    # A *new* QMenu takes its place here, the shape upstream would
-    # have if it ever stopped reusing the object. A menu the tool
-    # never filtered would let its entry run while the mode is still
-    # on -- the recording below would then be [True].
-    rebuilt, entry = _menu_entry(actions)
-    widget.menus.edit = rebuilt
-    widget.populate_mode_actions()
-    assert rebuilt in controller._menu_filters
-    assert controller._menu_filters[rebuilt] is True
-    event = _click(qapp, rebuilt, entry)
-    assert event.isAccepted() is True
-    assert rebuilt.isVisible() is False
-    assert seen == [False]
-    assert controller._is_active() is False
-    assert canvas.editing() is False
-    assert canvas.drawing() is True
-    assert canvas.create_mode == "rectangle"
 

@@ -233,10 +233,10 @@
 
 ### 代码与体量
 
-`anylabeling/custom/smudge_tool/`（4 个文件 2660 行：`texture_fill.py` 算法、
+`anylabeling/custom/smudge_tool/`（4 个文件 2474 行：`texture_fill.py` 算法、
 `operations.py` 读写/备份/几何、`smudge_filter.py` Qt 层、`__init__.py` 导出）；
-测试 `tests/custom/smudge_tool/`（6 个文件 3471 行，含写回编码参数、TIFF
-Orientation 与画布绘制态/菜单接管的回归）。
+测试 `tests/custom/smudge_tool/`（6 个文件 3382 行，含写回编码参数、TIFF
+Orientation 与画布绘制态的回归）。
 
 ### 入口符号
 
@@ -265,10 +265,9 @@ Orientation 与画布绘制态/菜单接管的回归）。
 | `LabelingWidget.canvas` | direct | 事件过滤器宿主与视图刷新 |
 | `LabelingWidget.tools` | direct | 工具栏：按钮加进去、撑高 |
 | `LabelingWidget.actions` | direct | 与上游动作共存 |
-| `LabelingWidget.menus` | direct | `utils.Struct`，安全遍历其中每个 QMenu；含绘制动作的菜单装事件过滤器，菜单条目被接管 |
 | `LabelingWidget.actions.edit_mode` | direct | 安全地请上游把画布切回编辑模式（触发它，而不是直接改 `canvas.mode`） |
 | `LabelingWidget.set_edit_mode` | direct | 拿不到编辑动作时的回退：请上游把画布与工具栏切回编辑模式 |
-| `LabelingWidget.actions` 的 13 个绘制类动作 | direct | 进入时连接其 `triggered` 信号、退出时断开：它们保持可用，点按钮或按快捷键都先退出涂抹模式再执行原动作（名字见下「画布归属」） |
+| `LabelingWidget.actions` 的 11 个 `create_*` 绘制动作 | direct | 进入时连接其 `triggered`、退出时断开；保持可用，触发被接管（见行为级契约） |
 | `LabelingWidget.filename`、`image_path` | direct | 解析当前图的磁盘路径 |
 | `LabelingWidget.image_data` | transitive | 确认画布上确有图像 |
 | `LabelingWidget.brightness_contrast_processor`、`brightness_contrast_values` | transitive | 刷新视图时不覆盖显示参数 |
@@ -276,7 +275,6 @@ Orientation 与画布绘制态/菜单接管的回归）。
 | `Canvas.transform_pos`、`offset_to_center`、`scale`、`out_off_pixmap` | direct | 屏幕坐标与图像坐标互换 |
 | `Canvas.load_pixmap`、`pixmap` | direct | 写回后重载画面 |
 | `Canvas.override_cursor`、`restore_cursor` | direct | 模式光标；让路给绘制模式时不弹栈（见行为级契约） |
-| `Canvas.menus` | direct | `(QMenu, QMenu)` 元组，画布右键菜单；与上面同一套接管 |
 | `Canvas.editing` | direct | 退出前确认画布真的回到编辑态，没回到就补一次 `set_editing(True)` |
 | `Canvas.is_loading` | direct | 上游加载中时不抢事件 |
 | `Canvas.is_brush_mode`、`is_magic_wand_mode`、`drawing` | direct | 判断是否已切到别的绘制模式（拒绝叠加） |
@@ -345,16 +343,15 @@ Orientation 与画布绘制态/菜单接管的回归）。
   复位，之后的每一次退出都照常弹栈。
 - **画布归属（进入即绘制态 + 工具接管）**：进入模式时由工具自己把画布切到 CREATE
   （`canvas.set_editing(False)`），**先**切换、后置 `_mode`：顺序反了的话，包装过的
-  `set_editing` 会立刻把模式打回去。随后把上游 13 个绘制/编辑动作
+  `set_editing` 会立刻把模式打回去。随后把上游 **11 个 `create_*`** 绘制动作
   （`DRAW_ACTION_NAMES`：`create_mode`、`create_brush_polygon_mode`、
   `create_magic_wand_mode`、`create_rectangle_mode`、`create_cuboid_mode`、
   `create_rotation_mode`、`create_quadrilateral_mode`、`create_circle_mode`、
-  `create_line_mode`、`create_point_mode`、`create_line_strip_mode`、`edit_mode`、
-  `edit_brush_mode`）的 `triggered` 信号逐个连到 `_on_draw_action`（`functools.partial`
-  带上动作本身，连接对象存进 `_draw_connections`，退出时按这个字典精确 `disconnect`）。
-  它们**保持可用**，只是触发被接管：见下一条与「快捷键」一条。`_mode_switched` 记住
-  「画布欠一个编辑态」。动作名一律 `getattr` 取，缺动作或根本没有 `actions` 的替身
-  （单测）全程不报错。
+  `create_line_mode`、`create_point_mode`、`create_line_strip_mode`）的 `triggered`
+  信号逐个连到 `_on_draw_action`（`functools.partial` 带上动作本身，连接对象存进
+  `_draw_connections`，退出时按这个字典精确 `disconnect`）。它们**保持可用**，只是
+  触发被接管：见下一条与「快捷键」一条。`_mode_switched` 记住「画布欠一个编辑态」。
+  动作名一律 `getattr` 取，缺动作或根本没有 `actions` 的替身（单测）全程不报错。
 - **绘制类动作的接管（点按钮与按快捷键同一条路）**：涂抹模式开着时触发任一
   `DRAW_ACTION_NAMES` 动作，`_on_draw_action` 先 `_handing_over = False`（这是用户
   主动切模式，不是「让路」，与 `Canvas.set_editing` 那条让路语义区分开）→ 按钮
@@ -365,35 +362,36 @@ Orientation 与画布绘制态/菜单接管的回归）。
   画布照常切到它的模式（按 R 直接进矩形模式、工具栏高亮跟手）。槽位顺序两种都
   成立：接管槽在前时它先退出、上游处理器随后只跑一次；上游处理器在前时它先把
   画布切走（经包装过的 `set_editing` 让涂抹模式退出），接管槽再进来时 `_mode` 已
-  是 False，直接 `return`（防递归，不重复退出、不重复执行）。`edit_mode` 与
-  `edit_brush_mode` 同样在列表里：涂抹模式下点「编辑对象」= 先退出涂抹、再切回
-  编辑态，上游 `edit_mode` 处理器全程只跑一次（不会出现两次 `set_edit_mode()`）。
-- **菜单里的条目同样被接管**（Edit 菜单，以及任何含绘制动作的菜单：
-   `LabelingWidget.menus` 这个 Struct 里的每个 QMenu、`Canvas.menus` 这对
-   右键菜单）：进入模式时 `_install_menu_filters()` 给这些菜单装事件过滤器，
-   `populate_mode_actions` 重建菜单后再装一次（`_menu_filters` 记名，重复安装
-   挡住）——上游当前那次重建是就地 `clear()` 复用同一批 QMenu
-   （`label_widget.py:2916`、`:2926`），而且它只在构造函数里调用一次
-   （`label_widget.py:2620`）、早于 `install_smudge_tool(self)`（`:2630`），
-   所以这条重装路径现在是**保险**：上游将来改成新建 QMenu 对象、或在安装之后
-   再调 `populate_mode_actions` 时它才真正生效。过滤器只在模式开着、左键
-   **释放**、且 `actionAt()` 命中被接管动作时
-   动手：先退出模式（`_leave_for_menu_action`，与按钮/快捷键一样先退出，同样
-   置 `_handing_over = False` 把光标让给上游），**不吞事件**，让弹出菜单自己
-   执行条目一次（Qt 从这次释放激活动作；吃掉事件就得自己再 `trigger()` 一次，
-   等于执行两遍）。菜单随后由 `QTimer.singleShot(0, ...)` 关闭：在过滤器里直接
-   `hide()` 会让 Qt 拿不到仍然打开的弹出窗口、条目反而不执行（已实测）。菜单
-   不含绘制动作时不装过滤器，删除/复制/过滤子菜单等条目完全不受影响。
+  是 False，直接 `return`（防递归，不重复退出、不重复执行）。
+- **编辑动作不走接管**：`edit_mode` 与 `edit_brush_mode` **不在名单**——点
+  「编辑对象」「画笔编辑」时工具没有连接它们的 `triggered`。上游处理器经
+  `set_edit_mode` / `toggle_brush_mode` → `toggle_draw_mode(True)` → 包装过的
+  `Canvas.set_editing` 让涂抹模式让路退出，天然只跑一次；对它们再挂一个接管槽
+  没有意义——用户激活它们时画布本来就会经 `Canvas.set_editing` 让路退出一次。
+- **菜单条目无需接管（有意为之）**：菜单条目就是 `self.actions.create_*` 的同一批
+  `QAction`——`populate_mode_actions` 用 `utils.add_actions` 把它们塞进
+  `menus.edit` 与 `canvas.menus[0]`——点条目等于 `QAction.trigger()` 等于发
+  `triggered`，走的是与工具栏、快捷键完全相同的那条接管路，工具不需要给菜单
+  装什么事件过滤器。两种槽位顺序的净结果都对：上游处理器先跑时它经包装过的
+  `Canvas.set_editing(False)` 让路退出，接管槽再进来时 `_mode` 已是 False 直接
+  `return`（防递归）；上游将来改成安装之后才连处理器时，接管槽先退出、处理器
+  随后照跑。两种顺序都有真 `QAction` 用例钉住：处理器在前（真实窗口的顺序）
+  是 `test_a_real_action_runs_once_in_the_order_of_the_widget`，接管槽在前是
+  `test_a_real_action_runs_its_upstream_handler_exactly_once` 与
+  `test_a_real_menu_click_runs_the_handler_exactly_once`。
 - **退出即回编辑态**：`_exit_mode(use_action=True)` 先 `_disconnect_draw_actions()`
-  （把 13 个动作的 `triggered` 连接原样还回去）再清状态（拖框/源点/覆盖层/
+  （把 11 个 `create_*` 动作的 `triggered` 连接原样还回去）再清状态（拖框/源点/覆盖层/
   橡皮筋/工作数组），`_mode_switched` 为真时恢复编辑态：`use_action=True`（按钮、
   Esc 等工具自己发起的退出）优先 `actions.edit_mode.trigger()`，该动作缺失或
   **被禁用**（触发禁用的 `QAction` 是静默 no-op，不算已触发）时退到
   `widget.set_edit_mode()`，再退到 `canvas.set_editing(True)`；
-  `use_action=False`（接管路径：用户正在激活某个绘制/编辑动作）只执行最后那一步
+  `use_action=False`（接管路径：用户正在激活某个绘制动作）只执行最后那一步
   `canvas.set_editing(True)`，不碰上游的编辑动作，也不碰 `widget.set_edit_mode()`
-  ——两者都会再跑一遍上游处理器。最后都确认 `canvas.editing()` 为真，否则补一次
-  `set_editing(True)`。退出幂等：重复调用只清已经空掉的状态。换图
+  ——两者都会再跑一遍上游处理器。**这个参数是刻意保留的**：让路路径若改用
+  `use_action=True`，会在用户手势进行中再跑一次上游编辑动作（`set_edit_mode`
+  → `toggle_draw_mode(True)`），把画布拉回 EDIT，结果按 R 之后停在 EDIT、矩形
+  模式丢失。最后都确认 `canvas.editing()` 为真，否则补一次 `set_editing(True)`。
+  退出幂等：重复调用只清已经空掉的状态。换图
   （`_adopt_file` → `_container_file`）**不退出模式**：只清本图的源点、拖框与
   工作数组，模式保持开启。
 - **快捷键（全部放行，动作自己接管）**：上游任何模式切换都经包装过的
@@ -401,7 +399,7 @@ Orientation 与画布绘制态/菜单接管的回归）。
   上游编辑动作**——簿记（按钮可用态、文本编辑态、自动标注清理）由发起切换的上游
   路径自己完成，本工具只保证画布交还到编辑态），把画布摆回 EDIT，然后执行上游
   自己的切换——数字键 `digit_shortcut_*` 与画笔、魔棒都走这条。字母快捷键同样
-  有效：13 个绘制/编辑动作没有被置灰，Qt 的快捷键系统照常发出 `triggered`，
+  有效：11 个 `create_*` 动作没有被置灰，Qt 的快捷键系统照常发出 `triggered`，
   由接管槽先退出涂抹模式再执行原动作（按 R 直接进矩形模式）。事件过滤器只保留
   `Ctrl+Z`（`ShortcutOverride`）与 `Esc`/`Ctrl+Z`（`KeyPress`）两条，其余
   `return False`——**不再比对 `action.shortcut()` 吃键**：那会把已经可用的快捷键
@@ -437,16 +435,16 @@ Orientation 与画布绘制态/菜单接管的回归）。
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v`
-（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，全套 172 个用例：
+（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，全套 169 个用例：
 `test_st_operations.py` 28 + `test_st_texture_fill.py` 39 + `test_st_filter.py` 49 +
 `test_st_jpeg_metadata.py` 22（含 TIFF 逐字节 + Orientation 5~8 与 MPO）+
-`test_st_draw_mode.py` 34（进入接管 / 按键与按钮切走 / 不递归 / 连接成对 /
+`test_st_draw_mode.py` 31（进入接管 / 按键与按钮切走 / 不递归 / 连接成对 /
 退出回编辑态与三级 fallback（含禁用动作退到 widget 回退）/ 图像外按下不画形状 /
-双击被吞 / 菜单条目接管、先退出再执行、只执行一次、非绘制条目不碰、过滤器只装
-一次、菜单重建后在新 `QMenu` 上重装、接管后不残留光标 / 被过滤菜单里的普通
-条目不受影响 / 让路退出不代跑上游编辑动作 / 真实 QAction 上下游处理器恰好
-执行一次：工具栏、快捷键、菜单、编辑动作，两种槽位顺序各钉一遍，退出后真实
-动作上只剩上游的槽）；本轮复跑后两个文件共 83 个用例通过）。
+双击被吞 / 菜单条目经 `triggered` 接管、真菜单点击一次执行 / 编辑条目一次执行 /
+接管不残留 `_handing_over` 标志、下次退出仍弹栈 / 让路退出不代跑上游编辑动作 /
+真实 QAction 上下游处理器恰好执行一次：工具栏、快捷键、菜单、编辑动作，两种
+槽位顺序各钉一遍，退出后真实动作上只剩上游的槽）；本轮复跑后两个文件共 80 个
+用例通过）。
 
 ### 已知坑
 
@@ -470,21 +468,22 @@ Orientation 与画布绘制态/菜单接管的回归）。
   `set_editing` 里赋值；上游若换入口，包装静默失效，涂抹模式会再度赖着不走。
 - 进入侧依赖上游 `LabelingWidget.actions.edit_mode` 存在且可用：缺失、被禁用或
   改名时退化为「拒绝并提示」，即 create 模式下再也进不去涂抹模式（安全失败）。
-  被接管的 13 个动作名取不到时逐个跳过（`getattr`），不报错，只是少接管一个按钮。
-  这 13 个名字（含 `edit_mode`、`edit_brush_mode`）是 `LabelingWidget.__init__` 里
-  `action(...)` 造的局部动作、不是类成员：`self.actions.create_mode` 的 AST 值
-  是 Attribute 而不是 Name，`_class_member_ok` 找不到它们（已用自检脚本的函数
-  逐个核实），故只在 `contract.json` 的 `upstream` 里以 `LabelingWidget.actions`
-  与 `set_edit_mode` 登记，13 个动作名本身不进 AST 清单。
-- **菜单接管依赖 `menus` 这个名字**：`LabelingWidget.menus`（Struct）与
-  `Canvas.menus`（二元组）都用 `getattr` 取，取不到就只是不装过滤器——菜单
-  条目会退回「靠 `triggered` 信号接管」那条路，等于这一层加固静默失效。
-  上游改名时靠 contract.json 的 `upstream` 清单核对：`LabelingWidget.menus`
-  与 `Canvas.menus` 都在清单里，只登记名字即可被 AST 自检命中。
-- **不要在过滤器里 `hide()` 菜单**：Qt 用「弹出窗口仍然打开」这个状态在释放
-  事件里激活动作，过滤器里直接 `hide()` 会让被点的条目根本不执行（实测：
-  `hid=False` 时 `triggered` 照发，`hide=True` 时一次都不发）。所以菜单由
-  `QTimer.singleShot(0, ...)` 在事件处理完之后关，动作照常执行一次。
+  被接管的 11 个 `create_*` 动作名取不到时逐个跳过（`getattr`），不报错，只是少
+  接管一个按钮。这 11 个名字是 `LabelingWidget.__init__` 里 `action(...)` 造的
+  局部动作、不是类成员：`self.actions.create_mode` 的 AST 值是 Attribute 而不是
+  Name，`_class_member_ok` 找不到它们（已用自检脚本的函数逐个核实），故只在
+  `contract.json` 的 `upstream` 里以 `LabelingWidget.actions` 与 `set_edit_mode`
+  登记，11 个动作名本身不进 AST 清单。`edit_mode` 不进接管名单：它只作退出
+  回编辑态（`actions.edit_mode.trigger()`，见上）与 create 模式下点涂抹按钮时的
+  进入侧让路用；`edit_brush_mode` 工具从不读它，它的让路走上游
+  `toggle_brush_mode → toggle_draw_mode(True)`。
+- **菜单条目与工具栏共享同一 `QAction`，接管只靠 `triggered`**：上游一旦改成
+  绕过 `QAction.trigger()` 直接切模式，或在菜单里放动作副本而不是动作本体，
+  被接管的那一层就静默失效——模式仍由包装过的 `Canvas.set_editing` 让路退出
+  （画布切换的兜底还在），但「先退出涂抹再跑原动作、一次手势一次副作用」的
+  保证就只剩这条兜底；上游若连 `set_editing` 也绕开（直接改 `Canvas.mode`），
+  涂抹模式就会赖在画布上。同步上游时按 `Canvas.set_editing` 的调用点清单核对
+  （**需要真机验证**）。
 - **为什么不用 `setEnabled(False)` 置灰**：Qt 把「动作被禁用」和「动作的快捷键」
   绑在一起——禁用 `QAction` 会连带停掉它的 `shortcut()`，实测（真实 `QAction` +
   画布事件过滤器，见本轮探针）按 R 时 `ShortcutOverride` 被过滤器接受、动作又被
