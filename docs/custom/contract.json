@@ -93,7 +93,7 @@
       }
     },
     "smudge_tool": {
-      "summary": "涂抹修复工具：右键取源点、左键拖框，用别处纹理覆盖缺陷区域并支持 Ctrl+Z 撤销。",
+      "summary": "涂抹工具：右键取源、左键拖框，用别处纹理覆盖缺陷，可 Ctrl+Z 撤销；上游绘制动作被接管：按钮或快捷键先退出涂抹再跑原动作。",
       "code": ["anylabeling/custom/smudge_tool/"],
       "tests": ["tests/custom/smudge_tool/"],
       "enter": [
@@ -107,15 +107,15 @@
       ],
       "soft_mounts_prefix": "anylabeling/custom/smudge_tool/",
       "soft_mounts": [
-        {"target": "LabelingWidget.populate_mode_actions", "wrapped_by": "_wrap_populate_mode_actions", "install_site": "smudge_filter.py:567"},
-        {"target": "LabelingWidget.import_image_folder", "wrapped_by": "_wrap_import_image_folder", "install_site": "smudge_filter.py:588"},
-        {"target": "Canvas.mouseMoveEvent", "wrapped_by": "_wrap_canvas_mouse_move", "install_site": "smudge_filter.py:617"},
-        {"target": "Canvas.set_editing", "wrapped_by": "_wrap_canvas_set_editing", "install_site": "smudge_filter.py:652"},
-        {"target": "Canvas 事件过滤器", "wrapped_by": "SmudgeController", "install_site": "smudge_filter.py:1210"}
+        {"target": "LabelingWidget.populate_mode_actions", "wrapped_by": "_wrap_populate_mode_actions", "install_site": "smudge_filter.py:825"},
+        {"target": "LabelingWidget.import_image_folder", "wrapped_by": "_wrap_import_image_folder", "install_site": "smudge_filter.py:846"},
+        {"target": "Canvas.mouseMoveEvent", "wrapped_by": "_wrap_canvas_mouse_move", "install_site": "smudge_filter.py:875"},
+        {"target": "Canvas.set_editing", "wrapped_by": "_wrap_canvas_set_editing", "install_site": "smudge_filter.py:920"},
+        {"target": "Canvas 事件过滤器", "wrapped_by": "SmudgeController", "install_site": "smudge_filter.py:1699"}
       ],
       "upstream": {
-        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["canvas", "tools", "actions", "populate_mode_actions", "import_image_folder", "filename", "image_path", "image_data", "brightness_contrast_processor", "brightness_contrast_values", "status", "statusBar", "error_message"],
-        "anylabeling/views/labeling/widgets/canvas.py:Canvas": ["transform_pos", "offset_to_center", "out_off_pixmap", "load_pixmap", "override_cursor", "restore_cursor", "set_editing", "pixmap", "scale", "is_loading", "is_brush_mode", "is_magic_wand_mode", "drawing", "current", "is_auto_labeling", "mouseMoveEvent"],
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["canvas", "tools", "actions", "menus", "populate_mode_actions", "import_image_folder", "set_edit_mode", "filename", "image_path", "image_data", "brightness_contrast_processor", "brightness_contrast_values", "status", "statusBar", "error_message"],
+        "anylabeling/views/labeling/widgets/canvas.py:Canvas": ["transform_pos", "offset_to_center", "out_off_pixmap", "load_pixmap", "override_cursor", "restore_cursor", "menus", "set_editing", "editing", "pixmap", "scale", "is_loading", "is_brush_mode", "is_magic_wand_mode", "drawing", "current", "is_auto_labeling", "mouseMoveEvent"],
         "anylabeling/views/labeling/utils/image.py:@module": ["img_data_to_pil"]
       }
     },

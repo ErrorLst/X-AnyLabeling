@@ -18,23 +18,34 @@ every entry of this list; a rename breaks the tool at runtime, not at
 import time:
 
 widget: ``canvas``, ``tools``, ``populate_mode_actions``,
-``import_image_folder``, ``actions`` (``edit_mode`` included: entering a
-drawing mode triggers it, and only it, to take the canvas back to
-editing), ``filename``, ``image_path``, ``image_data``,
+``import_image_folder``, ``menus`` (the menus carrying a drawing
+action are filtered themselves, so that a click on one of their
+entries leaves the mode before the entry runs),
+``actions`` (the drawing actions inside it
+included: eleven ``create_*`` names plus ``edit_mode`` and
+``edit_brush_mode``; their ``triggered`` signal is connected while the
+mode owns the canvas, so a click or a shortcut of one of them leaves
+the mode and then runs the action -- the exact list is
+``smudge_filter.DRAW_ACTION_NAMES``), ``set_edit_mode`` (the fallback
+that takes the canvas back to editing when ``actions.edit_mode`` is
+missing or disabled), ``filename``, ``image_path``, ``image_data``,
 ``brightness_contrast_processor``,
 ``brightness_contrast_values``, ``statusBar``, ``status``,
 ``error_message``.
 
 canvas: ``transform_pos``, ``offset_to_center``, ``out_off_pixmap``,
+``menus`` (the pair of context menus, filtered the same way),
 ``override_cursor``, ``restore_cursor``, ``load_pixmap``, ``pixmap``,
 ``scale``, ``isEnabled``, ``is_loading``, ``is_brush_mode``,
-``is_magic_wand_mode``, ``drawing``, ``update``, ``setFocus``,
-``geometry``, ``parentWidget``, ``mapToGlobal``, ``mouseMoveEvent``
-(wrapped on the instance: upstream asks for the default cursor as soon
-as a move hits no shape, so the cross of the mode has to be put back
-after the original body), ``set_editing`` (wrapped on the instance: the
-one entry of every mode switch, and it emits no signal, so the tool has
-to leave the mode from there).
+``is_magic_wand_mode``, ``drawing``, ``editing``, ``update``,
+``setFocus``, ``geometry``, ``parentWidget``, ``mapToGlobal``,
+``mouseMoveEvent`` (wrapped on the instance: upstream asks for the
+default cursor as soon as a move hits no shape, so the cross of the
+mode has to be put back after the original body), ``set_editing``
+(wrapped on the instance: the one entry of every mode switch, and it
+emits no signal, so the tool has to leave the mode from there; the
+tool also calls it itself, to put the canvas into its create mode when
+the mode is entered).
 
 Undo history lives in memory only, one list of steps per image, and is
 dropped when the folder changes, when another folder is opened, or at

@@ -760,13 +760,18 @@ def test_a_create_mode_takes_the_mode_down(st_tool):
     canvas.set_editing(False)
     assert controller._is_active() is False
     assert controller._action.isChecked() is False
-    assert _override_shape() is None
     assert controller._source is None
     assert controller._source_box is None
     assert controller._drag_start is None
     assert controller._rubber.isHidden() is True
     assert overlay._source is None
     assert overlay.isVisibleTo(overlay.parentWidget()) is False
+    # The cursor stays on the stack when the exit makes room for a
+    # drawing mode: upstream installs its own on the next move of the
+    # canvas and replaces this one, so popping it here would only risk
+    # taking back an entry that is not the one the tool pushed.
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+    _drop_override_cursors()
 
 
 def test_going_back_to_editing_takes_the_mode_down(st_tool):
@@ -838,7 +843,11 @@ def test_a_drawing_mode_is_left_before_the_entry(st_tool):
     assert canvas.drawing() is True
     controller._action.trigger()
     assert calls == [1]
-    assert canvas.drawing() is False
+    # The canvas draws again, but for the smudge mode this time: the
+    # entry switches it to its own create mode right after the
+    # rectangle mode was left, so the tool owns the gestures again.
+    assert canvas.drawing() is True
+    assert controller._mode_switched is True
     assert controller._is_active() is True
     assert controller._action.isChecked() is True
     assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
