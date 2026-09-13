@@ -25,7 +25,7 @@
 | edit_extras | 普通滚轮 = 以光标为中心缩放 | `anylabeling/custom/edit_extras/` | `tests/custom/edit_extras/` | 1 个（1 行 import + 1 行调用） | 1 |
 | ensure_label_file | 打开无标注图片时自动建同名空 json | `anylabeling/custom/ensure_label_file/` | `tests/custom/ensure_label_file/` | 1 个（1 行 import + 1 行调用） | 1 |
 | model_validation | 模型验证子窗口（数据集上跑推理出报告） | `anylabeling/custom/model_validation/` | `tests/custom/model_validation/` | 5 个（import、菜单 action 定义与挂载、方法定义、方法内调用） | 1 |
-| smudge_tool | 涂抹修复：取别处纹理覆盖缺陷并撤销 | `anylabeling/custom/smudge_tool/` | `tests/custom/smudge_tool/` | 1 个（1 行 import + 1 行调用） | 4 |
+| smudge_tool | 涂抹修复：取别处纹理覆盖缺陷并撤销 | `anylabeling/custom/smudge_tool/` | `tests/custom/smudge_tool/` | 1 个（1 行 import + 1 行调用） | 5 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -232,9 +232,9 @@
 
 ### 代码与体量
 
-`anylabeling/custom/smudge_tool/`（4 个文件 1726 行：`texture_fill.py` 算法、
+`anylabeling/custom/smudge_tool/`（4 个文件 1945 行：`texture_fill.py` 算法、
 `operations.py` 读写/备份/几何、`smudge_filter.py` Qt 层、`__init__.py` 导出）；
-测试 `tests/custom/smudge_tool/`（4 个文件 1414 行）。
+测试 `tests/custom/smudge_tool/`（4 个文件 1998 行）。
 
 ### 入口符号
 
@@ -245,11 +245,12 @@
 
 - `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom.smudge_tool import install_smudge_tool`
 - `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`）：`install_smudge_tool(self)`
-- 软挂载（4 处，全在 `anylabeling/custom/smudge_tool/smudge_filter.py`）：
+- 软挂载（5 处，全在 `anylabeling/custom/smudge_tool/smudge_filter.py`）：
   - `LabelingWidget.populate_mode_actions` ← `_wrap_populate_mode_actions`
   - `LabelingWidget.import_image_folder` ← `_wrap_import_image_folder`
+  - `Canvas.mouseMoveEvent` ← `_wrap_canvas_mouse_move`
   - `Canvas` 事件过滤器 ← `SmudgeController`
-  - `Canvas.mode_changed` ← `_on_canvas_mode_changed`
+  - `Canvas.set_editing` ← `_wrap_canvas_set_editing`
 
 ### 依赖的上游状态
 
@@ -257,10 +258,12 @@
 |---|---|---|
 | `LabelingWidget.populate_mode_actions` | wrapped | 工具栏重建后重新挂按钮 |
 | `LabelingWidget.import_image_folder` | wrapped | 换目录时清空撤销历史 |
-| `Canvas.mode_changed` | wrapped | 切到画笔/魔棒时自动退出涂抹模式 |
+| `Canvas.set_editing` | wrapped | 任何画布模式切换都先退出涂抹模式（按钮/覆盖层/光标一并收回） |
+| `Canvas.mouseMoveEvent` | wrapped | 上游把它改回箭头光标后，包装体把模式十字放回去 |
 | `LabelingWidget.canvas` | direct | 事件过滤器宿主与视图刷新 |
 | `LabelingWidget.tools` | direct | 工具栏：按钮加进去、撑高 |
 | `LabelingWidget.actions` | direct | 与上游动作共存 |
+| `LabelingWidget.actions.edit_mode` | direct | 安全地请上游把画布切回编辑模式（触发它，而不是直接改 `canvas.mode`） |
 | `LabelingWidget.filename`、`image_path` | direct | 解析当前图的磁盘路径 |
 | `LabelingWidget.image_data` | transitive | 确认画布上确有图像 |
 | `LabelingWidget.brightness_contrast_processor`、`brightness_contrast_values` | transitive | 刷新视图时不覆盖显示参数 |
@@ -269,7 +272,9 @@
 | `Canvas.load_pixmap`、`pixmap` | direct | 写回后重载画面 |
 | `Canvas.override_cursor`、`restore_cursor` | direct | 模式光标 |
 | `Canvas.is_loading` | direct | 上游加载中时不抢事件 |
-| `Canvas.is_brush_mode`、`is_magic_wand_mode`、`drawing` | direct | 判断是否已切到别的绘制模式 |
+| `Canvas.is_brush_mode`、`is_magic_wand_mode`、`drawing` | direct | 判断是否已切到别的绘制模式（拒绝叠加） |
+| `Canvas.current` | direct | 是否有未收尾图形（有则拒绝切换） |
+| `Canvas.is_auto_labeling` | direct | 是否自动标注会话（有则拒绝，编辑动作会清标记） |
 | `anylabeling.views.labeling.utils.image.img_data_to_pil` | direct | 备份/读取路径上的图像转换 |
 
 ### 行为级契约（不可机器校验）
@@ -283,23 +288,71 @@
 - **撤销**：历史在内存里按图片分组，记录 ROI、原像素块与磁盘路径；Ctrl+Z 把像素放回
   屏幕与磁盘。换目录、重新打开文件夹、进程结束都会丢掉历史（磁盘上的备份保留）。
 - **几何门槛**：ROI 小于 6 像素拒绝执行；源点必须先右键选；没有磁盘文件的图像拒绝写回。
-- **模式互斥**：进入画笔/魔棒模式时自动退出涂抹模式，按钮状态跟着回弹。
+- **小框填充（对齐贴片）**：ROI 两边都 <= 17 像素时它小于一个纹理块（块 24 像素），
+  匹配窗口里没有任何已确定像素：这类块不再被跳过（跳过会留下缺陷像素），而是按
+  「块在 ROI 内的相对偏移」从源窗口同位置取同尺寸贴片（源窗口与 ROI 同尺寸，所以
+  小框等价于把源点处的同尺寸纹理 1:1 盖过来）。贴片同样记入「已确定像素」，后续块
+  据此恢复正常的匹配路径。贴片落回 ROI 自身（源点就在框内、窗口与框重叠）、源窗口
+  装不下对齐贴片、或根本没有源窗口时仍然跳过；整框仍可能报「未发生变化」。
+- **源点标记**：右键当下就在覆盖层上画绿色十字（不依赖后续填充或画布重绘）；
+  源窗口矩形只在尺寸已知时才画（拖框中或填充过一次之后）。
+- **标记坐标**：覆盖层的十字与源窗口矩形都用画布局部坐标表示，`paintEvent`
+  每次现算 `_canvas_origin()`（`mapFromGlobal(canvas.mapToGlobal(0,0))`）后平移
+  画笔；覆盖层无论是画布的兄弟（滚动区布局）还是子控件（无父画布的单测）都对。
+  `sync()` 的几何镜像仍要保留：它决定覆盖层在哪里，`_canvas_origin()` 只决定
+  标记画在覆盖层的哪个位置。
+- **模式光标**：进入模式设十字；上游 `Canvas.mouseMoveEvent` 在没有命中 shape 时
+  改回箭头，包装体在**原实现之后**把十字放回去（事件过滤器在上游之前，压不住）；
+  `_busy`（填充中，用 WaitCursor）或当前画布不可绘制时不动光标；退出模式
+  `restore_cursor()` 归还。
+- **模式互斥（双向）**：涂抹模式与任何画布绘制/编辑模式不共存。上游每次
+  `Canvas.set_editing`（九个绘制动作、数字键、画笔多边形、魔棒、编辑对象、
+  画笔编辑，以及自动标注与画笔进入时画布自己的调用）都先退出涂抹模式——按钮
+  回弹、覆盖层与橡皮筋隐藏、光标归还——再执行原实现；反过来，画布处于 create
+  模式（`drawing()` 为真）时点涂抹工具，只要**能安全切回**编辑模式就先触发上游
+  编辑动作（`actions.edit_mode.trigger()`）自动切回，然后直接进入涂抹模式：不提示、
+  也不需要用户多点一次「编辑对象」。只有**不安全**时才拒绝并提示「请先退出绘制模式，
+  再使用涂抹工具」；不安全 = 正在画一个还没收尾的图形（`canvas.current` 非 None）、
+  处于自动标注会话（`canvas.is_auto_labeling` 为真）、拿不到上游编辑动作或它被
+  禁用、或触发之后画布仍在绘制模式（兜底，防上游行为变化）。走编辑动作而不是直接
+  赋 `canvas.mode`：它经 `set_edit_mode → toggle_draw_mode(True) →
+  canvas.set_editing(True)` 更新动作与工具栏簿记，而此时涂抹模式尚未进入，包装过的
+  `set_editing` 是 no-op。
+  `Canvas.mode_changed` 不能承担这件事：它只是设置里「自动切回编辑对象」的信号，
+  而 `set_editing` 改了 `mode` 却什么都不发，故工具改从 `set_editing` 退出。
 - 事件过滤器只在涂抹模式且拿到左键/右键时消费事件，其余一律放行。
 
 ### 测试
 
-`python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v`（需 PyQt6 + numpy + OpenCV）。
-本机无 PyQt6/numpy，未能运行。
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v`
+（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，116 个用例全部通过：
+`test_st_operations.py` 28 + `test_st_texture_fill.py` 39 + `test_st_filter.py` 49）。
 
 ### 已知坑
 
 - 所有软挂载都在实例上，不在类上：上游同步后必须逐条核对，contract.json 的
   `soft_mounts` 是这份清单的唯一事实源。
 - 备份目录永不清理，长期使用会累积原图副本（有意为之：撤销与追溯优先）。
+- 细长碎块（ROI 某边减去 12 后剩 1~5 像素，例如 29x29 的 5 像素条带、40x30 的
+  4 像素条带）仍走 `MIN_SIDE=6` 的跳过分支，那条带会保留缺陷像素；对齐贴片机制
+  本可覆盖它，但会改变 40x30 这类「正常尺寸」ROI 的结果，属独立决策。
 - 按钮图标名是 `brush`，取自带 icon 的生成资源 `anylabeling/resources/resources.py`；
   换图标要同时改这里的名字。
 - 上游 `Canvas.offset_to_center` 等几何方法改名时会静默失效（运行时才炸），
   靠 contract.json 的 upstream 清单在同步时兜住。
+- 覆盖层标记**不能再用 `canvas.geometry().topLeft()` 做父坐标补偿**：那只在覆盖层
+  自己 `pos()==(0,0)` 时成立；滚动区布局下 `overlay.geometry()==canvas.geometry()`，
+  画布滚动后 `geometry().topLeft()` 为负，会多减一次，标记平移 `-canvas.pos()`。
+- 实例级包装（`canvas.mouseMoveEvent = ...`）依赖 PyQt 让虚函数按实例属性派发，
+  且必须在首次真正派发事件前安装；`label_widget.py` 的挂载点满足这一点，若上游
+  改成在 C++ 侧转发或缓存绑定，包装会静默失效。
+- 模式互斥靠包装 `Canvas.set_editing`：`Canvas.mode` 目前只在 `__init__` 与
+  `set_editing` 里赋值；上游若换入口，包装静默失效，涂抹模式会再度赖着不走。
+- 进入侧依赖上游 `LabelingWidget.actions.edit_mode` 存在且可用：缺失、被禁用或
+  改名时退化为「拒绝并提示」，即 create 模式下再也进不去涂抹模式（安全失败）。
+  它是 `LabelingWidget.__init__` 里的局部动作、不是类成员，故只在
+  `contract.json` 的 `upstream` 里以 `LabelingWidget.actions` 登记，
+  `edit_mode` 本身不进 AST 清单。
 
 ## 变更台账
 

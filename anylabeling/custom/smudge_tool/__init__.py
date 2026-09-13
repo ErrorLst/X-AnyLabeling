@@ -18,16 +18,23 @@ every entry of this list; a rename breaks the tool at runtime, not at
 import time:
 
 widget: ``canvas``, ``tools``, ``populate_mode_actions``,
-``import_image_folder``, ``actions``, ``filename``, ``image_path``,
-``image_data``, ``brightness_contrast_processor``,
+``import_image_folder``, ``actions`` (``edit_mode`` included: entering a
+drawing mode triggers it, and only it, to take the canvas back to
+editing), ``filename``, ``image_path``, ``image_data``,
+``brightness_contrast_processor``,
 ``brightness_contrast_values``, ``statusBar``, ``status``,
 ``error_message``.
 
 canvas: ``transform_pos``, ``offset_to_center``, ``out_off_pixmap``,
 ``override_cursor``, ``restore_cursor``, ``load_pixmap``, ``pixmap``,
-``scale``, ``isEnabled``, ``is_loading``, ``mode_changed``,
-``is_brush_mode``, ``is_magic_wand_mode``, ``drawing``, ``update``,
-``setFocus``, ``geometry``, ``parentWidget``.
+``scale``, ``isEnabled``, ``is_loading``, ``is_brush_mode``,
+``is_magic_wand_mode``, ``drawing``, ``update``, ``setFocus``,
+``geometry``, ``parentWidget``, ``mapToGlobal``, ``mouseMoveEvent``
+(wrapped on the instance: upstream asks for the default cursor as soon
+as a move hits no shape, so the cross of the mode has to be put back
+after the original body), ``set_editing`` (wrapped on the instance: the
+one entry of every mode switch, and it emits no signal, so the tool has
+to leave the mode from there).
 
 Undo history lives in memory only, one list of steps per image, and is
 dropped when the folder changes, when another folder is opened, or at

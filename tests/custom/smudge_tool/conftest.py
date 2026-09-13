@@ -45,6 +45,13 @@ TRASH_DIRNAME = "dsh-trash"
 #: Size of the pixmap of the canvas used by the Qt tests.
 IMAGE_SIZE = (100, 80)
 
+#: Zoom of the scrolled canvas, large enough for the scroll bars to move.
+SCROLL_SCALE = 2.0
+
+#: Size of the scroll area holding the zoomed canvas.
+SCROLL_VIEW = (90, 70)
+
+
 def _stamp():
     "Return a unique, sortable timestamp."
 
@@ -178,6 +185,56 @@ def _image_bytes(path):
         return handle.read()
 
 
+def make_stand_in(board, host, filename, image_path, image_data):
+    "Build a stand in labeling widget around an already built canvas."
+
+    data = image_data
+    tools = QtWidgets.QToolBar("Tools", host)
+    status_bar = QtWidgets.QStatusBar(host)
+    processor = BrightnessContrastProcessor()
+    processor.update_image(img_data_to_pil(data))
+    widget = SimpleNamespace(
+        canvas=board,
+        tools=tools,
+        host=host,
+        filename=filename or image_path,
+        image_path=image_path,
+        image_data=data,
+        image=None,
+        dirty=False,
+        brightness_contrast_values={},
+        brightness_contrast_processor=processor,
+    )
+    widget.messages = []
+    widget.errors = []
+    widget.status = widget.messages.append
+    widget.repopulations = []
+
+    def error_message(title, message):
+        widget.errors.append((title, message))
+
+    def statusBar():
+        return status_bar
+
+    def import_image_folder(dirpath, pattern=None, load=True):
+        del dirpath, pattern, load
+        widget.folder_calls.append(1)
+        return None
+
+    def populate_mode_actions():
+        widget.repopulations.append(1)
+        tools.clear()
+        return None
+
+    widget.folder_calls = []
+    widget.error_message = error_message
+    widget.statusBar = statusBar
+    widget.import_image_folder = import_image_folder
+    widget.populate_mode_actions = populate_mode_actions
+    widget.status_bar = status_bar
+    return widget, tools, status_bar, processor
+
+
 @pytest.fixture
 def make_widget(qapp, st_canvas, st_png):
     "Build a stand in labeling widget carrying a real canvas."
@@ -187,52 +244,14 @@ def make_widget(qapp, st_canvas, st_png):
     def _make(image_path=st_png, filename=None, image_data=None):
         if image_data is None and os.path.isfile(image_path):
             image_data = _image_bytes(image_path)
-        data = image_data
-        board = st_canvas
-        host = board.parentWidget()
-        tools = QtWidgets.QToolBar("Tools", host)
-        status_bar = QtWidgets.QStatusBar(host)
-        processor = BrightnessContrastProcessor()
-        processor.update_image(img_data_to_pil(data))
-        widget = SimpleNamespace(
-            canvas=board,
-            tools=tools,
-            host=host,
-            filename=filename or image_path,
-            image_path=image_path,
-            image_data=data,
-            image=None,
-            dirty=False,
-            brightness_contrast_values={},
-            brightness_contrast_processor=processor,
+        entry = make_stand_in(
+            st_canvas,
+            st_canvas.parentWidget(),
+            filename,
+            image_path,
+            image_data,
         )
-        widget.messages = []
-        widget.errors = []
-        widget.status = widget.messages.append
-        widget.repopulations = []
-
-        def error_message(title, message):
-            widget.errors.append((title, message))
-
-        def statusBar():
-            return status_bar
-
-        def import_image_folder(dirpath, pattern=None, load=True):
-            del dirpath, pattern, load
-            widget.folder_calls.append(1)
-            return None
-
-        def populate_mode_actions():
-            widget.repopulations.append(1)
-            tools.clear()
-            return None
-
-        widget.folder_calls = []
-        widget.error_message = error_message
-        widget.statusBar = statusBar
-        widget.import_image_folder = import_image_folder
-        widget.populate_mode_actions = populate_mode_actions
-        widget.status_bar = status_bar
+        widget, tools, status_bar, processor = entry
         created.append((widget, tools, status_bar, processor))
         return widget
 
@@ -253,6 +272,63 @@ def st_tool(make_widget):
     widget = make_widget()
     controller = install_smudge_tool(widget)
     return SimpleNamespace(widget=widget, controller=controller)
+
+
+@pytest.fixture
+def st_scrolled_canvas(qapp, st_pixmap):
+    """A canvas inside a real scroll area, zoomed in so it can scroll.
+
+    The labeling widget puts its canvas in a ``QScrollArea``, so the
+    overlay of the smudge tool is a *sibling* of the canvas there. The
+    plain ``st_canvas`` fixture cannot build that layout: ``Canvas`` pops
+    its ``parent`` argument and never passes it to ``QWidget``, so the
+    canvas of the other fixtures stays a top level widget.
+    """
+    host = QtWidgets.QWidget()
+    scroll = QtWidgets.QScrollArea(host)
+    scroll.setWidgetResizable(True)
+    canvas = Canvas(parent=host)
+    canvas.pixmap = st_pixmap
+    canvas.scale = SCROLL_SCALE
+    canvas.setEnabled(True)
+    scroll.setWidget(canvas)
+    scroll.setGeometry(0, 0, SCROLL_VIEW[0], SCROLL_VIEW[1])
+    host.resize(140, 120)
+    host.show()
+    qapp.processEvents()
+    try:
+        yield SimpleNamespace(canvas=canvas, scroll=scroll, host=host)
+    finally:
+        host.close()
+        qapp.processEvents()
+
+
+@pytest.fixture
+def st_scrolled_tool(st_scrolled_canvas, st_png, qapp):
+    """The stand in widget of ``st_tool`` over the scrolled canvas.
+
+    The tool is installed *after* the canvas sits in the scroll area, on
+    purpose: the overlay takes its parent from the canvas when it is
+    created, and the labeling widget does the same at mount time.
+    """
+    canvas = st_scrolled_canvas.canvas
+    host = st_scrolled_canvas.host
+    entry = make_stand_in(canvas, host, None, st_png, _image_bytes(st_png))
+    widget, tools, status_bar, processor = entry
+    controller = install_smudge_tool(widget)
+    try:
+        yield SimpleNamespace(
+            widget=widget,
+            controller=controller,
+            canvas=canvas,
+            scroll=st_scrolled_canvas.scroll,
+        )
+    finally:
+        processor.clear_image()
+        tools.clear()
+        tools.setParent(None)
+        status_bar.setParent(None)
+        qapp.processEvents()
 
 
 def image_bytes(pil_image):

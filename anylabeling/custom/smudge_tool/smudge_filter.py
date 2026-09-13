@@ -17,7 +17,9 @@ Interaction, as approved in the plan:
 * the result is written over the original file, which is copied into
   ``%TEMP%/dsh-smudge/<timestamp>-<pid>`` before the very first write;
 * ``Ctrl+Z`` undoes one operation at a time, on screen and on disk, and
-  ``Esc`` cancels a drag, or leaves the mode when nothing is dragged.
+  ``Esc`` cancels a drag, or leaves the mode when nothing is dragged;
+* entering any drawing mode leaves the mode and gives the canvas back;
+  the tool leaves that mode itself when it can, and refuses otherwise.
 
 While the mode is off the event filter returns ``False`` for every event,
 so the behaviour of the window is exactly the one it had before.
@@ -56,6 +58,9 @@ SOURCE_COLOR = QtGui.QColor(0, 200, 0)
 #: Radius of the source point cross, in widget pixels.
 CROSS_RADIUS = 9.0
 
+#: Cursor of the mode: the cross of the rectangle drawing mode.
+MODE_CURSOR = QtCore.Qt.CursorShape.CrossCursor
+
 #: Undo steps kept for one image.
 MAX_FILE_STEPS = 20
 
@@ -87,6 +92,15 @@ class SmudgeOverlay(QtWidgets.QWidget):
     the canvas repaint that follows. Mouse clicks pass through, the
     widget only paints, and it follows the canvas geometry so that zooming
     and panning keep the marks in place.
+
+    The marks themselves are given in canvas pixels: :meth:`paintEvent`
+    translates the painter by :meth:`_canvas_origin`, the origin of the
+    canvas client area in the coordinates of this widget. Going through
+    the screen is the one formula that works for both layouts of the
+    overlay, a sibling of the canvas (the labeling widget builds it
+    inside a scroll area) and a child of it (a canvas without parent, as
+    in the unit tests), and it also stays right while the geometry is
+    stale, between a move of the canvas and the next :meth:`sync`.
     """
 
     def __init__(self, canvas):
@@ -110,10 +124,18 @@ class SmudgeOverlay(QtWidgets.QWidget):
             source: ``(x, y)`` in image coordinates, or ``None`` to clear
                 the marks.
             source_box: ``(x0, y0, x1, y1)`` of the window around the
-                source point, in image coordinates, or ``None``.
+                source point, in image coordinates, or ``None`` when
+                the size of the window is not known yet.
         """
         self._source = source
         self._source_box = source_box
+        if source is not None:
+            # The mark of a right click has to be on screen at once, on
+            # top of the canvas: the canvas can have been raised above
+            # this overlay by the upstream paint path, so the overlay
+            # raises itself here instead of waiting for a repaint it does
+            # not control.
+            self.raise_()
         self.update()
 
     def sync(self):
@@ -129,29 +151,51 @@ class SmudgeOverlay(QtWidgets.QWidget):
         self.raise_()
         self.update()
 
+    def _canvas_origin(self):
+        """Return the canvas origin, in the coordinates of this widget.
+
+        Going through the screen is what makes the two layouts of the
+        overlay work with a single formula: a sibling of the canvas
+        (the labeling widget builds it inside a scroll area) and a
+        child of it (a canvas without parent, as in the unit tests).
+        Reading the position now instead of the one of the last sync
+        also keeps a mark right while the geometry is stale, between
+        a move of the canvas and the next sync.
+        """
+        canvas = self._canvas
+        try:
+            corner = canvas.mapToGlobal(QtCore.QPoint(0, 0))
+            return QtCore.QPointF(self.mapFromGlobal(corner))
+        except (AttributeError, RuntimeError, TypeError):
+            # The canvas can be gone while this overlay still paints.
+            return QtCore.QPointF()
+
     def paintEvent(self, event):
-        """Paint the green cross and the source window, nothing else."""
+        """Paint the green cross, and the source window when it is known."""
         del event
         source = self._source
-        source_box = self._source_box
-        if source is None or source_box is None:
+        if source is None:
             return
+        source_box = self._source_box
         canvas = self._canvas
-        origin = QtCore.QPointF(canvas.geometry().topLeft())
         scale = float(getattr(canvas, "scale", 1.0) or 1.0)
-        rect = _source_window_rect(canvas, source_box, scale).translated(
-            -origin
-        )
         offset = canvas.offset_to_center()
         center = QtCore.QPointF(
-            (source[0] + offset.x()) * scale - origin.x(),
-            (source[1] + offset.y()) * scale - origin.y(),
+            (source[0] + offset.x()) * scale,
+            (source[1] + offset.y()) * scale,
         )
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         painter.setPen(QtGui.QPen(SOURCE_COLOR, 1.5))
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        painter.drawRect(rect)
+        # The marks below are given in canvas pixels, so the painter is
+        # the only place that has to know where the canvas is.
+        painter.translate(self._canvas_origin())
+        if source_box is not None:
+            # The size of the window is only known while a region is
+            # dragged or after a fill: a plain right click has none, and
+            # the cross alone is its mark.
+            painter.drawRect(_source_window_rect(canvas, source_box, scale))
         painter.drawLine(
             QtCore.QPointF(center.x() - CROSS_RADIUS, center.y()),
             QtCore.QPointF(center.x() + CROSS_RADIUS, center.y()),
@@ -254,6 +298,41 @@ class SmudgeController(QtCore.QObject):
         self._exit_mode()
         return True
 
+    def _leave_drawing_mode(self):
+        """Return the canvas to editing mode, or explain why it cannot.
+
+        A drawing mode and this mode cannot share the canvas: the filter
+        takes the left and the right button of every gesture, so a
+        drawing mode that stayed on would draw nothing at all, without
+        a word. The toolbar action of the editing mode is the safe way
+        back: it is the one the upstream widget offers, it keeps the
+        canvas and the toolbar bookkeeping in step, and it is disabled
+        while a shape is being drawn, which is exactly when the tool
+        must refuse instead of forcing. Upstream does not disable it
+        during an auto labeling session, and the action does clear the
+        marks of that session (``set_edit_mode`` calls
+        ``clear_auto_labeling_marks``), so that case is refused by the
+        explicit test on ``canvas.is_auto_labeling`` above instead.
+
+        Returns:
+            True when the canvas now edits instead of drawing.
+        """
+        canvas = self._canvas
+        widget = self._widget
+        if getattr(canvas, "current", None) is not None:
+            return False
+        if getattr(canvas, "is_auto_labeling", False):
+            return False
+        actions = getattr(widget, "actions", None)
+        action = None if actions is None else getattr(
+            actions, "edit_mode", None
+        )
+        if action is None or not action.isEnabled():
+            return False
+        action.trigger()
+        drawing = getattr(canvas, "drawing", None)
+        return not (callable(drawing) and drawing())
+
     def _enter_mode(self):
         """Switch the mode on, or explain why it cannot be entered."""
         canvas = self._canvas
@@ -262,6 +341,11 @@ class SmudgeController(QtCore.QObject):
         ):
             self._notify("请先退出画笔或魔法棒模式，再使用涂抹工具")
             return False
+        drawing = getattr(canvas, "drawing", None)
+        if callable(drawing) and drawing():
+            if not self._leave_drawing_mode():
+                self._notify("请先退出绘制模式，再使用涂抹工具")
+                return False
         target = self._target_file()
         if not target or not osp.isfile(target):
             self._notify("当前图像没有磁盘文件，无法涂抹修复")
@@ -273,7 +357,7 @@ class SmudgeController(QtCore.QObject):
             return False
         self._mode = True
         self._container_file(target)
-        canvas.override_cursor(QtCore.Qt.CursorShape.CrossCursor)
+        canvas.override_cursor(MODE_CURSOR)
         self._cursor_overridden = True
         canvas.setFocus()
         canvas.update()
@@ -503,18 +587,78 @@ class SmudgeController(QtCore.QObject):
         self._widget.import_image_folder = import_image_folder
         self._widget._smudge_import_wrapped = True
 
-    def _on_canvas_mode_changed(self):
-        """Leave the smudge mode when the user picks a drawing mode."""
-        if not self._mode or self._busy:
-            return
+    def _wrap_canvas_mouse_move(self):
+        """Keep the cross cursor of the mode on the canvas.
+
+        ``Canvas.mouseMoveEvent`` asks for the default cursor as soon as
+        no shape is under the pointer, so the cross set when the mode is
+        entered would live for a single move. The upstream method keeps
+        its whole body and it runs first: only a wrapper can put the
+        cross back after it, an event filter runs before it. Nothing is
+        touched while the mode is off, nor the wait cursor of a running
+        fill, nor the cursor of a canvas the mode cannot draw on.
+        """
         canvas = self._canvas
-        drawing = getattr(canvas, "drawing", None)
-        active = bool(
-            getattr(canvas, "is_brush_mode", False)
-            or getattr(canvas, "is_magic_wand_mode", False)
-            or (callable(drawing) and drawing())
-        )
-        if not active:
+        if canvas is None or getattr(
+            canvas, "_smudge_cursor_wrapped", False
+        ):
+            return
+        original = getattr(canvas, "mouseMoveEvent", None)
+        if not callable(original):
+            return
+
+        def mouse_move_event(event):
+            original(event)
+            if self._busy or not self._can_draw():
+                return
+            canvas.override_cursor(MODE_CURSOR)
+
+        canvas.mouseMoveEvent = mouse_move_event
+        canvas._smudge_cursor_wrapped = True
+
+    def _wrap_canvas_set_editing(self):
+        """Leave the mode whenever the canvas switches mode.
+
+        Every way into another mode goes through ``Canvas.set_editing``:
+        ``LabelingWidget.toggle_draw_mode`` calls it once, without a
+        condition, for the nine create actions, the digit shortcuts, the
+        brush polygon mode, the magic wand, the edit action and the
+        brush edit action, and the canvas calls it itself when an auto
+        labeling mode or the brush mode is entered. The signal
+        ``mode_changed`` is not usable here: it is the request of the
+        settings for the automatic switch back to editing mode, while
+        ``set_editing`` changes ``mode`` without emitting anything.
+
+        The upstream body stays whole and runs after the mode is left,
+        so the cursor of the tool is off the stack before upstream
+        installs its own, and the marks are gone when the new mode
+        paints. :meth:``_exit_mode`` clears ``_mode`` first, so a switch
+        taken from a slot of this exit is a no op.
+        """
+        canvas = self._canvas
+        if canvas is None or getattr(
+            canvas, "_smudge_set_editing_wrapped", False
+        ):
+            return
+        original = getattr(canvas, "set_editing", None)
+        if not callable(original):
+            return
+
+        def set_editing(value=True):
+            self._leave_for_canvas_mode()
+            return original(value)
+
+        canvas.set_editing = set_editing
+        canvas._smudge_set_editing_wrapped = True
+
+    def _leave_for_canvas_mode(self):
+        """Leave the mode, button and marks included.
+
+        A click on the button and a mode switch of the canvas have to
+        end in the same state, so both go through :meth:``set_mode``; the
+        button is unchecked first, the way the escape key does it.
+        """
+        if not self._mode or self._busy:
             return
         if self._action is not None:
             self._action.setChecked(False)
@@ -878,9 +1022,12 @@ class SmudgeController(QtCore.QObject):
             return self._filter_shortcut(event)
         if kind == QtCore.QEvent.Type.KeyPress:
             return self._filter_key(event)
+        # A Move event is what a scroll area sends when it scrolls the
+        # canvas, and a canvas that moved is not always painted again.
         if kind in (
             QtCore.QEvent.Type.Paint,
             QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.Move,
             QtCore.QEvent.Type.Wheel,
             QtCore.QEvent.Type.Scroll,
         ):
@@ -1054,9 +1201,8 @@ def install_smudge_tool(widget):
     canvas.installEventFilter(controller)
     controller._wrap_populate_mode_actions()
     controller._wrap_import_image_folder()
+    controller._wrap_canvas_mouse_move()
+    controller._wrap_canvas_set_editing()
     controller._install_action()
-    mode_changed = getattr(canvas, "mode_changed", None)
-    if mode_changed is not None:
-        mode_changed.connect(controller._on_canvas_mode_changed)
     widget._smudge_controller = controller
     return controller

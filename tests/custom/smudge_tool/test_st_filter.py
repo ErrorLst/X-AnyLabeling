@@ -1,6 +1,7 @@
 """Tests of the Qt layer: button, event filter, overlay and undo."""
 
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import PIL.Image
@@ -41,6 +42,41 @@ def _fill(canvas, source, start, end):
 
     press(canvas, source, QtCore.Qt.MouseButton.RightButton)
     drag(canvas, start, end)
+
+
+def _is_mark(color):
+    "Return True for a pixel painted with the green of the source mark."
+
+    green = color.green()
+    if green <= 120:
+        return False
+    return green > 2 * color.red() and green > 2 * color.blue()
+
+
+def _mark_points(widget):
+    "Return the pixels of a rendered widget that carry the source mark."
+
+    image = widget.grab().toImage()
+    found = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            if _is_mark(image.pixelColor(x, y)):
+                found.append((x, y))
+    return found
+
+
+def _override_shape():
+    "Return the shape of the application override cursor, or None."
+
+    cursor = QtWidgets.QApplication.overrideCursor()
+    return None if cursor is None else cursor.shape()
+
+
+def _drop_override_cursors():
+    "Drop whatever a previous test left on the override cursor stack."
+
+    while QtWidgets.QApplication.overrideCursor() is not None:
+        QtWidgets.QApplication.restoreOverrideCursor()
 
 
 def _third_png(st_scratch, st_image, name="other.png"):
@@ -598,3 +634,342 @@ def test_the_drag_preview_is_a_shown_widget(st_tool):
     assert controller._rubber.isVisibleTo(controller._rubber.parentWidget())
     release(canvas, (40.0, 30.0))
     assert controller._rubber.isHidden() is True
+
+
+def test_a_right_click_paints_the_source_mark_at_once(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    overlay = controller._overlay
+    controller._action.trigger()
+    assert overlay.isVisibleTo(overlay.parentWidget()) is True
+    # The overlay has no source yet: it paints nothing at all.
+    assert _mark_points(overlay) == []
+    # The overlay is a child of the canvas here, so a grab of the canvas
+    # is the composite the user looks at. The fixture is one image pixel
+    # per widget pixel, so the cross has to sit on the point clicked.
+    before = len(_mark_points(canvas))
+    press(canvas, (20.0, 30.0), QtCore.Qt.MouseButton.RightButton)
+    assert controller._source == (20.0, 30.0)
+    assert controller._source_box is None
+    assert overlay._source_box is None
+    points = _mark_points(overlay)
+    assert points
+    origin = canvas.geometry().topLeft()
+    assert canvas.offset_to_center().isNull()
+    mean_x = sum(x for x, _y in points) / len(points)
+    mean_y = sum(y for _x, y in points) / len(points)
+    assert mean_x == pytest.approx(20.0 - origin.x(), abs=3.0)
+    assert mean_y == pytest.approx(30.0 - origin.y(), abs=3.0)
+    composite = _mark_points(canvas)
+    assert len(composite) > before
+    assert (20, 30) in composite
+
+
+def test_the_source_window_is_painted_once_it_is_known(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    overlay = controller._overlay
+    controller._action.trigger()
+    press(canvas, (60.0, 60.0), QtCore.Qt.MouseButton.RightButton)
+    cross_only = len(_mark_points(overlay))
+    assert cross_only > 0
+    drag(canvas, (10.0, 10.0), (50.0, 40.0))
+    assert controller._source_box is not None
+    assert overlay._source_box == controller._source_box
+    assert len(_mark_points(overlay)) > cross_only
+
+
+def test_a_small_drag_fills_the_region_and_writes_the_file(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    was = np.array(PIL.Image.open(widget.image_path))
+    controller._action.trigger()
+    press(canvas, (85.0, 70.0), QtCore.Qt.MouseButton.RightButton)
+    drag(canvas, (10.0, 10.0), (20.0, 20.0))
+    is_now = np.array(PIL.Image.open(widget.image_path))
+    roi = (10, 10, 20, 20)
+    outside = np.ones(is_now.shape[:2], bool)
+    outside[roi[1] : roi[3], roi[0] : roi[2]] = False
+    assert np.array_equal(is_now[outside], was[outside])
+    assert not np.array_equal(
+        is_now[roi[1] : roi[3], roi[0] : roi[2]],
+        was[roi[1] : roi[3], roi[0] : roi[2]],
+    )
+    assert not any("未发生变化" in message for message in widget.messages)
+    assert any("已完成涂抹修复" in message for message in widget.messages)
+    assert controller._history[widget.image_path]
+    assert _same_image(canvas.pixmap, widget.image_path)
+    shape = (canvas.pixmap.height(), canvas.pixmap.width())
+    window = operations.source_window((85.0, 70.0), (10, 10), shape)
+    assert window == (80, 65, 90, 75)
+    # The window is as large as the region, so the aligned patch is the
+    # window itself: the region holds the texture of the source point.
+    assert np.array_equal(is_now[10:20, 10:20], was[65:75, 80:90])
+
+
+def test_a_small_box_over_the_source_window_reports_it(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    before = _bytes(widget.image_path)
+    controller._action.trigger()
+    # The source point is the middle of the box, so the window is the box
+    # itself: the aligned patch would be the region, which is refused.
+    _fill(canvas, (15.0, 15.0), (10.0, 10.0), (20.0, 20.0))
+    assert any("未发生变化" in message for message in widget.messages)
+    assert _bytes(widget.image_path) == before
+    assert controller._history == {}
+    assert controller._backups == {}
+
+def test_a_plain_move_keeps_the_cross_of_the_mode(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    _drop_override_cursors()
+    controller._action.trigger()
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+    move(canvas, (50.0, 40.0))
+    # The upstream move asks for the default cursor as soon as no shape
+    # is under the pointer: the cross of the mode has to survive it.
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+
+
+def test_leaving_the_mode_gives_the_cursor_back(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    _drop_override_cursors()
+    controller._action.trigger()
+    move(canvas, (50.0, 40.0))
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+    assert controller.set_mode(False) is True
+    assert _override_shape() is None
+
+
+def test_a_create_mode_takes_the_mode_down(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    overlay = controller._overlay
+    _drop_override_cursors()
+    controller._action.trigger()
+    press(canvas, (60.0, 60.0), QtCore.Qt.MouseButton.RightButton)
+    press(canvas, (10.0, 10.0))
+    move(canvas, (40.0, 30.0))
+    assert controller._source is not None
+    assert controller._drag_start is not None
+    # Picking one of the nine create actions goes through the canvas.
+    canvas.set_editing(False)
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert _override_shape() is None
+    assert controller._source is None
+    assert controller._source_box is None
+    assert controller._drag_start is None
+    assert controller._rubber.isHidden() is True
+    assert overlay._source is None
+    assert overlay.isVisibleTo(overlay.parentWidget()) is False
+
+
+def test_going_back_to_editing_takes_the_mode_down(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    _drop_override_cursors()
+    controller._action.trigger()
+    _fill(canvas, (60.0, 60.0), (10.0, 10.0), (50.0, 40.0))
+    label = controller._status_label
+    assert _visible_to_its_owner(label) is True
+    # The edit action of the toolbar calls the canvas the same way.
+    canvas.set_editing(True)
+    assert canvas.editing() is True
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert _override_shape() is None
+    assert _visible_to_its_owner(label) is False
+    assert controller._history[widget.image_path]
+
+
+def test_one_install_wraps_the_mode_switch_once(make_widget):
+    widget = make_widget()
+    controller = smudge_filter.install_smudge_tool(widget)
+    assert smudge_filter.install_smudge_tool(widget) is controller
+    calls = []
+    controller._leave_for_canvas_mode = lambda: calls.append(1)
+    widget.canvas.set_editing(False)
+    widget.canvas.set_editing(True)
+    # A second wrapper would walk the exit twice.
+    assert calls == [1, 1]
+
+
+def test_a_create_mode_refuses_the_entry(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    overlay = controller._overlay
+    _drop_override_cursors()
+    canvas.set_editing(False)
+    canvas.create_mode = "rectangle"
+    controller._action.trigger()
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert any("绘制模式" in message for message in st_tool.widget.messages)
+    assert _override_shape() is None
+    assert overlay.isVisibleTo(overlay.parentWidget()) is False
+
+
+def test_a_drawing_mode_is_left_before_the_entry(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    _drop_override_cursors()
+    calls = []
+
+    class _Edit:
+        "The upstream editing action, as far as the tool uses it."
+
+        def isEnabled(self):
+            return True
+
+        def trigger(self):
+            calls.append(1)
+            canvas.set_editing(True)
+
+    widget.actions = SimpleNamespace(edit_mode=_Edit())
+    canvas.set_editing(False)
+    canvas.create_mode = "rectangle"
+    assert canvas.drawing() is True
+    controller._action.trigger()
+    assert calls == [1]
+    assert canvas.drawing() is False
+    assert controller._is_active() is True
+    assert controller._action.isChecked() is True
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+
+
+def test_a_half_drawn_shape_refuses_the_entry(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    _drop_override_cursors()
+    calls = []
+
+    class _Edit:
+        def isEnabled(self):
+            return True
+
+        def trigger(self):
+            calls.append(1)
+
+    widget.actions = SimpleNamespace(edit_mode=_Edit())
+    canvas.set_editing(False)
+    canvas.create_mode = "rectangle"
+    canvas.current = "shape in progress"
+    controller._action.trigger()
+    assert calls == []
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert any("绘制模式" in message for message in widget.messages)
+
+
+def test_an_auto_labeling_session_refuses_the_entry(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    _drop_override_cursors()
+    calls = []
+
+    class _Edit:
+        def isEnabled(self):
+            return True
+
+        def trigger(self):
+            calls.append(1)
+            canvas.set_editing(True)
+
+    widget.actions = SimpleNamespace(edit_mode=_Edit())
+    canvas.set_editing(False)
+    canvas.create_mode = "rectangle"
+    canvas.is_auto_labeling = True
+    controller._action.trigger()
+    assert calls == []
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert any("绘制模式" in message for message in widget.messages)
+
+
+def test_a_drawing_mode_gives_the_gestures_back(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    controller._action.trigger()
+    # Leaving the mode has to free the event filter as well: a left
+    # press inside the image starts the rectangle of the create mode.
+    canvas.set_editing(False)
+    canvas.create_mode = "rectangle"
+    press(canvas, (10.0, 10.0))
+    assert canvas.current is not None
+    assert canvas.current.shape_type == "rectangle"
+
+
+def test_a_brush_or_magic_wand_mode_refuses_the_entry(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    canvas.is_brush_mode = True
+    controller._action.trigger()
+    assert controller._is_active() is False
+    assert any("画笔" in message for message in widget.messages)
+    canvas.is_brush_mode = False
+    canvas.set_magic_wand_mode(True)
+    controller._action.trigger()
+    assert controller._is_active() is False
+    assert controller._action.isChecked() is False
+    assert any("魔法棒" in message for message in widget.messages)
+
+
+def test_a_move_of_the_canvas_keeps_the_overlay_on_it(st_scrolled_tool):
+    controller = st_scrolled_tool.controller
+    canvas = st_scrolled_tool.canvas
+    overlay = controller._overlay
+    controller._action.trigger()
+    press(canvas, (20.0, 30.0), QtCore.Qt.MouseButton.RightButton)
+    assert controller._source is not None
+    canvas.move(-20, -15)
+    # The move is sent explicitly: a scroll area delivers one when it
+    # scrolls the canvas, and the overlay has to follow it even when no
+    # paint event follows.
+    QtWidgets.QApplication.sendEvent(
+        canvas, QtGui.QMoveEvent(canvas.pos(), QtCore.QPoint(0, 0))
+    )
+    assert overlay.geometry() == canvas.geometry()
+    assert overlay.pos() == canvas.pos()
+
+
+def test_the_source_mark_lands_on_the_click_after_scrolling(
+    st_scrolled_tool, qapp
+):
+    controller = st_scrolled_tool.controller
+    canvas = st_scrolled_tool.canvas
+    scroll = st_scrolled_tool.scroll
+    overlay = controller._overlay
+    controller._action.trigger()
+    # The overlay of this layout is a sibling of the canvas, built
+    # inside the viewport of the scroll area, exactly like the one the
+    # labeling widget builds at mount time.
+    assert overlay.parentWidget() is canvas.parentWidget()
+    horizontal = scroll.horizontalScrollBar()
+    vertical = scroll.verticalScrollBar()
+    assert horizontal.maximum() > 0 and vertical.maximum() > 0
+    horizontal.setValue(horizontal.maximum() * 3 // 5)
+    vertical.setValue(vertical.maximum() * 2 // 5)
+    qapp.processEvents()
+    assert canvas.pos().x() < 0 and canvas.pos().y() < 0
+    assert overlay.geometry() == canvas.geometry()
+    press(canvas, (100.0, 80.0), QtCore.Qt.MouseButton.RightButton)
+    assert controller._source == (50.0, 40.0)
+    points = _mark_points(overlay)
+    assert points
+    mean_x = sum(x for x, _y in points) / len(points)
+    mean_y = sum(y for _x, y in points) / len(points)
+    mark = overlay.mapToGlobal(QtCore.QPoint(round(mean_x), round(mean_y)))
+    clicked = canvas.mapToGlobal(QtCore.QPoint(100, 80))
+    assert mark.x() == pytest.approx(clicked.x(), abs=3.0)
+    assert mark.y() == pytest.approx(clicked.y(), abs=3.0)
+

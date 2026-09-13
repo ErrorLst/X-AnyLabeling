@@ -42,6 +42,20 @@ def _outside_mask(shape, box):
     return mask
 
 
+def _fill_state(image, window, margin=8, patch=24):
+    "Return the shared state of a fill, like fill_roi builds it."
+
+    x0, y0, x1, y1 = window
+    return {
+        "work": image,
+        "srcwin": image[y0:y1, x0:x1],
+        "src_origin": (x0, y0),
+        "alpha": tf.feather_alpha(patch, patch, tf.RAMP),
+        "margin": margin,
+        "weight_known": tf.WEIGHT_KNOWN,
+    }
+
+
 def test_feather_alpha_is_a_raised_cosine():
     alpha = tf.feather_alpha(24, 24, 6)
     assert alpha.shape == (24, 24, 1)
@@ -259,3 +273,122 @@ def test_candidate_positions_are_ordered_outside_in():
     ]
     assert keys == sorted(keys)
     assert len(positions) == 16
+
+
+@pytest.mark.parametrize(
+    "size", [(6, 6), (9, 12), (10, 10), (17, 17), (6, 17), (17, 6)]
+)
+def test_a_region_below_one_block_becomes_the_source_window(size):
+    "A region smaller than a block is covered by the aligned window."
+
+    width, height = size
+    box = (20, 20, 20 + width, 20 + height)
+    window = (20, 100, 20 + width, 100 + height)
+    image = _defect(_texture(), box)
+    out = tf.fill_roi(image, box, window)
+    assert out.shape == image.shape
+    assert out.dtype == image.dtype
+    mask = _outside_mask(image.shape, box)
+    assert np.array_equal(out[mask], image[mask])
+    # The window has the size of the region, so the aligned patch is the
+    # whole window: the region holds exactly those pixels instead of the
+    # defect that was painted into it.
+    assert np.array_equal(
+        out[box[1] : box[3], box[0] : box[2]],
+        image[window[1] : window[3], window[0] : window[2]],
+    )
+    assert not np.array_equal(
+        out[box[1] : box[3], box[0] : box[2]],
+        image[box[1] : box[3], box[0] : box[2]],
+    )
+
+
+@pytest.mark.parametrize(
+    "size", [(18, 18), (20, 20), (24, 24), (10, 30), (40, 40)]
+)
+def test_a_small_region_is_repaired_without_touching_the_outside(size):
+    "A region around one block is repaired from edge to edge."
+
+    width, height = size
+    box = (20, 20, 20 + width, 20 + height)
+    window = (20, 100, 20 + width, 100 + height)
+    image = _defect(_texture(), box)
+    out = tf.fill_roi(image, box, window)
+    mask = _outside_mask(image.shape, box)
+    assert np.array_equal(out[mask], image[mask])
+    assert not np.array_equal(
+        out[box[1] : box[3], box[0] : box[2]],
+        image[box[1] : box[3], box[0] : box[2]],
+    )
+
+
+def test_a_region_over_its_own_window_is_left_alone():
+    "A window equal to the region cannot be copied onto itself."
+
+    image = _defect(_texture(), (30, 30, 50, 50))
+    box = (30, 30, 50, 50)
+    assert np.array_equal(tf.fill_roi(image, box, box), image)
+    # A region smaller than one block has an aligned patch as well, and
+    # that patch is the region itself: it is refused too.
+    small = (20, 20, 30, 30)
+    defect = _defect(_texture(), small)
+    assert np.array_equal(tf.fill_roi(defect, small, small), defect)
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        (65, 40, 75, 50),
+        (55, 40, 65, 50),
+        (60, 45, 70, 55),
+        (60, 35, 70, 45),
+    ],
+)
+def test_a_window_that_overlaps_the_region_is_refused(window):
+    "A window that touches the region is never copied into it."
+
+    box = (60, 40, 70, 50)
+    image = _defect(_texture(), box)
+    assert np.array_equal(tf.fill_roi(image, box, window), image)
+
+
+def test_cover_block_writes_the_aligned_texture_and_marks_it_known():
+    "The aligned patch is written and recorded as final texture."
+
+    image = _texture().astype(np.float32)
+    window = (100, 60, 106, 66)
+    state = _fill_state(image, window)
+    filled = np.ones(image.shape[:2], bool)
+    filled[0:6, 0:6] = False
+    assert tf._cover_block(state, filled, (0, 0), (0, 0, 6, 6), 24) is True
+    assert np.array_equal(state["work"][0:6, 0:6], image[60:66, 100:106])
+    assert filled[0:6, 0:6].all()
+
+
+def test_cover_block_refuses_the_region_and_a_window_that_is_too_small():
+    "A self copy and a window that cannot hold the block are refused."
+
+    image = _texture().astype(np.float32)
+    filled = np.ones(image.shape[:2], bool)
+    filled[30:50, 30:50] = False
+    before = filled.copy()
+    state = _fill_state(image, (30, 30, 50, 50))
+    assert (
+        tf._cover_block(state, filled, (30, 30), (30, 30, 50, 50), 24)
+        is False
+    )
+    assert np.array_equal(filled, before)
+    small = _fill_state(image, (100, 100, 103, 103))
+    assert tf._cover_block(small, filled, (0, 0), (0, 0, 6, 6), 24) is False
+    assert np.array_equal(filled, before)
+
+
+def test_a_small_region_without_a_source_window_is_matched_globally():
+    "Without a source window the plain matching still does the work."
+
+    box = (20, 20, 30, 30)
+    image = _defect(_texture(), box)
+    out = tf.fill_roi(image, box, None)
+    mask = _outside_mask(image.shape, box)
+    assert np.array_equal(out[mask], image[mask])
+    assert not np.array_equal(out[20:30, 20:30], image[20:30, 20:30])

@@ -10,9 +10,13 @@ The port keeps the numerical behaviour of the experiment line by line:
 the onion peel order of the candidate blocks, the source window
 restriction, the raised cosine feathering, the exclusion of the
 candidates that overlap the region of interest and the ``np.where``
-blending. Only two generalisations were added, and neither of them can
+blending. Three deviations are deliberate, and only the first one can
 change a value:
 
+* aligned patch: a block whose matching window holds almost no known
+  pixel is not matched but covered by the texture of the source window
+  at the offset the block has inside the region, which repairs a region
+  smaller than one block, and only such a region;
 * channels: the experiment always used three channel BGR images, here
   the channel count is ``1`` for a two dimensional array and
   ``image.shape[2]`` otherwise, and a channel is addressed with
@@ -48,7 +52,8 @@ WEIGHT_KNOWN = 2.0
 #: A block has to be at least this many pixels wide and tall.
 MIN_SIDE = 6
 
-#: A block whose weighted window sums below this is skipped.
+#: A block whose weighted window sums below this is not matched: it is
+#: covered by the aligned texture of the source window.
 MIN_WEIGHT = 20.0
 
 
@@ -141,9 +146,13 @@ def fill_roi(
     inside ``source_window`` with the weighted sum of squared
     differences, where a pixel that is already known outweighs a pixel
     that is still to be filled, and the texture found is blended into
-    the block with the raised cosine feather. A candidate that overlaps
-    the region itself is excluded, so the region is never copied onto
-    itself.
+    the block with the raised cosine feather. A block that still has no
+    known pixel to match is covered by the texture of the source window
+    at the place that has the same offset inside the window as the block
+    has inside the region, which repairs a region smaller than one
+    block; without a ``source_window`` such a block is left untouched. A
+    candidate that overlaps the region itself is excluded, so the region
+    is never copied onto itself.
 
     Args:
         image: The image to take the texture from, ``uint8`` or
@@ -211,6 +220,10 @@ def _candidate_positions(x0, y0, x1, y1, patch, step):
 def _fill_block(state, filled, origin, roi, patch):
     """Match and blend the texture of one block of the region.
 
+    A block whose matching window holds almost no known pixel is not
+    matched but covered by the aligned texture of the source window, see
+    :func:`_cover_block`.
+
     Args:
         state: The shared inputs of the fill.
         filled: The map of the pixels that already hold final texture.
@@ -240,6 +253,13 @@ def _fill_block(state, filled, origin, roi, patch):
     ].astype(np.float32)
     weight[filled[my0:my1, mx0:mx1] & (weight == 0)] = state["weight_known"]
     if weight.sum() < MIN_WEIGHT:
+        # Almost no pixel of the window is known yet: the weighted cost
+        # would be flat and its minimum would sit in the corner of the
+        # search area, so the block cannot be matched. Skipping it here
+        # is what used to leave a region smaller than one block wholly
+        # untouched; the aligned texture of the source window repairs it
+        # instead, because that is the texture the user picked.
+        _cover_block(state, filled, origin, roi, patch)
         return
     target = work[my0:my1, mx0:mx1]
     in_source = srcwin is not None and _fits(srcwin, weight)
@@ -259,6 +279,52 @@ def _fill_block(state, filled, origin, roi, patch):
     sy = int(np.clip(sy, 0, height - bh))
     sx = int(np.clip(sx, 0, width - bw))
     _blend_block(state, filled, (by, bx, bey, bex, bh, bw), (sy, sx))
+
+
+def _cover_block(state, filled, origin, roi, patch):
+    """Cover one block with the aligned texture of the source window.
+
+    A block whose matching window holds almost no known pixel - a region
+    smaller than one block has no other block to learn from - cannot be
+    matched, and leaving it out would keep the defect of the region in
+    place. The block is then taken from the place of the source window
+    that has the same offset inside the window as the block has inside
+    the region: the window is as large as the region, so for a region
+    smaller than one block this is the region sized texture around the
+    source point, which is what the tool promises the user.
+
+    Two cases are refused, and the block keeps its pixels, the way a
+    block whose every candidate was refused does: a window so small, or
+    so far outside the image, that it cannot hold the aligned block, and
+    an aligned block that lands on the region itself, because the region
+    is never copied onto itself.
+
+    Args:
+        state: The shared inputs of the fill.
+        filled: The map of the pixels that already hold final texture.
+        origin: ``(by, bx)`` origin of the block.
+        roi: ``(x0, y0, x1, y1)`` region being filled.
+        patch: Side of one block, in pixels.
+
+    Returns:
+        ``True`` when the block was written.
+    """
+    srcwin = state["srcwin"]
+    if srcwin is None:
+        return False
+    by, bx = origin
+    x0, y0, x1, y1 = roi
+    bey, bex = min(by + patch, y1), min(bx + patch, x1)
+    bh, bw = bey - by, bex - bx
+    off_y, off_x = by - y0, bx - x0
+    if off_y + bh > srcwin.shape[0] or off_x + bw > srcwin.shape[1]:
+        return False
+    sx0, sy0 = state["src_origin"]
+    sy, sx = sy0 + off_y, sx0 + off_x
+    if sy < y1 and sy + bh > y0 and sx < x1 and sx + bw > x0:
+        return False
+    _blend_block(state, filled, (by, bx, bey, bex, bh, bw), (sy, sx))
+    return True
 
 
 def _squared_channel_sum(array):
