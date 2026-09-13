@@ -7,6 +7,7 @@
     "anchor = 该行行内代码原文；matcher=line 表示 strip 后全等，startswith 表示 strip 后前缀匹配；挂载点锚点必须恰好命中 1 行。",
     "mounts[].line 只是快照：漂移只告警（WARN），锚点命中才算数；同步上游后请更新它消除告警。",
     "soft_mounts 是实例级（运行时）包装，不出现在上游文件 diff 中，上游同步时必须单独核对；它不是每个功能都有，空数组 [] 表示该功能没有实例级包装（自检允许为空）。",
+    "同节的 soft_mounts_prefix 只在多条软挂载共用同一目录时出现：install_site 的路径前缀由它写一次，条目里只留 文件名:行号。",
     "upstream 的键是 <文件>:<类> 或 <文件>:@module；成员为字符串（按 AST 在类/模块作用域内查找）或 {name,anchor,matcher}（AST 查不到时用文本锚点）；成员数组为 [] 表示该类本身即依赖。",
     "行为级契约、transitive/wrapped/mirrored 分类与已知坑不在本文件，见 docs/custom/FEATURES.md；本文件只放可被脚本判定的硬数据。"
   ],
@@ -101,15 +102,16 @@
       ],
       "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v",
       "mounts": [
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 42, "anchor": "from anylabeling.custom.smudge_tool import install_smudge_tool", "matcher": "line", "form": "import", "owner": "<module>"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2622, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 43, "anchor": "from anylabeling.custom.smudge_tool import install_smudge_tool", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2630, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
       ],
+      "soft_mounts_prefix": "anylabeling/custom/smudge_tool/",
       "soft_mounts": [
-        {"target": "LabelingWidget.populate_mode_actions", "wrapped_by": "_wrap_populate_mode_actions", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:566"},
-        {"target": "LabelingWidget.import_image_folder", "wrapped_by": "_wrap_import_image_folder", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:587"},
-        {"target": "Canvas.mouseMoveEvent", "wrapped_by": "_wrap_canvas_mouse_move", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:616"},
-        {"target": "Canvas.set_editing", "wrapped_by": "_wrap_canvas_set_editing", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:651"},
-        {"target": "Canvas 事件过滤器", "wrapped_by": "SmudgeController", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:1201"}
+        {"target": "LabelingWidget.populate_mode_actions", "wrapped_by": "_wrap_populate_mode_actions", "install_site": "smudge_filter.py:567"},
+        {"target": "LabelingWidget.import_image_folder", "wrapped_by": "_wrap_import_image_folder", "install_site": "smudge_filter.py:588"},
+        {"target": "Canvas.mouseMoveEvent", "wrapped_by": "_wrap_canvas_mouse_move", "install_site": "smudge_filter.py:617"},
+        {"target": "Canvas.set_editing", "wrapped_by": "_wrap_canvas_set_editing", "install_site": "smudge_filter.py:652"},
+        {"target": "Canvas 事件过滤器", "wrapped_by": "SmudgeController", "install_site": "smudge_filter.py:1210"}
       ],
       "upstream": {
         "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["canvas", "tools", "actions", "populate_mode_actions", "import_image_folder", "filename", "image_path", "image_data", "brightness_contrast_processor", "brightness_contrast_values", "status", "statusBar", "error_message"],

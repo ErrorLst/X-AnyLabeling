@@ -25,7 +25,7 @@ def test_read_image_returns_an_independent_array(st_scratch):
     path = os.path.join(st_scratch, "plain.png")
     image = _rgb()
     PIL.Image.fromarray(image, "RGB").save(path)
-    array, image_format, mode = operations.read_image(path)
+    array, image_format, mode, _info = operations.read_image(path)
     assert image_format == "PNG"
     assert mode == "RGB"
     assert np.array_equal(array, image)
@@ -37,7 +37,7 @@ def test_read_image_keeps_sixteen_bit_grayscale(st_scratch):
     path = os.path.join(st_scratch, "gray16.png")
     data = (np.indices((20, 30)).sum(axis=0) * 900).astype(np.uint16)
     PIL.Image.fromarray(data, "I;16").save(path)
-    array, _format, mode = operations.read_image(path)
+    array, _format, mode, _info = operations.read_image(path)
     assert mode in operations.SUPPORTED_MODES
     assert array.dtype == np.uint16
     assert np.array_equal(array, data)
@@ -69,7 +69,7 @@ def test_write_image_round_trips_every_supported_mode(st_scratch):
     for mode, array in cases.items():
         path = os.path.join(st_scratch, mode.replace(";", "_") + ".png")
         operations.write_image(array, path, "PNG")
-        back, _format, read_mode = operations.read_image(path)
+        back, _format, read_mode, _info = operations.read_image(path)
         assert np.array_equal(back, array), mode
         assert read_mode != ""
 
@@ -78,12 +78,12 @@ def test_write_image_writes_sixteen_bit_input_as_i16(st_scratch):
     path = os.path.join(st_scratch, "i16b.png")
     big_endian = (np.indices((16, 16)).sum(axis=0) * 5).astype(">u2")
     PIL.Image.fromarray(big_endian, "I;16B").save(path)
-    array, image_format, _mode = operations.read_image(path)
+    array, image_format, _mode, _info = operations.read_image(path)
     assert array.dtype == np.uint16
     operations.write_image(array, path, image_format)
     with PIL.Image.open(path) as written:
         assert written.mode == operations.WRITE_16BIT_MODE
-    back, _format, _mode = operations.read_image(path)
+    back, _format, _mode, _info = operations.read_image(path)
     assert np.array_equal(back, array)
 
 
@@ -217,10 +217,10 @@ def test_write_image_keeps_a_big_endian_array(st_scratch):
     path = os.path.join(st_scratch, "i16b.tif")
     values = (np.indices((16, 16)).sum(axis=0) * 5).astype(">u2")
     PIL.Image.fromarray(values, "I;16B").save(path)
-    array, image_format, _mode = operations.read_image(path)
+    array, image_format, _mode, _info = operations.read_image(path)
     # Pillow hands a big endian TIFF over as ">u2": comparing the
     # dtype with np.uint16 used to refuse it only at write time.
     assert array.dtype == np.dtype(">u2")
     operations.write_image(array, path, image_format)
-    back, _format, _mode = operations.read_image(path)
+    back, _format, _mode, _info = operations.read_image(path)
     assert np.array_equal(back.astype(np.uint16), values.astype(np.uint16))

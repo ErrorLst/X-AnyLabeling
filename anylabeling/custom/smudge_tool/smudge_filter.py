@@ -240,6 +240,7 @@ class SmudgeController(QtCore.QObject):
         self._work = None
         self._work_file = None
         self._work_format = None
+        self._work_info = None
         self._work_signature = None
         self._status_label = None
         self._cursor_overridden = False
@@ -772,7 +773,7 @@ class SmudgeController(QtCore.QObject):
             QtCore.Qt.CursorShape.WaitCursor
         )
         try:
-            work, image_format = self._read_work(target)
+            work, image_format, work_info = self._read_work(target)
             operations.validate_roi(roi, work.shape)
             before = np.array(
                 work[roi[1] : roi[3], roi[0] : roi[2]], copy=True
@@ -792,7 +793,7 @@ class SmudgeController(QtCore.QObject):
                     "重叠，或两者纹理相同）"
                 )
                 return
-            self._write(result, target, image_format)
+            self._write(result, target, image_format, work_info)
             self._work = result
             self._work_file = target
             self._work_format = image_format
@@ -823,12 +824,12 @@ class SmudgeController(QtCore.QObject):
             QtCore.Qt.CursorShape.WaitCursor
         )
         try:
-            work, image_format = self._read_work(path)
+            work, image_format, work_info = self._read_work(path)
             height, width = before.shape[:2]
             if roi[3] - roi[1] != height or roi[2] - roi[0] != width:
                 raise operations.SmudgeError("撤销记录与当前图像不一致")
             work[roi[1] : roi[3], roi[0] : roi[2]] = before
-            self._write(work, path, image_format)
+            self._write(work, path, image_format, work_info)
             self._work = work
             self._work_file = path
             self._work_format = image_format
@@ -859,15 +860,19 @@ class SmudgeController(QtCore.QObject):
             self._overlay.set_source(self._source, window)
         return window
 
-    def _write(self, array, path, image_format):
-        """Write an array back over the file, after backing it up once."""
+    def _write(self, array, path, image_format, info):
+        """Write an array back over the file, after backing it up once.
+
+        ``info`` carries the encoder parameters of the original file, so
+        a JPEG is not re-encoded at the Pillow defaults on every write.
+        """
         if path not in self._backups:
             if self._backup_dir is None:
                 self._backup_dir = operations.default_backup_dir()
             self._backups[path] = operations.backup_original(
                 path, self._backup_dir
             )
-        operations.write_image(array, path, image_format)
+        operations.write_image(array, path, image_format, info)
 
     def _fail(self, message):
         """Roll the screen back to the file on disk and report the error."""
@@ -1114,6 +1119,8 @@ class SmudgeController(QtCore.QObject):
         The array is cached, together with the size and the modification
         time of the file, so a run of operations on one image reads it
         once while an image changed by another program is read again.
+        The encoder parameters of the file are cached with it and travel
+        back to the disk on every write.
         """
         signature = self._file_signature(path)
         if (
@@ -1121,13 +1128,14 @@ class SmudgeController(QtCore.QObject):
             and self._work_file == path
             and self._work_signature == signature
         ):
-            return self._work, self._work_format
-        array, image_format, _ = operations.read_image(path)
+            return self._work, self._work_format, self._work_info
+        array, image_format, _mode, info = operations.read_image(path)
         self._work = array
         self._work_file = path
         self._work_format = image_format
+        self._work_info = info
         self._work_signature = signature
-        return array, image_format
+        return array, image_format, info
 
     def _file_signature(self, path):
         """Return a cheap identity of a file, or ``None`` when it is gone."""
@@ -1142,6 +1150,7 @@ class SmudgeController(QtCore.QObject):
         self._work = None
         self._work_file = None
         self._work_format = None
+        self._work_info = None
         self._work_signature = None
 
 

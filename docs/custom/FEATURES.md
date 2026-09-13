@@ -233,9 +233,10 @@
 
 ### 代码与体量
 
-`anylabeling/custom/smudge_tool/`（4 个文件 1945 行：`texture_fill.py` 算法、
+`anylabeling/custom/smudge_tool/`（4 个文件 2160 行：`texture_fill.py` 算法、
 `operations.py` 读写/备份/几何、`smudge_filter.py` Qt 层、`__init__.py` 导出）；
-测试 `tests/custom/smudge_tool/`（4 个文件 1998 行）。
+测试 `tests/custom/smudge_tool/`（5 个文件 2375 行，含写回编码参数与 TIFF
+Orientation 的回归）。
 
 ### 入口符号
 
@@ -288,6 +289,33 @@
   同名冲突加数字后缀；只复制、不移动、不删除，一个目录里同一文件只备份一次。
 - **撤销**：历史在内存里按图片分组，记录 ROI、原像素块与磁盘路径；Ctrl+Z 把像素放回
   屏幕与磁盘。换目录、重新打开文件夹、进程结束都会丢掉历史（磁盘上的备份保留）。
+- **写回保留原编码参数（按格式分流）**：读图时从已打开的 PIL 对象取出参数，
+  写回时只把属于该格式的参数交给 Pillow（门控见 `operations.JPEG_FORMATS`、
+  `operations.ICC_FORMATS` 与 `operations.EXIF_FORMATS`）：
+  - JPEG 与 MPO：量化表、色度抽样因子、ICC、EXIF。Pillow 对多图 JPEG 报
+    `format == "MPO"`，它与 JPEG 同族，抽样因子同样保留；MPO 写回为单帧
+    JPEG，多帧 MPO 的其余帧会丢失（与旧行为一致）。
+  - PNG：ICC 与 eXIf。
+  - TIFF 及其他格式：**仍走旧路径，一个参数都不传**，与旧行为逐字节一致。
+    ICC 与 EXIF 一样按格式门控，但两者纳入的原因不同（见
+    `operations.ICC_FORMATS`）：EXIF 是因为 TIFF 的 IFD 合并会覆盖宽高，
+    ICC 是纯载荷、没有 tag 合并语义，门控只为守住「TIFF 一个参数都不传」
+    的基线——writer 会把参数写成自己的 IFD tag 34675（源文件不带 profile
+    时旧代码也不带该 tag），收集侧与写出侧都不认它，带 profile 的 TIFF
+    写回后与旧路径逐字节一致。
+    TIFF 的 `getexif()` 会把整个 IFD 读进来（含 256 ImageWidth / 257
+    ImageLength / 278 RowsPerStrip / 284 PlanarConfiguration），回传后 writer
+    会把这些 tag 合并进新 IFD 并**覆盖它自己刚设好的宽高**：Orientation 5~8 的
+    TIFF 必然写坏（Pillow 读图时已按 Orientation 就地旋转像素并交换
+    `image._size`，IFD 里还是旋转前的宽高），`PlanarConfiguration=2` 的文件
+    则被标成 chunky。
+  只改框内像素时整图不再按默认 q75/4:2:0 重编码（q95/4:4:4 由约 25 dB 提升到
+  约 54 dB）。抽样因子的唯一来源是 `JpegImagePlugin.get_sampling(im)`（`im.info`
+  里没有该键，传路径/句柄得 -1）；灰度图返回 -1，写回为 4:4:4（CMYK 与非标准
+  sampling 元组同样返回 -1，CMYK 在读取时就被拒）。参数被写入器拒绝时回退到
+  普通保存，绝不让整张图写不出去；回退后磁盘上是 Pillow 默认参数，而
+  `_work_info` 仍是读入时的参数，下次写回会再试一次原参数（只多一次被拒的
+  尝试，不影响像素）。
 - **几何门槛**：ROI 小于 6 像素拒绝执行；源点必须先右键选；没有磁盘文件的图像拒绝写回。
 - **小框填充（对齐贴片）**：ROI 两边都 <= 17 像素时它小于一个纹理块（块 24 像素），
   匹配窗口里没有任何已确定像素：这类块不再被跳过（跳过会留下缺陷像素），而是按
@@ -326,8 +354,9 @@
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v`
-（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，116 个用例全部通过：
-`test_st_operations.py` 28 + `test_st_texture_fill.py` 39 + `test_st_filter.py` 49）。
+（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，138 个用例全部通过：
+`test_st_operations.py` 28 + `test_st_texture_fill.py` 39 + `test_st_filter.py` 49 +
+`test_st_jpeg_metadata.py` 22，后者含 TIFF（逐字节 + Orientation 5~8）与 MPO 用例）。
 
 ### 已知坑
 
@@ -546,5 +575,7 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 
 - `"soft_mounts": []`：**没有实例级包装就留空数组**，自检允许为空（空数组 = 该功能没有
   软挂载）；有包装时按 `{"target": ..., "wrapped_by": ..., "install_site": ...}` 逐条登记。
+  同一个功能的多条软挂载共用一个目录时，用同节的 `soft_mounts_prefix` 写一次前缀，
+  `install_site` 只留文件名:行号（省体积，路径仍可拼全；见 `features.smudge_tool`）。
 - `"line": <真实行号>`：必须填锚点在目标文件里的真实行号；留 0 或照抄别人的旧行号，
   非严格模式下是永久 `line drift` 告警，`XAL_CONTRACT_STRICT=1`（同步上游后）直接 FAIL。
