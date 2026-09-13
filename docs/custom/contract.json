@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "kind": "x-anylabeling-fork-contract",
+  "repo": "X-AnyLabeling",
+  "verified_upstream_version": "4.0.6",
+  "notes": [
+    "anchor = 该行行内代码原文；matcher=line 表示 strip 后全等，startswith 表示 strip 后前缀匹配；挂载点锚点必须恰好命中 1 行。",
+    "mounts[].line 只是快照：漂移只告警（WARN），锚点命中才算数；同步上游后请更新它消除告警。",
+    "soft_mounts 是实例级（运行时）包装，不出现在上游文件 diff 中，上游同步时必须单独核对；它不是每个功能都有，空数组 [] 表示该功能没有实例级包装（自检允许为空）。",
+    "upstream 的键是 <文件>:<类> 或 <文件>:@module；成员为字符串（按 AST 在类/模块作用域内查找）或 {name,anchor,matcher}（AST 查不到时用文本锚点）；成员数组为 [] 表示该类本身即依赖。",
+    "行为级契约、transitive/wrapped/mirrored 分类与已知坑不在本文件，见 docs/custom/FEATURES.md；本文件只放可被脚本判定的硬数据。"
+  ],
+  "agent_context": {
+    "docs": ["docs/custom/FEATURES.md", "docs/custom/MAP.md"],
+    "self_check": "tests/custom/test_fork_contract.py",
+    "self_check_commands": [
+      "python3 tests/custom/test_fork_contract.py",
+      "python3 -m pytest -p no:cacheprovider tests/custom/test_fork_contract.py -v"
+    ],
+    "skill_root": ".dsh/skills",
+    "skills": ["xal-add-custom-feature", "xal-upstream-sync-audit", "xal-minimal-test"]
+  },
+  "features": {
+    "edit_extras": {
+      "summary": "普通滚轮=缩放（等价 Ctrl+滚轮）；Canvas 本体零改动，靠事件过滤器接管。",
+      "code": ["anylabeling/custom/edit_extras/"],
+      "tests": ["tests/custom/edit_extras/"],
+      "enter": [
+        {"module": "anylabeling.custom.edit_extras", "symbol": "install_edit_extras"},
+        {"module": "anylabeling.custom.edit_extras.wheel_zoom", "symbol": "install_wheel_zoom"}
+      ],
+      "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/edit_extras -v",
+      "mounts": [
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 40, "anchor": "from anylabeling.custom.edit_extras import install_edit_extras", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2620, "anchor": "install_edit_extras(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+      ],
+      "soft_mounts": [
+        {"target": "Canvas 事件过滤器", "wrapped_by": "WheelZoomFilter", "install_site": "anylabeling/custom/edit_extras/wheel_zoom.py:146"}
+      ],
+      "upstream": {
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["canvas"],
+        "anylabeling/views/labeling/widgets/canvas.py:Canvas": ["zoom_request", "editing", "selected_shapes", "enable_wheel_rectangle_editing", "auto_highlight_shape", "compare_pixmap", "is_brush_mode", "wheelEvent"],
+        "anylabeling/views/labeling/shape.py:Shape": ["shape_type", "locked"]
+      }
+    },
+    "ensure_label_file": {
+      "summary": "打开无标注图片时自动创建同名空 json；内容与落盘全部交给上游 save_labels。",
+      "code": ["anylabeling/custom/ensure_label_file/"],
+      "tests": ["tests/custom/ensure_label_file/"],
+      "enter": [
+        {"module": "anylabeling.custom.ensure_label_file", "symbol": "install_ensure_label_file"},
+        {"module": "anylabeling.custom.ensure_label_file", "symbol": "ensure_label_file"}
+      ],
+      "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/ensure_label_file -v",
+      "mounts": [
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 41, "anchor": "from anylabeling.custom.ensure_label_file import install_ensure_label_file", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2601, "anchor": "install_ensure_label_file(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+      ],
+      "soft_mounts": [
+        {"target": "LabelingWidget.load_file", "wrapped_by": "install_ensure_label_file", "install_site": "anylabeling/custom/ensure_label_file/label_file.py:41"}
+      ],
+      "upstream": {
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["load_file", "save_labels", "get_label_file", "has_label_file", "filename", "label_file", "dirty", "image", "label_list", "canvas", "actions", "_config", "image_path", "other_data", "flag_widget", "_annotation_checked", {"name": "delete_file", "anchor": "delete_file = action("}]
+      }
+    },
+    "model_validation": {
+      "summary": "模型验证子窗口：用桌面端既有推理引擎在数据集上跑验证并出报告。",
+      "code": ["anylabeling/custom/model_validation/"],
+      "tests": ["tests/custom/model_validation/"],
+      "enter": [
+        {"module": "anylabeling.custom.model_validation", "symbol": "launch_model_validation"},
+        {"module": "anylabeling.custom.model_validation.ui.dialog", "symbol": "ModelValidationDialog"}
+      ],
+      "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/model_validation -v",
+      "mounts": [
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 39, "anchor": "from anylabeling.custom.model_validation import launch_model_validation", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 1116, "anchor": "model_validation = action(", "matcher": "startswith", "form": "menu_action", "owner": "LabelingWidget.__init__"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2109, "anchor": "model_validation,", "matcher": "line", "form": "menu_action", "owner": "LabelingWidget.__init__"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 3368, "anchor": "def open_model_validation(self):", "matcher": "line", "form": "method_body", "owner": "LabelingWidget.open_model_validation"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 3370, "anchor": "launch_model_validation(self)", "matcher": "line", "form": "call", "owner": "LabelingWidget.open_model_validation"}
+      ],
+      "soft_mounts": [
+        {"target": "widget._model_validation_dialog", "wrapped_by": "launch_model_validation", "install_site": "anylabeling/custom/model_validation/launcher.py:20"}
+      ],
+      "upstream": {
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["error_message", "menus"],
+        "anylabeling/config.py:@module": ["current_config_file", "get_work_directory"],
+        "anylabeling/views/labeling/utils/opencv.py:@module": ["qt_img_to_rgb_cv_img"],
+        "anylabeling/services/auto_labeling/engines/__init__.py:@module": ["OnnxBaseModel"],
+        "anylabeling/services/auto_labeling/__base__/yolo.py:YOLO": [],
+        "anylabeling/app_info.py:@module": ["__preferred_device__"]
+      }
+    },
+    "smudge_tool": {
+      "summary": "涂抹修复工具：右键取源点、左键拖框，用别处纹理覆盖缺陷区域并支持 Ctrl+Z 撤销。",
+      "code": ["anylabeling/custom/smudge_tool/"],
+      "tests": ["tests/custom/smudge_tool/"],
+      "enter": [
+        {"module": "anylabeling.custom.smudge_tool", "symbol": "install_smudge_tool"},
+        {"module": "anylabeling.custom.smudge_tool", "symbol": "SmudgeController"}
+      ],
+      "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v",
+      "mounts": [
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 42, "anchor": "from anylabeling.custom.smudge_tool import install_smudge_tool", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2621, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+      ],
+      "soft_mounts": [
+        {"target": "LabelingWidget.populate_mode_actions", "wrapped_by": "_wrap_populate_mode_actions", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:482"},
+        {"target": "LabelingWidget.import_image_folder", "wrapped_by": "_wrap_import_image_folder", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:503"},
+        {"target": "Canvas 事件过滤器", "wrapped_by": "SmudgeController", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:1054"},
+        {"target": "Canvas.mode_changed", "wrapped_by": "_on_canvas_mode_changed", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:1058"}
+      ],
+      "upstream": {
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["canvas", "tools", "actions", "populate_mode_actions", "import_image_folder", "filename", "image_path", "image_data", "brightness_contrast_processor", "brightness_contrast_values", "status", "statusBar", "error_message"],
+        "anylabeling/views/labeling/widgets/canvas.py:Canvas": ["transform_pos", "offset_to_center", "out_off_pixmap", "load_pixmap", "override_cursor", "restore_cursor", "mode_changed", "pixmap", "scale", "is_loading", "is_brush_mode", "is_magic_wand_mode", "drawing"],
+        "anylabeling/views/labeling/utils/image.py:@module": ["img_data_to_pil"]
+      }
+    }
+  }
+}

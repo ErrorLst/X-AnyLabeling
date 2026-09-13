@@ -49,3 +49,17 @@
 
 - 上游升级后重点核对：`anylabeling/custom/**` 是否仍能导入、各挂载点是否仍存在、custom 依赖的上游内部状态（属性名、信号名、方法签名）是否变化。
 - 上游改动破坏了挂载点或 custom 依赖的内部状态时，**优先在 `custom/` 内做适配**，而不是回改上游。
+
+## 5. 快速索引（追加，不改上文条款）
+
+- 自研功能索引（人读）：`docs/custom/FEATURES.md`；架构与热文件地图：`docs/custom/MAP.md`；
+  机器可读契约（挂载点 / 上游依赖符号的唯一事实源，单节 ≈1.7KB）：`docs/custom/contract.json`。
+- 改动自研功能前后各跑一次契约自检（纯标准库、不导入 PyQt6、1~2 秒）：
+  `python3 tests/custom/test_fork_contract.py`（装了 pytest 时：`python3 -m pytest -p no:cacheprovider tests/custom/test_fork_contract.py -v`）；
+  同步上游后用严格模式：`XAL_CONTRACT_STRICT=1 python3 tests/custom/test_fork_contract.py`。
+- `anylabeling/resources/resources.py` 约 10.9 万行，是生成物：**禁止打开、禁止扫描、禁止参与任何全树搜索**。
+- §3 里 `C:\Users\...` 的解释器路径是作者 Windows 环境；本工作区是 Linux。先探测
+  `python3 -c "import PyQt6"` / `python3 -m pytest --version`，以能跑通的解释器为准；契约自检不依赖 PyQt6。
+- 本地 skill 在 `.dsh/skills/`（连同目录：`xal-add-custom-feature`、`xal-upstream-sync-audit`、`xal-minimal-test`）；
+  仅当 cwd 位于本仓库内时才会被自动加载。
+
