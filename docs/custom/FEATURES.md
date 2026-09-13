@@ -26,6 +26,7 @@
 | ensure_label_file | 打开无标注图片时自动建同名空 json | `anylabeling/custom/ensure_label_file/` | `tests/custom/ensure_label_file/` | 1 个（1 行 import + 1 行调用） | 1 |
 | model_validation | 模型验证子窗口（数据集上跑推理出报告） | `anylabeling/custom/model_validation/` | `tests/custom/model_validation/` | 5 个（import、菜单 action 定义与挂载、方法定义、方法内调用） | 1 |
 | smudge_tool | 涂抹修复：取别处纹理覆盖缺陷并撤销 | `anylabeling/custom/smudge_tool/` | `tests/custom/smudge_tool/` | 1 个（1 行 import + 1 行调用） | 5 |
+| rename_tool | 按主分类批量重命名并打包成 zip（拖拽目录一键导出，源目录只读） | `anylabeling/custom/rename_tool/` | `tests/custom/rename_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -353,6 +354,165 @@
   它是 `LabelingWidget.__init__` 里的局部动作、不是类成员，故只在
   `contract.json` 的 `upstream` 里以 `LabelingWidget.actions` 登记，
   `edit_mode` 本身不进 AST 清单。
+
+## rename_tool
+
+### 职责
+
+Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里的图片与同名 json 批量
+改名，结果输出为一个 zip。**源目录严格只读**：不改名、不写入、不改 mtime、不建
+临时文件，也不建任何暂存目录；需要改名的文件在 zip 里用新名字，其余条目用原名
+原字节。源目录可以从文件对话框选择，也可以直接拖进窗口；界面上没有 zip 文件名
+输入框、没有输出目录选择控件，也没有预览步骤，点一次「重命名」就串起扫描、
+阻塞检查与打包，zip 名与落点都在执行时从源目录派生：`<源目录名>_renamed.zip`
+写到源目录的上级目录（即数据集的同级目录），重名自动 `_2`、`_3`…，只产出那
+一个 zip。
+
+### 代码与体量
+
+`anylabeling/custom/rename_tool/`（4 个文件 1547 行：`rename_core.py` 规则与打包、
+`dialog.py` Qt 层、`launcher.py` 惰性启动、`__init__.py` 导出）；
+测试 `tests/custom/rename_tool/`（8 个文件 2471 行）。
+
+### 入口符号
+
+`anylabeling.custom.rename_tool.install_rename_tool`（幂等，挂 Tool 菜单）、
+`anylabeling.custom.rename_tool.launch_rename_tool`（惰性启动、复用实例）、
+`anylabeling.custom.rename_tool.rename_core.plan_directory`（只读扫描出计划）。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom.rename_tool import install_rename_tool`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`）：`install_rename_tool(self)`
+- 软挂载：`widget._rename_tool_dialog`（自研属性）由 `launch_rename_tool` 持有，
+  窗口销毁时清空，因此反复点菜单只复用同一个窗口。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.menus` | direct | Tool 菜单动作的挂载点；`menus` 或 `menus.tool` 缺失时安静返回 None |
+| `anylabeling.views.labeling.utils.qt.new_action` | direct | 菜单动作工厂，与其它自定义菜单项一致 |
+| `anylabeling.views.labeling.utils.qt.new_icon` | transitive | 由 `new_action(icon="convert")` 间接调用 |
+
+### 行为级契约（不可机器校验）
+
+- **R1 扫描与配对（不递归）**：只读源目录顶层（`os.listdir`）。图片扩展名
+  `IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")`，大小写不敏感；
+  `<stem><ext>` 与 `<stem>.json` 按 stem 精确同名配对（stem 区分大小写）；
+  目录项按自然排序（`1.jpg` < `2.jpg` < `10.jpg`）。
+- **R2 主标签与清洗**：`shapes` 里出现次数最多的 label（并列取先出现者）；
+  `shapes` 为空或全部没有 label → `background`；标签先做 `sanitize_label`
+  （连续非法字符 `\/:*?"<>|` 折成单个下划线 → 折叠连续下划线 → strip 两端
+  的点/下划线/空格 → 空则 `unnamed`），**清洗之后再计数比较**。
+- **R3 编号**：一般项目标 stem = `<label>_<n>`。先由「目标名已等于当前名」的
+  项占位其编号，其余项按自然排序取该 label 下最小的空号；`n >= 1` 且是规范
+  十进制（无前导零）。`person_0` / `person_01` / `person_1_extra` 都不算符合规范。
+- **R4 符合命名规范**：某项算出的目标名与当前文件名完全相同（图片名与 json 名
+  都相同）→ `already`（不改名、占编号）；否则 `rename`。
+- **R5 `_aug` 项**：`SUFFIX = ^(?P<base>.+)_aug(?P<x>\d*)$`（贪婪，取最右一个
+  `_aug` 之后为 x）；纯 stem 迭代剥离直到不再命中，后缀链按剥离顺序
+  （`a_aug1_aug2` → 纯 stem `a`、后缀链 `("_aug1", "_aug2")`）；目标 stem =
+  父项目标 stem + 后缀链原样拼接（x 不重算、不臆造）；`_aug` 项不占编号，只继承父项编号。
+- **R6 孤儿 `_aug`**：纯 stem 在源目录没有对应图片 → `orphan`：不改名、不占编号、
+  以当前名字原样镜像进 zip（它的 json 也不重写 `imagePath`），结果表里单列一类，不阻塞。
+- **R7 阻塞条件**（任一存在即不导出（不写 zip、不碰 `.part`）；blockers 每项一句
+  中文，带文件名）：B1 图片没有同名 json；B2 json 没有同名图片；B3 json 无法解析或
+  顶层不是对象；B4 目录内有子目录（只处理顶层文件）；B5 同一 stem 有多张图片或多份 json。
+- **R8 条目名校验**：条目名非空、不含斜杠、不含 `..`、非绝对路径；每个源文件名在
+  计划里恰好出现一次（`check_entry_names` 会重新列一遍源目录顶层文件，漏镜像或重复
+  计入都算问题）；任何改名目标名不得等于任何「原样镜像」文件的名字（already /
+  orphan / mirrored 三类），否则阻塞。结果表显示的名字就是 zip 里的名字，执行期不补后缀。
+  `entry_name_ok` 拒绝任何含连续两个点的名字（`v1..2.txt` 即非法），比「不含 `../`」
+  更严；`execute()` 会把 `check_entry_names` 的结果并入阻塞项，因此非法条目名在扫描
+  阶段就变成阻塞弹窗，而不是等到写 zip 才失败。
+- **R9 只读源目录 + 产出 zip**：zip 是源目录顶层的完整镜像（每个顶层文件一个条目，
+  含 `classes.txt`、隐藏文件、任意二进制文件，原字节）。`plan.mirrored` 的定义就是
+  「顶层里没有被任何 item 的 image_name / json_name 引用的文件」，所以孤儿 json（B2）
+  与同 stem 冲突里的第二张图（B5）也在这里，结果表因此能列出全部文件。先写
+  `<最终名>.part`，成功后 `os.replace` 到最终名；zip 最终名在执行时由
+  `<源目录名>_renamed.zip` 派生、已存在则自动取 `_2`、`_3`…（界面没有文件名输入框，
+  完整路径只在成功弹窗与状态栏里给出）；`write_zip` 自身也把关：`plan.blocked()` 或
+  最终名已存在时直接 `raise RenameError`（不依赖对话框）。失败时**不删除** `.part`，
+  异常信息里带上它的完整路径；图片条目 `ZIP_STORED`，其余条目 `ZIP_DEFLATED`，
+  `allowZip64=True`，不写目录条目；输出 zip 不得落在源目录内。
+- **R10 惰性单实例 + 主线程**：`launch_rename_tool(parent)` 内延迟 import 对话框，
+  复用 `parent._rename_tool_dialog`；执行在主线程完成，`QCoreApplication.processEvents()`
+  驱动进度、期间 `dialog.setEnabled(False)`，**不引入线程、不提供取消**。
+- **R11 交互（拖拽目录 + 一键导出到数据集同级目录）**：`setAcceptDrops(True)`；
+  `dragEnterEvent` 与 `dragMoveEvent` 走同一个辅助方法，只在拖入项里有文件夹时接受、
+  否则忽略，`dropEvent` 取第一个文件夹（`os.path.abspath` 归一化）为源
+  目录，非文件夹项与多余文件夹在状态栏提示「已忽略: 名字（仅支持文件夹 /
+  仅取第一个文件夹）」，一个文件夹都没有时提示「仅支持文件夹」且不改动源目录；
+  拖拽只设定目录，绝不自动导出。界面只有源目录一行与一条只读提示行
+  （「导出到数据集同级目录：<源目录名>_renamed.zip（重名自动加 _2、_3…）」），
+  **没有输出目录选择控件**（没有 `output_button` / `output_label`，也没有
+  `pick_output_dir` / `set_output_dir` / `output_dir`）。主按钮「重命名」
+  （objectName `primary`）在源目录为空时禁用；没有「预览计划」按钮、没有 zip 文件名
+  控件，也没有「确认执行」二次确认。点击后依次做：校验源目录（缺失则告警）；
+  由源目录派生导出目录（`os.path.dirname(os.path.normpath(os.path.abspath(源)))`，
+  即数据集同级目录），派生不出上级（源目录是文件系统根，或上级规范化后等于源目录
+  本身）则告警「源目录没有上级目录，无法导出」并中止，**不写任何文件、不碰 `.part`**；
+  主线程跑 `plan_directory` → `resolve_targets` →
+  `check_entry_names` 并入 blockers（进度条 + `processEvents`，`setEnabled(False)`
+  防重入、finally 恢复）；阻塞则 `QMessageBox.warning` 列前 8 条 + 总数、状态列写
+  「阻塞，未导出」，**不写 zip、不碰 `.part`**；否则写 zip 成功后
+  `QMessageBox.information` 给出完整路径与计数，状态列写「已改名 / 符合规范，保持原名 /
+  孤儿增强文件，保持原名 / 原样镜像」。扫描失败（`plan_directory` 抛 `RenameError`，
+  例如源目录被删或失去读权限）与写 zip 失败（例如上级目录不可写）共用同一条失败出口：
+  先 `_discard_result()` 再 `_report_failure()`，结果表立刻退出成功外观（状态列全部
+  改回「未导出」、统计回到「尚未重命名」，有意保留「新文件名」列），阻塞提示条改显示
+  「导出失败：<原因>」，弹窗与状态栏给出「重命名失败」与半成品 `.part` 路径。
+- **例子**（`tests/custom/rename_tool/test_rt_plan.py` 逐条断言）：
+  - E1 `a.jpg`+`a.json`(person) → `person_1.jpg` / `person_1.json`（rename）
+  - E2 `person_1.jpg`+`person_1.json`(person) → 目标 == 当前 → already，占位 1
+  - E3 E2 + `IMG_2.jpg`(person) → `IMG_2` → `person_2`
+  - E4 `person_2.jpg`(already 占 2) + `a.jpg`(person) → `a` → `person_1`
+  - E5 幂等：对 E1 执行后的结果目录再跑一遍 → 0 个 rename，全部 already
+  - E6 `a` + `a_aug1` + `a_aug2`(person) → `person_1` / `person_1_aug1` / `person_1_aug2`
+  - E7 `person_1` + `person_1_aug1` → 两者都 already
+  - E8 `a_aug`（裸后缀）+ 父项 `a`(person) → `person_1` / `person_1_aug`（不补编号 1）
+  - E9 孤儿 `a_aug1`（没有 `a`）→ 放行、保持原名、不占号
+  - E10 同名陷阱：改名目标撞上原样镜像的名字 → 阻塞（见「已知坑」）
+
+### 测试
+
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/rename_tool -v`
+（需 PyQt6；本工作区 237 个用例全部通过）。
+
+### 已知坑
+
+- 源目录只读，所以源数据永远不会被规范化：要真正把名字落到数据上，解压 zip 之后
+  再跑一次（第二次跑应该全是「符合规范」）。
+- 空目录、或没有任何待改名项的目录（全部已符合规范）点一次也会导出一份镜像 zip：
+  前者是 0 条目的 zip，后者条目全部原样镜像；源目录只读，绝不覆盖既有文件（zip
+  重名时自动取 `_2`、`_3`…）。
+- 缺 json、坏 json、只有 json 没图片、子目录、同 stem 多文件都会**整体阻塞**，
+  一项都不改；点击「重命名」被阻塞时结果表仍列出顶层全部文件，但每一行的状态列都是
+  「阻塞，未导出」（因为确实什么都没导出），弹窗与阻塞提示条给出原因（最多前 8 条 +
+  总数），数据集同级目录里不会出现任何文件，包括 `.part`。
+- 孤儿 `_aug` 放行且保持原名（它没有父项可继承编号），也不占号。
+- 失败出口只回退「状态」列与统计，「新文件名」列保留本次扫描算出的结果，方便用户看到
+  本会改成什么名字；此时阻塞提示条与状态栏写的是失败原因，而不是「未发现阻塞项」。
+- 失败留下的 `.part` 要自行处理：工具绝不删除任何文件，下一次执行会被「临时文件
+  已存在」挡下来，需要人工确认后处理。
+- 图片条目 `ZIP_STORED`、其余条目 `ZIP_DEFLATED`：图片本来就不压缩，再套一层
+  deflate 只会变慢；json 文本压得动。
+- R8 第 3 条（改名目标不得等于已被占用的名字）分两种来源：
+  ① 光看 `plan.mirrored` 在可解析的目录里撞不上——图片形状的名字只有在同 stem 已被
+  另一张图片占用（那是 B5，已阻塞）时才会进 mirrored，`.json` 形状则只可能是孤儿
+  json（B2）或 B5 重复，所以扩展名形状互斥；白盒用例（手工往 `plan.mirrored` 里加
+  撞名）钉的就是这个分支。
+  ② 但 `plan.unchanged_names()` 还包含 already / orphan 两类 item 的当前名字，orphan
+  的名字就是普通的 `<stem>_aug<x>.jpg` 形状，**真实目录里撞得上**：`b.jpg` +
+  `b.json`(person) + `b_aug1.jpg`/`b_aug1.json` +
+  `person_1_aug1.jpg`/`person_1_aug1.json` 时 `b -> person_1`、
+  `b_aug1 -> person_1_aug1`，而 `person_1_aug1` 因纯 stem
+  `person_1` 没有图片成为 orphan 保持原名，于是撞名阻塞。不拦就会写出两个同名 zip 条目，
+  所以这是真实可达的阻塞，用例见 `test_rt_blockers.py` 的
+  `test_target_collides_with_orphan_name_in_a_real_folder`。
+- 扫描与打包都在主线程：几千个文件的大目录会卡住界面，靠进度条 +
+  `processEvents` 维持响应，不提供取消（取消会留下用户看不见的 `.part`）。
 
 ## 变更台账
 

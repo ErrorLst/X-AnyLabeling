@@ -34,7 +34,8 @@
                      class RemoteServer（HTTP 到 X-AnyLabeling-Server）
 
 自研功能的挂载点全部落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
-与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；唯一例外是模型验证的菜单动作与方法定义。
+与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外只有两处：模型验证的菜单动作与
+方法定义，以及重命名工具的 Tool 菜单动作追加。
 逐条清单见 `docs/custom/contract.json` 的 `features.<id>.mounts`。
 
 ## 数据流
@@ -53,7 +54,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 
 | 文件 | 行数 | 说明 |
 |---|---|---|
-| `anylabeling/views/labeling/label_widget.py` | 7286 | 主窗口逻辑 + 全部挂载点 |
+| `anylabeling/views/labeling/label_widget.py` | 7288 | 主窗口逻辑 + 全部挂载点 |
 | `anylabeling/views/labeling/widgets/canvas.py` | 5541 | 画布：绘制、缩放、编辑、滚轮 |
 | `anylabeling/views/labeling/ppocr/editors.py` | 4801 | PPOCR 编辑面板 |
 | `anylabeling/services/auto_labeling/model_manager.py` | 2716 | 模型注册与加载 |
@@ -70,8 +71,8 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   （`chatbot`、`classifier`、`ppocr`、`settings`、`utils`、`video_classifier`、`vqa`、`widgets`）。
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
-- `anylabeling/custom/`：31 个 .py / 14194 行（4 个自研功能，见 FEATURES.md）。
-- `tests/custom/`：49 个既有 .py（另有本次新增的契约自检脚本 `tests/custom/test_fork_contract.py`）。
+- `anylabeling/custom/`：35 个 .py / 15832 行（5 个自研功能，见 FEATURES.md）。
+- `tests/custom/`：58 个 .py / 25403 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
 
 ## 想改 X 该看哪里
 
@@ -79,6 +80,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 |---|---|
 | 新增自研功能 | `anylabeling/custom/` + `docs/custom/contract.json` 的 features 一节（步骤见 `.dsh/skills/xal-add-custom-feature/SKILL.md`） |
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
+| 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
 | 快捷键 | `anylabeling/views/labeling/label_widget.py` 的动作定义（快捷键表取自 `self._config["shortcuts"]`，即 `.xanylabelingrc`） |
 | 标注文件读写（json / LabelFile） | `anylabeling/views/labeling/label_file.py`；保存入口是 `label_widget.py` 的 `save_labels` |
 | 导入导出格式 | `anylabeling/views/labeling/label_converter.py` 与 `anylabeling/views/labeling/utils/export.py` |

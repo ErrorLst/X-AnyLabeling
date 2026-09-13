@@ -32,7 +32,7 @@
       "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/edit_extras -v",
       "mounts": [
         {"file": "anylabeling/views/labeling/label_widget.py", "line": 40, "anchor": "from anylabeling.custom.edit_extras import install_edit_extras", "matcher": "line", "form": "import", "owner": "<module>"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2620, "anchor": "install_edit_extras(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2621, "anchor": "install_edit_extras(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
       ],
       "soft_mounts": [
         {"target": "Canvas 事件过滤器", "wrapped_by": "WheelZoomFilter", "install_site": "anylabeling/custom/edit_extras/wheel_zoom.py:146"}
@@ -54,7 +54,7 @@
       "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/ensure_label_file -v",
       "mounts": [
         {"file": "anylabeling/views/labeling/label_widget.py", "line": 41, "anchor": "from anylabeling.custom.ensure_label_file import install_ensure_label_file", "matcher": "line", "form": "import", "owner": "<module>"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2601, "anchor": "install_ensure_label_file(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2602, "anchor": "install_ensure_label_file(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
       ],
       "soft_mounts": [
         {"target": "LabelingWidget.load_file", "wrapped_by": "install_ensure_label_file", "install_site": "anylabeling/custom/ensure_label_file/label_file.py:41"}
@@ -74,10 +74,10 @@
       "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/model_validation -v",
       "mounts": [
         {"file": "anylabeling/views/labeling/label_widget.py", "line": 39, "anchor": "from anylabeling.custom.model_validation import launch_model_validation", "matcher": "line", "form": "import", "owner": "<module>"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 1116, "anchor": "model_validation = action(", "matcher": "startswith", "form": "menu_action", "owner": "LabelingWidget.__init__"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2109, "anchor": "model_validation,", "matcher": "line", "form": "menu_action", "owner": "LabelingWidget.__init__"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 3368, "anchor": "def open_model_validation(self):", "matcher": "line", "form": "method_body", "owner": "LabelingWidget.open_model_validation"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 3370, "anchor": "launch_model_validation(self)", "matcher": "line", "form": "call", "owner": "LabelingWidget.open_model_validation"}
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 1117, "anchor": "model_validation = action(", "matcher": "startswith", "form": "menu_action", "owner": "LabelingWidget.__init__"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2110, "anchor": "model_validation,", "matcher": "line", "form": "menu_action", "owner": "LabelingWidget.__init__"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 3370, "anchor": "def open_model_validation(self):", "matcher": "line", "form": "method_body", "owner": "LabelingWidget.open_model_validation"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 3372, "anchor": "launch_model_validation(self)", "matcher": "line", "form": "call", "owner": "LabelingWidget.open_model_validation"}
       ],
       "soft_mounts": [
         {"target": "widget._model_validation_dialog", "wrapped_by": "launch_model_validation", "install_site": "anylabeling/custom/model_validation/launcher.py:20"}
@@ -102,7 +102,7 @@
       "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v",
       "mounts": [
         {"file": "anylabeling/views/labeling/label_widget.py", "line": 42, "anchor": "from anylabeling.custom.smudge_tool import install_smudge_tool", "matcher": "line", "form": "import", "owner": "<module>"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2621, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2622, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
       ],
       "soft_mounts": [
         {"target": "LabelingWidget.populate_mode_actions", "wrapped_by": "_wrap_populate_mode_actions", "install_site": "anylabeling/custom/smudge_tool/smudge_filter.py:566"},
@@ -115,6 +115,28 @@
         "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["canvas", "tools", "actions", "populate_mode_actions", "import_image_folder", "filename", "image_path", "image_data", "brightness_contrast_processor", "brightness_contrast_values", "status", "statusBar", "error_message"],
         "anylabeling/views/labeling/widgets/canvas.py:Canvas": ["transform_pos", "offset_to_center", "out_off_pixmap", "load_pixmap", "override_cursor", "restore_cursor", "set_editing", "pixmap", "scale", "is_loading", "is_brush_mode", "is_magic_wand_mode", "drawing", "current", "is_auto_labeling", "mouseMoveEvent"],
         "anylabeling/views/labeling/utils/image.py:@module": ["img_data_to_pil"]
+      }
+    },
+    "rename_tool": {
+      "summary": "按标注主分类批量重命名图片与 json，源目录严格只读，结果输出为一个 zip。",
+      "code": ["anylabeling/custom/rename_tool/"],
+      "tests": ["tests/custom/rename_tool/"],
+      "enter": [
+        {"module": "anylabeling.custom.rename_tool", "symbol": "install_rename_tool"},
+        {"module": "anylabeling.custom.rename_tool", "symbol": "launch_rename_tool"},
+        {"module": "anylabeling.custom.rename_tool.rename_core", "symbol": "plan_directory"}
+      ],
+      "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/rename_tool -v",
+      "mounts": [
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 43, "anchor": "from anylabeling.custom.rename_tool import install_rename_tool", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2623, "anchor": "install_rename_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+      ],
+      "soft_mounts": [
+        {"target": "widget._rename_tool_dialog", "wrapped_by": "launch_rename_tool", "install_site": "anylabeling/custom/rename_tool/launcher.py:19"}
+      ],
+      "upstream": {
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["menus"],
+        "anylabeling/views/labeling/utils/qt.py:@module": ["new_action", "new_icon"]
       }
     }
   }

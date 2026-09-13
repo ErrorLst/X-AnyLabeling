@@ -40,6 +40,7 @@ from anylabeling.custom.model_validation import launch_model_validation
 from anylabeling.custom.edit_extras import install_edit_extras
 from anylabeling.custom.ensure_label_file import install_ensure_label_file
 from anylabeling.custom.smudge_tool import install_smudge_tool
+from anylabeling.custom.rename_tool import install_rename_tool
 
 from ...app_info import (
     __appname__,
@@ -2619,6 +2620,7 @@ class LabelingWidget(LabelDialog):
         self._settings_runtime_applier.build_shortcut_action_map()
         install_edit_extras(self)  # 滚轮缩放
         install_smudge_tool(self)  # 涂抹工具
+        install_rename_tool(self)  # 重命名工具
 
         self.set_text_editing(False)
 
