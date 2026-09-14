@@ -9,8 +9,9 @@ the picture. The canvas owns no edit state at all: the box editor of
 the previous revision lived here and is gone (see
 test_the_canvas_owns_no_edit_gesture). A box the matching merged may
 carry several classes: its label is then one block of one row per
-class, stacked with LABEL_LINE_SPACING widget pixels between the rows
-(see the label block tests at the bottom of this file).
+class, stacked one line height of the label font apart - that height
+times LABEL_LINE_SPACING - so the rows never overlap (see the label
+block tests at the bottom of this file).
 """
 
 import os
@@ -32,6 +33,7 @@ from anylabeling.custom.model_validation.ui import (
 from anylabeling.custom.model_validation.ui.dialog import ModelValidationDialog
 from anylabeling.custom.model_validation.ui.image_view import (
     LABEL_LINE_SPACING,
+    LABEL_OUTLINE_WIDTH,
     LABEL_PADDING,
     MAX_ZOOM,
     MIN_ZOOM,
@@ -855,7 +857,7 @@ def test_a_single_class_box_is_the_row_it_always_was(qt_app):
 
 
 def test_the_rows_of_a_multi_line_block_are_stacked_with_one_step(qt_app):
-    "The block is the lines plus one LABEL_LINE_SPACING per row."
+    "The block is one font line height taller per row of the label."
 
     font = ImageCanvas._label_font()
     rows = two_line_rows()
@@ -866,43 +868,74 @@ def test_the_rows_of_a_multi_line_block_are_stacked_with_one_step(qt_app):
         ImageCanvas._label_glyphs(font, text).boundingRect()
         for text in texts
     ]
-    # the rows are stacked with one LABEL_LINE_SPACING between their ink
-    # boxes: the block is the union of the first box and of every later
-    # box moved down by that step, which is what the stacking computes
+    # the rows are stacked from baseline to baseline, one line height of
+    # the label font per row: the block is the union of the first ink box
+    # and of every later one moved down by that step, which is what the
+    # stacking computes
+    step = float(QtGui.QFontMetricsF(font).height()) * LABEL_LINE_SPACING
+    assert step > 0
     tops = [float(boxes[0].top())]
     bottoms = [float(boxes[0].bottom())]
     for index, box in enumerate(boxes[1:], start=1):
-        shift = (
-            float(index) * LABEL_LINE_SPACING
-            - float(box.bottom())
-            + float(boxes[0].bottom())
-        )
+        shift = float(index) * step
         tops.append(float(box.top()) + shift)
         bottoms.append(float(box.bottom()) + shift)
     block = ImageCanvas._stacked_glyphs(
         font, shape_label_text(multi_label_box([0, 0], [1, 1], rows))
     ).boundingRect()
-    assert LABEL_LINE_SPACING == pytest.approx(1.0)
     assert block.top() == pytest.approx(min(tops), abs=1e-6)
     assert block.bottom() == pytest.approx(max(bottoms), abs=1e-6)
     # the step really spreads the rows instead of stacking them on top
     # of each other: the block is taller than the taller of its rows
     heights = [box.height() for box in boxes]
     assert block.height() > max(heights)
-    # The bound carries no font metric assumption: the rows stack with
-    # one step, so the block is at least one step taller than the shorter
-    # row and at most one step taller than the taller one - the two ends
-    # meet on the one number whenever the rows measure the same ink
-    # height, which is what this platform does. The exact geometry of the
-    # step is already pinned, above, by the top and the bottom of the
-    # block: a row that was NOT moved by the step would be caught there,
-    # not by this height.
-    assert block.height() >= min(heights) + LABEL_LINE_SPACING - 1e-6
-    assert block.height() <= max(heights) + LABEL_LINE_SPACING + 1e-6
+    # the bound carries no font metric assumption beyond the one step:
+    # the block is at least one step taller than the shorter row and at
+    # most one step taller than the taller one - the two ends meet on the
+    # one number whenever the rows measure the same ink height, which is
+    # what this platform does. The exact geometry of the step is already
+    # pinned, above, by the top and the bottom of the block: a row that
+    # was NOT moved by the step would be caught there, not by this height.
+    assert block.height() >= min(heights) + step - 1e-6
+    assert block.height() <= max(heights) + step + 1e-6
+    # Readability guard, the one the one pixel step of the previous
+    # revision fails: the ink of two neighbours must not overlap, and the
+    # dark outline of the upper row must not reach into the glyphs of the
+    # row under it. The outline is centred on the border of the ink, so
+    # it grows that ink by half of its width, and half an outline width
+    # is therefore the clearance to keep - asking for a whole outline
+    # width would ask the line step to swallow a whole descent as well,
+    # which the line height of a font never carries. Both rows under test
+    # do descend: the underscore of a0_dian sits 2.8px under the
+    # baseline, and one line height still leaves 2.9px of clearance.
+    for index in range(len(boxes) - 1):
+        upper_bottom = float(boxes[index].bottom()) + index * step
+        lower_top = float(boxes[index + 1].top()) + (index + 1) * step
+        assert upper_bottom < lower_top
+        assert upper_bottom + LABEL_OUTLINE_WIDTH / 2.0 < lower_top
     # the rows are stacked in the given order: the wider row sits under
     # the narrower one, so the block is wider than its first row alone
     assert boxes[0].width() < block.width()
     assert block.width() == pytest.approx(boxes[1].width(), abs=1e-6)
+
+
+def test_a_single_row_label_is_the_very_path_it_always_was(qt_app):
+    "One row skips the stacking: its path is the plain glyph path."
+
+    font = ImageCanvas._label_font()
+    text = MULTI_LABEL + " " + SCORE_FORMAT.format(LABEL_SCORE)
+    glyphs = ImageCanvas._label_glyphs(font, text)
+    stacked = ImageCanvas._stacked_glyphs(font, text)
+    # the two paths carry the very same elements, in the same order, so
+    # the rendering pixels of a single row label cannot move with the
+    # line step: the one row of a label is never routed through the
+    # stacking at all (regression guard for the changed spacing)
+    assert stacked.boundingRect() == glyphs.boundingRect()
+    assert stacked.elementCount() == glyphs.elementCount()
+    for index in range(glyphs.elementCount()):
+        one = glyphs.elementAt(index)
+        other = stacked.elementAt(index)
+        assert (other.x, other.y, other.type) == (one.x, one.y, one.type)
 
 
 def test_the_block_of_a_multi_line_label_hangs_at_the_box_corner(qt_app):
@@ -956,7 +989,7 @@ def test_a_block_that_does_not_fit_the_widget_is_dropped_whole(qt_app):
     assert label_pixels(render_canvas(canvas)) == (None, 0)
 
     # and so is a block taller than the widget, whatever its rows hold:
-    # every row sits LABEL_LINE_SPACING below the one before it, so a
+    # every row sits one font line height below the one before it, so a
     # block of hundreds of rows is far taller than the 320 pixel view
     many = multi_label_box(
         [10, 10],

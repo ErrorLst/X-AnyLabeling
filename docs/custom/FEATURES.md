@@ -320,8 +320,9 @@
   `label`/`score`，**仅当行数 > 1** 时挂上平行的、按分数降序的 `labels`/`scores`
   （单标签 payload 与改动前**逐键相等**）。只对 **detect/segment** 开（`obb`/`pose`
   保持单标签，理由：本工具定位检测类框验证）；GT 侧保持单标签。画布
-  `shape_label_rows` / `_stacked_glyphs` 逐行绘制整块标签，行距
-  `LABEL_LINE_SPACING = 1.0` widget 像素（整块夹取与丢弃，**不逐行截半**）。
+  `shape_label_rows` / `_stacked_glyphs` 逐行绘制整块标签，行距 =
+  标签字体行高 × `LABEL_LINE_SPACING`（默认 1.0，8pt/96dpi 下 14.5px，随
+  DPI 与字号自适应；整块夹取与丢弃，**不逐行截半**）。
 - **低分判 NG**：`judge.LOW_SCORE`，原因优先级
   `CLASS_MISMATCH → LOW_SCORE → IOU_BELOW → MISS_FP`；`judge_record(..., ng_score_threshold=None)`
   是可选**尾参**，不传 = 规则关闭（与旧行为逐键相等）。detail 记 `ng_score_threshold`、

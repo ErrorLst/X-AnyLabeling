@@ -121,10 +121,15 @@ OVERLAY_PEN_WIDTH = 2.0
 # and placed as a whole, never row by row.
 LABEL_POINT_SIZE = 8.0
 LABEL_PADDING = 3.0
-# The distance between two rows of a multi line label, in widget
-# pixels: the label block of a multi class box moves every row its own
-# step below the one before it, so the rows never drift with the zoom
-# either. It is measured on the ink of two rows (see _stacked_glyphs).
+# The distance between two rows of a multi line label, as a multiple
+# of the line height of the label font: the label block of a multi
+# class box moves every row its own step below the one before it, so
+# the rows never drift with the zoom either. The step is measured on
+# the metrics of the font (see _stacked_glyphs), so it follows the DPI
+# and the point size - 8.0pt at 96dpi gives a 14.5px line. A step in
+# widget pixels instead stacks the rows on top of each other: one pixel
+# leaves the 8.7px of ink of a row overlapping the next one by most of
+# its height, and the 3px outline then smears the rows into one blob.
 LABEL_LINE_SPACING = 1.0
 LABEL_GAP = 2.0
 LABEL_MARGIN = 1.0
@@ -1086,27 +1091,36 @@ class ImageCanvas(QtWidgets.QWidget):
         QPainterPath.addText cannot lay out a newline: a text carrying
         one would be shaped as a row of replacement boxes. The lines are
         therefore split here and stacked by hand, one after the other,
-        with one LABEL_LINE_SPACING of widget pixels between their
-        baselines. One path comes back for the whole block - a single
-        line included - so the placement and the two paints of a label
-        stay the one pass they always were (see _draw_label).
+        with one line height of the font times LABEL_LINE_SPACING from
+        baseline to baseline. One path comes back for the whole block - a
+        single line included - so the placement and the two paints of a
+        label stay the one pass they always were (see _draw_label).
         """
 
         lines = str(text).split("\n")
         if len(lines) == 1:
             return cls._label_glyphs(font, lines[0])
+        # the step is the line height of the font, so the rows of a block
+        # keep the leading a plain text layout would give them, whatever
+        # the DPI and the point size of the platform
+        metrics = QtGui.QFontMetricsF(font)
+        step = float(metrics.height()) * LABEL_LINE_SPACING
+        if step <= 0:
+            # a font the platform cannot measure: fall back to the ink of
+            # one row plus one outline width, the least a row needs to
+            # stay clear of the outline of the row under it
+            ink = cls._label_glyphs(font, lines[0]).boundingRect()
+            step = max(float(ink.height()), 1.0) + LABEL_OUTLINE_WIDTH
         path = QtGui.QPainterPath()
-        first_bottom: Optional[float] = None
         for index, line in enumerate(lines):
             glyphs = cls._label_glyphs(font, line)
-            box = glyphs.boundingRect()
-            if first_bottom is None:
-                first_bottom = float(box.bottom())
-            offset = float(index) * LABEL_LINE_SPACING - (
-                float(box.bottom()) - first_bottom
-            )
+            # the glyphs of a row are built on their own baseline, so the
+            # rows are stacked from baseline to baseline: aligning their
+            # lower ink edges instead pulls every row back up by the
+            # descender it happens to lack, which is what leaves the rows
+            # of a block overlapping one another
             stacked = QtGui.QPainterPath(glyphs)
-            stacked.translate(0.0, offset)
+            stacked.translate(0.0, float(index) * step)
             path.addPath(stacked)
         return path
 
@@ -1136,7 +1150,7 @@ class ImageCanvas(QtWidgets.QWidget):
         only ever moves as a whole: its union box is the anchor, exactly
         the way the single line of the previous revision was anchored on
         its own ink. The lines of the block keep the left edge of their
-        first row and the LABEL_LINE_SPACING of their own stacking.
+        first row and the line step of their own stacking.
         """
 
         glyphs = self._stacked_glyphs(font, text)
