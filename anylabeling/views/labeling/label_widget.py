@@ -37,6 +37,7 @@ from anylabeling.services.auto_labeling.types import AutoLabelingMode
 from anylabeling.services.auto_labeling import _THUMBNAIL_RENDER_MODELS
 from anylabeling.views.training import UltralyticsDialog
 from anylabeling.custom.model_validation import launch_model_validation
+from anylabeling.custom.remote_training import launch_remote_training
 from anylabeling.custom.edit_extras import install_edit_extras
 from anylabeling.custom.ensure_label_file import install_ensure_label_file
 from anylabeling.custom.smudge_tool import install_smudge_tool
@@ -1120,6 +1121,12 @@ class LabelingWidget(LabelDialog):
             icon="convert",
             tip=self.tr("打开模型验证窗口"),
         )
+        remote_training = action(
+            self.tr("远程训练"),
+            self.open_remote_training,
+            icon="convert",
+            tip=self.tr("打开远程训练窗口"),
+        )
         open_chatbot = action(
             self.tr("ChatBot"),
             self.open_chatbot,
@@ -2108,6 +2115,7 @@ class LabelingWidget(LabelDialog):
                 shape_converter,
                 None,
                 model_validation,
+                remote_training,
             ),
         )
         utils.add_actions(
@@ -3374,6 +3382,16 @@ class LabelingWidget(LabelDialog):
             self.error_message(
                 "模型验证错误",
                 f"打开模型验证窗口失败：{str(e)}",
+            )
+
+    # 远程训练
+    def open_remote_training(self):
+        try:
+            launch_remote_training(self)
+        except Exception as e:
+            self.error_message(
+                "远程训练错误",
+                f"打开远程训练窗口失败：{str(e)}",
             )
 
     # Tools

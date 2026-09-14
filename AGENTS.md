@@ -62,4 +62,23 @@
   `python3 -c "import PyQt6"` / `python3 -m pytest --version`，以能跑通的解释器为准；契约自检不依赖 PyQt6。
 - 本地 skill 在 `.dsh/skills/`（连同目录：`xal-add-custom-feature`、`xal-upstream-sync-audit`、`xal-minimal-test`）；
   仅当 cwd 位于本仓库内时才会被自动加载。
+- **验证降级**（哪个阶段跑多少测试、探针写在哪）：见 §6。
+
+## 6. 验证降级（实现阶段与主会话的分工）
+
+子代理的每一个往返都要 5~30 分钟，所以**验证分两层，不要在每个实现轮里重复跑全套**：
+
+- **实现阶段（子代理/实现轮）只跑与本轮改动直接相关的测试文件**，例如
+  `python -m pytest -p no:cacheprovider tests/custom/smudge_tool/test_st_draw_mode.py -q`；
+  **不要**在每个实现轮里重复跑整个功能目录的测试，也不要重复跑契约自检。
+- **主会话在实现返回后统一跑一次**：该功能目录的完整测试
+  （`pytest -p no:cacheprovider tests/custom/<feature> -q`）+ 契约自检
+  （`python3 tests/custom/test_fork_contract.py`，同步上游后用 `XAL_CONTRACT_STRICT=1`），
+  失败时把失败用例与最小复现交回实现轮，而不是让实现轮自己反复跑全目录。
+- 这两条不违反 §2 的"禁止全量测试"：§2 禁止的是 `pytest tests` 这类整仓库目录级批量；
+  这里说的仍是单个 feature 目录。
+- **探针（真机实证脚本）优先写在主会话里先跑**：结论（数值、现象、失败用例）作为任务书
+  的一部分交给实现轮，实现轮不必自己重跑一遍探针；只有实现轮到"必须证明自己的改动"时才再跑。
+  这样一次发现的问题能在最早的一轮暴露，而不是第 3、4 轮才由实现轮探出来。
+
 
