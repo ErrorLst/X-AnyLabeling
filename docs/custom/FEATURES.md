@@ -24,9 +24,10 @@
 |---|---|---|---|---|---|
 | edit_extras | 普通滚轮 = 以光标为中心缩放 | `anylabeling/custom/edit_extras/` | `tests/custom/edit_extras/` | 1 个（1 行 import + 1 行调用） | 1 |
 | ensure_label_file | 打开无标注图片时自动建同名空 json | `anylabeling/custom/ensure_label_file/` | `tests/custom/ensure_label_file/` | 1 个（1 行 import + 1 行调用） | 1 |
-| model_validation | 模型验证子窗口（数据集上跑推理出报告） | `anylabeling/custom/model_validation/` | `tests/custom/model_validation/` | 5 个（import、菜单 action 定义与挂载、方法定义、方法内调用） | 1 |
+| model_validation | 模型验证子窗口（数据集上跑推理出报告；改标注在主窗口） | `anylabeling/custom/model_validation/` | `tests/custom/model_validation/` | 5 个（import、菜单 action 定义与挂载、方法定义、方法内调用） | 1 |
 | smudge_tool | 涂抹修复：取别处纹理覆盖缺陷并撤销 | `anylabeling/custom/smudge_tool/` | `tests/custom/smudge_tool/` | 1 个（1 行 import + 1 行调用） | 5 |
 | rename_tool | 按主分类批量重命名并打包成 zip（拖拽目录一键导出，源目录只读） | `anylabeling/custom/rename_tool/` | `tests/custom/rename_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
+| label_filter | 按标签分类过滤文件列表（Tool 菜单运行时追加，实例级包装 import_image_folder） | `anylabeling/custom/label_filter/` | `tests/custom/label_filter/` | 1 个（1 行 import + 1 行调用） | 2 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -162,16 +163,24 @@
 ### 职责
 
 模型验证子窗口：在数据集上跑桌面端既有推理引擎，逐图出预测、人工判定、导出报告。
+窗口本身**不带标注编辑器**：需要改标注时由主窗口**自动跟随**结果页的当前记录打开
+（点选 / `A` / `D` / 过滤器切换 / 推理结束，200ms 去抖，无需按键），主窗口保存的结果
+由文件监听同步回暂存标签，验证页只重新读盘。
 
 ### 代码与体量
 
-`anylabeling/custom/model_validation/`（22 个文件 12113 行，含 `ui/` 子包）；
-测试 `tests/custom/model_validation/`（41 个文件 18752 行）。
+`anylabeling/custom/model_validation/`（23 个文件 11597 行，含 `ui/` 子包）；
+测试 `tests/custom/model_validation/`（42 个文件 17886 行）。
+本轮新增 `main_window_bridge.py`（689 行：跳主窗口 + 保存回写）与
+`async_scan.py`（189 行：异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`
+（内置标签弹窗整个文件移除）。
 
 ### 入口符号
 
 `anylabeling.custom.model_validation.launch_model_validation`（惰性启动、复用实例）、
-`anylabeling.custom.model_validation.ui.dialog.ModelValidationDialog`（主窗口）。
+`anylabeling.custom.model_validation.ui.dialog.ModelValidationDialog`（验证窗口本体）、
+`anylabeling.custom.model_validation.main_window_bridge.MainWindowBridge`（`StagingSync`
+回写）、`anylabeling.custom.model_validation.async_scan.DirectoryScanScheduler`（扫描调度）。
 
 ### 挂载点（锚点原文，行号见 contract.json）与软挂载
 
@@ -183,6 +192,9 @@
 4. 上游文件里唯一新增的方法定义：`def open_model_validation(self):`
 5. 该方法体内的一行调用：`launch_model_validation(self)`
 
+本轮「编辑搬到主窗口」的重构**没有新增任何上游挂载点**：跳转、回写与异步扫描全部落在
+`anylabeling/custom/model_validation/` 内（`label_widget.py` 保持这 5 处不变）。
+
 软挂载：`widget._model_validation_dialog`（自研属性）由 `launch_model_validation` 持有，
 窗口销毁时清空，因此反复点菜单只复用同一个窗口。
 
@@ -192,6 +204,11 @@
 |---|---|---|
 | `LabelingWidget.menus` | direct | 菜单动作挂载点 |
 | `LabelingWidget.error_message` | direct | 启动失败时的统一报错 |
+| `LabelingWidget.load_file` | direct | 在主窗口打开一条记录的暂存图片（跳转的唯一入口） |
+| `LabelingWidget.may_continue` | direct | 跳转前确认主窗口没有未保存的标注 |
+| `LabelingWidget.output_dir` | direct | 非空时警告「编辑不会进入导出」并请用户确认 |
+| `LabelingWidget.filename` | transitive | 不直接读该属性：`load_file` 装载的当前图片；跳转依赖其兄弟 json 约定 |
+| `LabelingWidget.window()`（Qt 基类 API） | direct | 把主窗口提到前台；基类 API 按约定不进 contract.json |
 | `anylabeling.config.current_config_file` | direct | 推理前确保全局 rc 路径可用 |
 | `anylabeling.config.get_work_directory` | direct | 同上，兜底拼 `.xanylabelingrc` |
 | `anylabeling.views.labeling.utils.opencv.qt_img_to_rgb_cv_img` | direct | 把 QImage 解码成 RGB 数组 |
@@ -211,11 +228,82 @@
 - `classes.txt` 是类名权威：模型内嵌 names 与它不一致只提示不阻断，只有**类数量**不一致才报错。
 - 启动器把重依赖（onnxruntime、albumentations、Qt 对话框）放在函数体内 import，
   保证应用启动只付一次 `import` 的成本。
+- **编辑搬到主窗口 + 自动跟随当前记录**：验证页不再自带编辑器，也没有「在主窗口编辑
+  当前记录」的按键——`E` 快捷键（`open_in_main_shortcut`）、`open_in_main_requested`
+  信号与提示/气泡里的「E = 在主窗口编辑当前记录」文案一并删除，只剩 `A`/`D`。结果页
+  把「当前记录真的换了」统一发成页面级信号 `current_record_changed(record_id)`：点选
+  另一行、`A`/`D`、过滤器切换、一轮推理后首次填充、`record_changed` 同步刷新之后；
+  同一条记录重复触发不发。dialog 用它接上既有的 `MainWindowBridge.open_record` 入口
+  `_open_current_in_main_window`，中间是 **200ms 重启式防抖**（`FOLLOW_DEBOUNCE_MS`、
+  `follow_timer`）：连续 `A`/`D` 或快速点选只打开最后停在的那一条。原来的
+  `QTimer.singleShot(0, ...)` 自动跳转已删除，推理结束后的首屏由同一条跟随路径覆盖，
+  不保留第二条调用。
+- **跟随的三个前提与去重**：只在 `bridge.main_window is not None`、验证窗口可见
+  （`isVisible()`）且结果页是当前页（`stack.currentWidget() is results_page`）时才跟随；
+  检查发生在防抖计时器触发时，因此「推理结束 → 切到结果页」也在 200ms 之后照常跟随。
+  `_followed_record_id` 记住上一次自动打开的记录 id，同一条记录重复触发不再调用
+  `open_record`（过滤器切回同一条、同步刷新都不会重开，也不会多问一次 `may_continue`），
+  被闸门拒绝的记录同样不重试；`start_validation` 开新一轮时清空跟随状态，本轮的第一条
+  记录照常打开。`__main__` 独立启动（无主窗口）时静默不跟随，只在第一次写一行提示，
+  之后切换不再刷状态行。
+- **跳转前的安全闸门**：无主窗口 / 无记录 / 暂存图片缺失 / 该记录没有标签 /
+  标签读不了或缺 `shapes`、`imagePath` / 主窗口 `output_dir` 非空（弹确认）/
+  `may_continue` 为假 / sibling json 写不出来。任一道不过只写一行状态说明，
+  绝不抛异常、绝不跳转。
+- **桥接状态双写**：桥接的每一条状态/拒绝信息（跟随被拒、没有主窗口、暂存图片缺失、
+  无标签项、`may_continue` 为假等）由 `_show_status_message` 同时写进配置页状态行与
+  结果页汇总行。跟随只可能发生在结果页可见时，只写配置页会让用户以为「没反应」；
+  结果页那一行会在下一次导出时交还给导出汇总。
+- **兄弟 json 适配**：主窗口按「图片同名 json」找标注，而暂存把标签放在 `labels/`；
+  跳转前把 canonical 暂存标签刷成图片旁的 sibling json（硬链接优先，失败降级 `copy2`），
+  且以 canonical 为准（导出与结果页读的就是它）。
+- **保存回写**：`StagingSync` 用 `QFileSystemWatcher` 盯暂存目录与 sibling，300ms
+  去抖后把主窗口保存的 sibling 文本写回 canonical 标签（普通重写、不 replace，
+  保住 inode 与硬链接）；坏 json 与半写文件直接丢弃，同一条记录每次去抖只发一次
+  `record_changed`。
+- **`record_changed` 只做幂等刷新**：`reload_record` + 导出汇总刷新，不重建列表、
+  不从信号里再触发跳转（当前记录没变就不发 `current_record_changed`，因此也不会重开）；
+  `attach(staging_root, records)` 在 `on_worker_finished` 装上，
+  `start_validation` 与 `closeEvent` 时 `detach`。
+- **内置编辑能力已拆除**：`image_view.py`（2200→1127 行）画布只读，不再有任何编辑
+  信号/方法/常量（`set_edit_mode`、`editable_shapes`、`box_handles`、`hit_test`、
+  `resize_points`、`_draw_edit_overlay` 等全删）；结果页删除编辑模式、编辑提示条与
+  标签弹窗调用（`EDIT_*` 符号与 `__all__` 条目一并删）；`records.py` 删除
+  `update_shape` / `update_shape_points` / `label_shape_types` 等写标注函数
+  （保留 `read_staging_label` / `write_staging_label` 与 `edited` 字段）；
+  `label_dialog.py` 整个文件删除。
+- **数据集扫描异步化**：`async_scan.py` 的 `DirectoryScanScheduler` 只留最新请求、
+  同一时刻最多一个 `DirectoryScanWorker(QThread)`；dialog 侧 400ms 防抖 + token 丢弃
+  过期结果，预览行在前台显示「扫描中…」。UI 线程不再跑 `collect_pairs`，
+  `_count_source_pairs` 只读缓存。
+- **导出非模态**：导出的 `QProgressDialog` 由 `WindowModal` 改 `NonModal`，导出期间
+  禁用导出按钮（`_exporting` 标志 + try/finally 防重入）；验证窗口本体本来就是非模态
+  `Qt.Window`，导出不再把主窗口一起挡住。
+- **导出进行中不能关窗**：`closeEvent` 在 `_exporting` 为真时直接 `event.ignore()`
+  并提示「导出进行中，请稍候再关闭」。进度框改成非模态后，用户此前能在导出中途
+  关掉窗口，让还在写盘的导出踩到已销毁的控件、拖垮整个应用；现在关窗请求被拒，
+  窗口留到 zip 写完，导出收尾（关进度框、还原导出按钮与结果行）对已销毁控件也
+  一律 `RuntimeError` 兜底。
+- **主窗口激活时自动抬升**：验证窗口给主窗口装一个事件过滤器
+  （`showEvent` → `_install_activate_filter`，幂等；`closeEvent` →
+  `_remove_activate_filter`），收到 `WindowActivate` 后延后一拍
+  `QTimer.singleShot(0, self.raise_)` 把自己抬到主窗口上方，用户在主窗口里编辑
+  不再让验证窗口被压在下面。**不夺焦点**：全程不调 `activateWindow()`，画布继续
+  可编辑；**不全局置顶**：不用 `WindowStaysOnTopHint`，不会浮到浏览器等其它应用
+  之上；**尊重用户状态**：`isVisible()` 为假或 `isMinimized()` 为真时不抬；
+  `__main__` 独立启动（`_main_window()` 为 None）时不装过滤器。
 
 ### 测试
 
-`python -m pytest -p no:cacheprovider tests/custom/model_validation -v`（需 PyQt6 + numpy）。
-本机无 PyQt6/numpy，未能运行。
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider
+tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里的 `.venv`）。
+本轮删掉 5 个编辑用例（`test_mv_edit_mode.py`、`test_mv_edit_drag.py`、
+`test_mv_edit_persist.py`、`test_mv_edit_exit_on_switch.py`、`test_mv_label_dialog.py`），
+新增 `test_mv_main_window_bridge.py`（22 例）、`test_mv_staging_sync.py`（14 例）、
+`test_mv_async_scan.py`（6 例）、`test_mv_dialog_wiring.py`（18 例）、
+`test_mv_export_nonmodal.py`（6 例）、`test_mv_raise_on_activate.py`（12 例），
+并改写 `test_mv_records_labelme.py`、
+`test_mv_image_view.py`、`test_mv_ui_dialog.py`、`test_mv_cancel.py`。
 
 ### 已知坑
 
@@ -224,6 +312,18 @@
 - `__preferred_device__` 是 `anylabeling/app_info.py` 里 `__getattr__` 动态提供的名字，
   普通 IDE 跳转看不到定义。
 - 会话只换线程预算，不改 provider 选择逻辑；GPU 仍由上游配置决定。
+- 跳转依赖上游 `load_file` 的「图片同名 json」约定，以及 `may_continue` / `output_dir`
+  这两个属性名：改名不会报错（`getattr` 兜底），但会静默降级成「不检查」；
+  `window()` 是 `QWidget` 基类 API，按契约约定不进 contract.json。
+- 结果页的 `edited` 标记来自 `records.edited`（主窗口保存回写时置位），
+  不再由验证窗口自己的编辑动作产生。
+- 抬升只在 **窗口管理器真的把 `WindowActivate` 发给顶层窗口** 时发生：X11 上
+  点主窗口的标题栏/画布会把激活交给主窗口，抬升照常生效；但也有 WM 把点击当作
+  「不改变激活窗口」的焦点翻转（focus-follows-mouse、部分平铺 WM 的
+  raise-on-click 关闭时），主窗口本来就没被激活，验证窗口也就不会被压下去，
+  这正是要的效果。抬升用 `raise_()` 而不是置顶，WM 仍可自行决定是否理会。
+- 过滤器的目标是 `main_window.window()`（`LabelingWidget` 不是顶层窗口，
+  `WindowActivate` 只发给顶层窗口）；`_main_window()` 为 None 时整条链路是空操作。
 
 ## smudge_tool
 
@@ -682,6 +782,120 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 - 扫描与打包都在主线程：几千个文件的大目录会在解析时短暂卡住界面，靠进度条 +
   `processEvents` 维持响应，不提供取消（取消会留下用户看不见的 `.part`）。
 - 阻塞不弹窗（裁决 1）：只有显示器首行 + 状态栏 + 禁用按钮；写 zip 失败仍然弹窗。
+
+## label_filter
+
+### 职责
+
+Tool 菜单里的「标签过滤」：按标签分类过滤文件列表。窗口列出当前目录的**分类**——
+目录里 json 出现过的每个标签，外加「背景」（没有任何标注的图片）——勾选的分类就是
+文件列表保留的图片；多选分类之间是「或」，分类名与标签精确匹配。
+
+### 代码与体量
+
+`anylabeling/custom/label_filter/`（5 个文件 1368 行：`core.py` 分类规则 305 行、
+`installer.py` 挂载点与包装 510 行、`dialog.py` 选择窗口 478 行、`launcher.py`
+惰性启动 43 行、`__init__.py` 导出 32 行）；测试 `tests/custom/label_filter/`
+（5 个文件 1859 行）。
+
+### 入口符号
+
+`anylabeling.custom.label_filter.install_label_filter`（幂等：挂 Tool 菜单并装包装）、
+`anylabeling.custom.label_filter.launch_label_filter`（惰性启动、复用实例）。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom.label_filter import install_label_filter`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`）：`install_label_filter(self)`
+- 软挂载 1：`LabelingWidget.import_image_folder` 由 `LabelFilterController` 做实例级
+  包装（安装点在 `anylabeling/custom/label_filter/installer.py`）：上游方法整体照跑，
+  包装只在它返回之后删掉不命中的行。
+- 软挂载 2：`widget._label_filter_dialog`（自研属性）由 `launch_label_filter` 持有，
+  窗口销毁时清空，反复点菜单只复用同一个窗口；复用分支在每次重新显示前调用
+  `LabelFilterDialog.rescan()`，因此窗口始终列出当前 `last_open_dir` 的分类与计数，
+  首次打开仍只由构造函数扫描一次。
+- 行为级的第三条接管：包装体在调用上游前把 `may_continue` 探针临时装在实例上，
+  调用一结束立刻还原（`_gate_probe`，见行为级契约与已知坑）。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.menus` | direct | Tool 菜单动作的挂载点；`menus` 或 `menus.tool` 缺失时安静返回 None |
+| `LabelingWidget.import_image_folder` | wrapped | 唯一的过滤入口：上游重建列表后按选择删行 |
+| `LabelingWidget.may_continue` | wrapped | 探针：判定上游这次调用是否真的跑到（取消即回滚） |
+| `LabelingWidget.file_list_widget` | direct | 读行文本、删行 |
+| `LabelingWidget.fn_to_index` | direct | 删行后重建；上游 `open_next_image` 与右键菜单都按它取行 |
+| `LabelingWidget.open_next_image` | direct | 当前图被过滤掉时定位到第一张命中项（仍命中时不调用） |
+| `LabelingWidget.filename` | direct | 包装前记录画布当前图，过滤后据此决定保留还是换图 |
+| `LabelingWidget.last_open_dir` | direct | 分类扫描的目录来源 |
+| `LabelingWidget.output_dir` | direct | 标注目录：json 在它下面，而不是图片旁边 |
+| `LabelingWidget.statusBar` | direct | 状态栏提示（重置 / 清除 / 生效张数） |
+| `anylabeling.views.labeling.utils.qt.new_action` | direct | 菜单动作工厂，与其它自定义菜单项一致 |
+| `anylabeling.views.labeling.utils.qt.scan_all_images` | direct | `core.collect_files` 复用上游目录扫描（递归 + 自然排序），保证与文件列表同序 |
+
+### 行为级契约（不可机器校验）
+
+- **多选 = 或**：勾选的分类取并集，图片的任一标签命中即保留；**分类名精确匹配**
+  （不做大小写折叠），因为候选名就是 json 里原样的标签。
+- **无标注 = 真实分类「背景」**：json 缺失 / 读不了 / 坏 / 顶层不是对象 / 没有
+  shapes、以及 shape 的 label 为空串，都归到同一个「背景」；数据集里本来就有同名标签
+  时两者**合并为一行**（计数相加），绝不出现两行同名分类。
+- **空勾选确认 = 清除过滤**：一个分类都不勾不是「过滤掉全部」，而是「不启用过滤」，
+  文件列表恢复显示全部，用户不会得到一张空列表。
+- **确认过滤后画布落在命中图片上**：应用前画布上的那张图若仍在过滤结果里，画布**保持
+  不动**（不重新加载、不闪回第一张），文件列表当前行指向它（移动当前行时屏蔽列表
+  信号，避免触发上游 `file_selection_changed` 的重新加载）；被过滤掉（或本来没有
+  当前图）时加载结果里的**第一张**；结果为空（0 张）时不动画布、不加载任何文件
+  （列表为空、`filename` 为 `None`，与上游空目录的表现一致）。这套接管只发生在
+  调用方要求加载时（`load=True`，即确认过滤）；搜索框与「修改标注目录」等
+  `load=False` 的调用仍按上游分工走（不选行、不加载），免得改标注目录后不再重载标注。
+- **换目录自动重置并提示**：过滤属于它建立时所在的目录，上游方法收到另一个目录时先
+  清掉过滤再照常打开，并在状态栏提示「已切换目录，标签过滤已重置」。
+- **拖拽单文件不经过包装、始终可见**：只有目录调用走包装
+  （`import_dropped_image_files` 不经包装），单张拖入的图片不受过滤影响。
+- **取消「未保存标注」提示即回滚**：上游 `import_image_folder` 的第一个动作是问
+  `may_continue`，答否时当场返回；探针据此判定「这次没真的跑」，把状态回滚成上一次
+  的选择并提示「标签过滤未生效（操作已取消）」，过滤不生效。
+- **不写任何配置键**：状态只存在 widget 实例属性上（`_label_filter_state` 等），
+  不碰 `_config`、不落盘，重启后无残留。
+- **扫描发生在对话框打开时、带进度且可取消**：窗口构造时就扫当前目录，主线程跑
+  `QProgressDialog`、每 64 张 `processEvents` 一次；取消的扫描不产生结果，窗口不改
+  变任何状态。
+- **再次打开对话框回显生效勾选**：过滤正在生效时重新打开窗口，对应分类预先勾上，
+  用户看到的就是文件列表当前保留的分类。
+- **重新显示按当前目录重扫**：复用窗口在每次重新显示前 `rescan()`，行、计数、状态行
+  与生效勾选都按当前 `last_open_dir` 重建；重扫被取消时窗口回到「从未扫描」状态
+  （空列表 + 取消提示、确认按钮禁用），**不动**仍生效的过滤。
+- **换目录被取消时不报「已重置」**：换目录时「是否保存标注」提示被取消，上游当场
+  返回：过滤、状态栏与 tooltip 均保持不变（列表仍是旧过滤结果），不提示
+  「已切换目录，标签过滤已重置」。
+- **「清除过滤」与「空勾选确认」同走 reset()**：两者都调用 `controller.reset()`；
+  取消时 `reset()` 返回 False，对话框保持打开并提示这次操作未生效，不提示「已清除」。
+  **清除后画布保持当前图**：重建出的全量列表必然含它，恢复到同一张并选中其行，
+  不重新加载（否则列表当前行会指向别的图，后续导航从错误的图片开始）。
+- **回显只发生一次**：打开对话框时按当前生效过滤回显一次；之后搜索框触发的列表
+  重建不再回显，用户手动取消的勾选不会被重新勾上。
+
+### 测试
+
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/label_filter -v`
+（需 PyQt6；本工作区 60 个用例全部通过，其中 `test_lf_reopen.py` 的 4 条覆盖复用窗口
+重新打开时按当前目录重扫、回显生效过滤、首次只扫一次与重扫取消不动过滤，
+`test_lf_filter_apply.py` 的 5 条新增覆盖确认 / 清除过滤后画布与列表当前行的表现，
+其中 1 条守住 `load=False` 调用（搜索框、改标注目录）的上游分工）。
+
+### 已知坑
+
+- 包装链依赖「`may_continue` 是上游 `import_image_folder` 的**第一个动作**」：上游若
+  把这声确认挪到后面或改掉属性名，探针就拿不到「这次没真的跑」的证据，取消保存提示时
+  过滤会错误地留在列表上（失败方向是「不回滚」，不会崩）。
+- 空目录（或目录里一张图片都没有）时分类表里仍会列出「背景（0 张）」，但**确认按钮
+  禁用**：没有任何图片时过滤没有意义。
+- 事后过滤是 `takeItem` 删除：删完必须重建 `fn_to_index`，否则 `open_next_image` 与
+  右键菜单会按旧索引取到错行；已用 1 万条目用例兜底。
+- 复用窗口的刷新依赖 launcher 复用分支调用 `rescan()`：删掉这个调用，同一会话里切目录
+  后再打开窗口就会显示上一个目录的分类与计数（窗口构造只扫一次）。
 
 ## 变更台账
 
