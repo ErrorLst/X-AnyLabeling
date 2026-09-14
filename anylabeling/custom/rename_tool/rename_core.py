@@ -19,13 +19,16 @@ Naming rules:
 * an _aug<x> item whose parent is not in the folder is an orphan: it is
   mirrored under its current name and reserves nothing;
 * labels are sanitized (file name illegal characters collapse into a
-  single underscore) before the occurrence count is taken.
+  single underscore) before the occurrence count is taken;
+* a json without the image of the same stem is ignored: it is not part
+  of the plan at all - not an item, not a mirrored entry, not a zip
+  entry, not counted by total_files() - and it never blocks. It is only
+  reported as a number by RenamePlan.stats() and RenamePlan.ignored.
 
 Blocking conditions - any of them disables execution, no zip is written
 and no .part file is created:
 
 * an image without the json of the same stem;
-* a json without the image of the same stem;
 * a json that cannot be parsed, or whose top level is not an object;
 * a sub directory (only top level files are handled);
 * one stem carrying several images or several json files;
@@ -64,7 +67,6 @@ __all__ = [
     "METHOD_IMAGE",
     "METHOD_OTHER",
     "PART_SUFFIX",
-    "PROGRESS_INTERVAL",
     "RenameError",
     "RenameItem",
     "RenamePlan",
@@ -86,7 +88,6 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 PART_SUFFIX = ".part"
 ZIP_DEFAULT_SUFFIX = "_renamed"
 ZIP_FALLBACK_FORMAT = "{stem}_{index}{suffix}"
-PROGRESS_INTERVAL = 8
 METHOD_IMAGE = zipfile.ZIP_STORED
 METHOD_OTHER = zipfile.ZIP_DEFLATED
 
@@ -167,9 +168,13 @@ class RenamePlan:
 
     items holds every image/json pair of the folder in natural order,
     mirrored holds every top level file that no item refers to: a
-    classes.txt, a hidden file, an orphan json (B2), the second image
-    of a stem collision (B5), any binary file. Those files are what the
-    preview shows as "原样镜像" and what entries() mirrors verbatim.
+    classes.txt, a hidden file, the second image of a stem collision
+    (B5), any binary file. Those files are what entries() mirrors
+    verbatim, under their current name.
+    ignored holds the json files of the top level whose stem carries no
+    image: such a file is not an item and not a mirrored entry either,
+    it is simply left out of the plan and never blocks. Only stats()
+    and the dialog report it as a number.
     blockers lists the Chinese reasons that forbid execution;
     plan_directory fills it for a malformed folder, resolve_targets and
     check_entry_names may append more.
@@ -178,6 +183,7 @@ class RenamePlan:
     directory: str
     items: List[RenameItem] = field(default_factory=list)
     mirrored: List[str] = field(default_factory=list)
+    ignored: List[str] = field(default_factory=list)
     blockers: List[str] = field(default_factory=list)
 
     def blocked(self) -> bool:
@@ -216,6 +222,58 @@ class RenamePlan:
         """Return the number of top level files mirrored into the zip."""
 
         return len(self.entries())
+
+    def stats(self) -> Dict[str, int]:
+        """Return the file counters of the source folder.
+
+        total counts every top level file, that is every entry plus
+        every ignored json; the four other keys are mutually exclusive
+        and always add up to total, and total - ignored is the entry
+        count of the archive. The buckets are filled from the listing
+        itself - images, json paired with an image, json without one
+        (ignored) and everything else - so no file can escape them even
+        when a stem carries variant json spellings. A folder that
+        cannot be listed at all yields all zeroes instead of raising:
+        the scan already refuses such a folder, but stats() may be
+        asked for a plan that was built by hand.
+        """
+
+        names = _top_level_files(self.directory)
+        if names is None:
+            return {
+                "total": 0,
+                "images": 0,
+                "json": 0,
+                "ignored": 0,
+                "other": 0,
+            }
+        image_stems = set()
+        for name in names:
+            stem, ext = osp.splitext(name)
+            if ext.lower() in IMAGE_EXTS:
+                image_stems.add(stem)
+        images = 0
+        paired = 0
+        ignored = 0
+        other = 0
+        for name in names:
+            stem, ext = osp.splitext(name)
+            lower = ext.lower()
+            if lower in IMAGE_EXTS:
+                images += 1
+            elif lower == ".json" and stem in image_stems:
+                paired += 1
+            elif lower == ".json":
+                ignored += 1
+            else:
+                other += 1
+        return {
+            "total": len(names),
+            "images": images,
+            "json": paired,
+            "ignored": ignored,
+            "other": other,
+        }
 
     def item_by_filename(self, name: str) -> Optional[RenameItem]:
         """Return the item owning name, or None."""
@@ -525,9 +583,13 @@ def plan_directory(
             continue
         orphan_json.append(labels[stem])
 
+    plan.ignored = sorted(orphan_json, key=natural_key)
+    ignored_set = set(plan.ignored)
     mirrored_kept: List[str] = []
     for name in names:
         if name in item_names:
+            continue
+        if name in ignored_set:
             continue
         if _is_dir(osp.join(directory, name)):
             continue
@@ -540,11 +602,6 @@ def plan_directory(
         plan.blockers.append(
             "%d 张图片缺少同名 json：%s"
             % (len(missing), "、".join(missing))
-        )
-    if orphan_json:
-        plan.blockers.append(
-            "%d 个 json 没有同名图片：%s"
-            % (len(orphan_json), "、".join(orphan_json))
         )
     if bad_json:
         plan.blockers.append(
@@ -682,9 +739,11 @@ def check_entry_names(plan: RenamePlan) -> List[str]:
 
     Beyond the shape of every entry name, the plan has to carry every
     top level file of the source folder exactly once: a file the plan
-    never mirrors is as wrong as a file it mirrors twice. When the
-    folder cannot be listed again the completeness half is skipped, the
-    name shape half still runs.
+    never mirrors is as wrong as a file it mirrors twice. The ignored
+    json files are the one exception - they are deliberately left out
+    of the plan - so they are neither demanded nor allowed to show up.
+    When the folder cannot be listed again the completeness half is
+    skipped, the name shape half still runs.
     """
 
     counts: Dict[str, int] = {}
@@ -696,10 +755,18 @@ def check_entry_names(plan: RenamePlan) -> List[str]:
     for source, count in counts.items():
         if count > 1:
             problems.append("源文件在计划里出现 %d 次：%s" % (count, source))
+    for name in sorted(
+        set(plan.ignored).intersection(counts), key=natural_key
+    ):
+        problems.append("忽略集合与计划重叠：%s" % name)
     listed = _top_level_files(plan.directory)
     if listed is None:
         return problems
-    missing = [name for name in listed if not counts.get(name)]
+    ignored = set(plan.ignored)
+    missing = [
+        name for name in listed
+        if not counts.get(name) and name not in ignored
+    ]
     for name in missing:
         problems.append("源文件没有被计划镜像：%s" % name)
     for name in sorted(set(counts).difference(listed), key=natural_key):
@@ -738,7 +805,7 @@ def json_with_image_path(json_path: str, target_image: str) -> bytes:
 def write_zip(
     plan: RenamePlan,
     zip_path: str,
-    progress: Optional[Callable[[int, int, str], None]] = None,
+    progress: Optional[Callable[[int, int, str, str, bool], None]] = None,
 ) -> Dict[str, object]:
     """Write the mirror of the source folder into zip_path.
 
@@ -748,6 +815,13 @@ def write_zip(
     on purpose when something goes wrong and its path is part of the
     raised RenameError message. Images are stored, everything else is
     deflated.
+
+    progress(done, total, entry_name, source_name, changed) is called
+    once per entry, without throttling, and once more as
+    progress(total, total, "Done", "", False) when the archive is
+    closed. done counts entries of the archive; changed tells whether
+    that entry carries a new name. The ignored json files of the plan
+    are not part of the archive and never reach the callback.
     """
 
     if plan.blocked():
@@ -818,12 +892,10 @@ def write_zip(
                 done += 1
                 if changed:
                     renamed += 1
-                if progress is not None and (
-                    done % PROGRESS_INTERVAL == 0 or done == total
-                ):
-                    progress(done, total, entry_name)
+                if progress is not None:
+                    progress(done, total, entry_name, source, changed)
             if progress is not None:
-                progress(total, total, "Done")
+                progress(total, total, "Done", "", False)
         os.replace(part, zip_path)
     except Exception as error:  # noqa: BLE001
         raise RenameError(
@@ -835,6 +907,7 @@ def write_zip(
         "files": total,
         "entries": [name for _source, name in entries],
         "renamed": renamed,
+        "ignored": len(plan.ignored),
         "blockers": [],
         "source_untouched": True,
     }

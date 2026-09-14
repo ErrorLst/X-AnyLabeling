@@ -173,7 +173,7 @@ class TestFullMirror:
             "a.txt",
         }
 
-    def test_entry_set_matches_the_listing(self, rt_dataset, rt_out):
+    def test_entry_set_matches_the_plan(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug1", "person")
         write_image(rt_dataset, "classes.txt", b"person\n")
@@ -181,7 +181,7 @@ class TestFullMirror:
         _plan, path, _summary = _run(rt_dataset, rt_out)
         mapped = {entry for _source, entry in plan.entries()}
         assert set(read_zip(path)) == mapped
-        assert len(mapped) == len(os.listdir(rt_dataset))
+        assert len(plan.entries()) == len(os.listdir(rt_dataset))
 
 
 class TestImagePath:
@@ -267,9 +267,9 @@ class TestCompression:
 
 
 class TestProgress:
-    """The progress callback counts every entry once."""
+    """write_zip reports every entry once, then the closing call."""
 
-    def test_monotonic_and_done(self, rt_dataset, rt_out):
+    def test_one_callback_per_entry(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "b", "person")
         write_image(rt_dataset, "classes.txt", b"person\n")
@@ -280,13 +280,14 @@ class TestProgress:
             os.path.join(rt_out, "result.zip"),
             progress=lambda *args: seen.append(args),
         )
-        assert seen[-1] == (plan.total_files(), plan.total_files(), "Done")
-        done = [entry[0] for entry in seen]
-        assert done == sorted(done)
-        assert done[-1] == plan.total_files()
+        total = plan.total_files()
+        assert len(seen) == total + 1
+        assert seen[-1] == (total, total, "Done", "", False)
 
-    def test_reports_the_entry_name(self, rt_dataset, rt_out):
+    def test_done_counts_are_strictly_increasing(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
+        make_pair(rt_dataset, "b", "person")
+        write_image(rt_dataset, "classes.txt", b"person\n")
         plan = core.resolve_targets(core.plan_directory(rt_dataset))
         seen = []
         core.write_zip(
@@ -294,7 +295,51 @@ class TestProgress:
             os.path.join(rt_out, "result.zip"),
             progress=lambda *args: seen.append(args),
         )
-        names = [entry[2] for entry in seen[:-1]]
-        assert names
-        assert all(name in read_zip(os.path.join(rt_out, "result.zip"))
-                   for name in names)
+        done = [entry[0] for entry in seen[:-1]]
+        assert done == list(range(1, plan.total_files() + 1))
+        assert all(entry[1] == plan.total_files() for entry in seen[:-1])
+
+    def test_reports_names_and_the_changed_flag(self, rt_dataset, rt_out):
+        make_pair(rt_dataset, "a", "person")
+        write_image(rt_dataset, "classes.txt", b"person\n")
+        plan = core.resolve_targets(core.plan_directory(rt_dataset))
+        seen = []
+        core.write_zip(
+            plan,
+            os.path.join(rt_out, "result.zip"),
+            progress=lambda *args: seen.append(args),
+        )
+        payload = read_zip(os.path.join(rt_out, "result.zip"))
+        entries = {entry[2]: entry for entry in seen[:-1]}
+        assert set(entries) == set(payload)
+        for entry in entries.values():
+            assert isinstance(entry[4], bool)
+        assert entries["person_1.jpg"][3] == "a.jpg"
+        assert entries["person_1.jpg"][4] is True
+        assert entries["person_1.json"][3] == "a.json"
+        assert entries["person_1.json"][4] is True
+        assert entries["classes.txt"][3] == "classes.txt"
+        assert entries["classes.txt"][4] is False
+
+
+class TestIgnoredJson:
+    """A json without an image stays out of the archive (R7)."""
+
+    def test_summary_counts_it(self, rt_dataset, rt_out):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        write_image(rt_dataset, "classes.txt", b"x")
+        plan = core.resolve_targets(core.plan_directory(rt_dataset))
+        _plan, path, summary = _run(rt_dataset, rt_out)
+        assert summary["ignored"] == 1
+        assert "c.json" not in read_zip(path)
+        assert summary["files"] == plan.total_files() == 3
+
+    def test_only_orphan_json_gives_an_empty_zip(self, rt_dataset, rt_out):
+        write_json(rt_dataset, "c.json", shapes=[])
+        plan = core.resolve_targets(core.plan_directory(rt_dataset))
+        assert plan.blocked() is False
+        _plan, path, summary = _run(rt_dataset, rt_out)
+        assert read_zip(path) == {}
+        assert summary["files"] == 0
+        assert summary["ignored"] == 1

@@ -1,4 +1,4 @@
-"""Rename window: set a folder, click once, get one zip.
+"""Rename window: set a folder, read the log, get one zip.
 
 The dialog is deliberately thin: rename_core owns every rule, this
 module only drives the core and reports the result. Nothing here
@@ -10,11 +10,21 @@ cannot leave a second menu entry behind.
 
 The source folder comes from the file dialog or from a drag and drop
 of one folder; the archive name and its folder are derived from that
-folder when the main button is clicked, so there is neither a preview
-step, nor a file name editor, nor an output folder to pick: the zip
-lands next to the dataset folder. One click runs the scan, the
-optional blocker popup and the packaging in a row; dropping a folder
-never writes anything by itself.
+folder when the main button is clicked, so there is neither a file
+name editor nor an output folder to pick: the zip lands next to the
+dataset folder. Picking or dropping a folder parses it right away and
+writes the whole result into a read only text display, one line per
+fact: the summary counters, the number of ignored json files, the
+blockers with the name of every image that misses its json, or the
+mapping of every file that has to be renamed. Nothing else is
+printed: a file that keeps its name is only counted in the closing
+summary, never listed by name.
+
+A blocked folder disables the main button instead of opening a popup,
+and the reason stays visible in the display and the status bar. One
+click then runs the packaging and streams its progress into the same
+display; the progress counter of the write phase counts the entries
+that are really renamed, not the entries of the archive.
 
 No thread is used: the scan and the archiving run on the main thread
 with QCoreApplication.processEvents driving the progress bar, exactly
@@ -27,21 +37,22 @@ state the user cannot see.
 from __future__ import annotations
 
 import os.path as osp
+import re
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from anylabeling.views.labeling.utils import qt as qt_utils
 
 from . import rename_core
 
 __all__ = [
-    "STATUS_ALREADY",
-    "STATUS_BLOCKED",
-    "STATUS_MIRRORED",
-    "STATUS_NOT_EXPORTED",
-    "STATUS_ORPHAN",
-    "STATUS_RENAMED",
+    "DISPLAY_MAX_BLOCKS",
+    "LOG_NAME",
+    "PRIMARY_BUTTON_NAME",
+    "PRIMARY_BUTTON_TEXT",
     "RenameDialog",
+    "WINDOW_SIZE",
+    "WINDOW_TITLE",
     "install_rename_tool",
 ]
 
@@ -49,44 +60,38 @@ WINDOW_TITLE = "重命名"
 WINDOW_SIZE = (960, 620)
 PRIMARY_BUTTON_NAME = "primary"
 PRIMARY_BUTTON_TEXT = "重命名"
+LOG_NAME = "rename_log"
+DISPLAY_MAX_BLOCKS = 5000
 
-STATUS_RENAMED = "已改名"
-STATUS_ALREADY = "符合规范，保持原名"
-STATUS_ORPHAN = "孤儿增强文件，保持原名"
-STATUS_MIRRORED = "原样镜像"
-STATUS_BLOCKED = "阻塞，未导出"
-STATUS_NOT_EXPORTED = "未导出"
-STATUS_COLUMN = 3
-
-ACTION_TEXT = {
-    rename_core.ACTION_RENAME: STATUS_RENAMED,
-    rename_core.ACTION_ALREADY: STATUS_ALREADY,
-    rename_core.ACTION_ORPHAN: STATUS_ORPHAN,
-}
-
-STATS_TEXT = (
-    "共 %d 个文件：%s %d、符合规范 %d、孤儿增强 %d、原样镜像 %d"
-)
-STATS_PENDING = "待改名"
-STATS_RENAMED = "已改名"
-DONE_TEXT = "已导出：%s\n共 %d 个文件，其中 %d 个已改名。"
-DONE_TITLE = "重命名完成"
-FAIL_TITLE = "重命名失败"
-FAIL_BLOCKER_FORMAT = "导出失败：%s"
-BLOCKED_TITLE = "无法重命名"
-
-NOT_RUN_TEXT = "尚未重命名"
-EMPTY_TEXT = "—"
-NO_BLOCKER_TEXT = "未发现阻塞项"
-MAX_BLOCKERS_SHOWN = 8
-BLOCKER_STYLE = "color: #c0392b;"
-
-SOURCE_HINT_FORMAT = (
-    "导出到数据集同级目录：<源目录名>%s.zip（重名自动加 _2、_3…）"
-)
-NAME_HINT_TEXT = SOURCE_HINT_FORMAT % rename_core.ZIP_DEFAULT_SUFFIX
+LOG_PLACEHOLDER = "选择或拖入一个数据集目录后开始解析…"
 SOURCE_NEEDED_TEXT = "请先选择源目录。"
+PLAN_MISSING_TEXT = "目录尚未解析成功，无法重命名。"
 NO_PARENT_TEXT = "源目录没有上级目录，无法导出"
+
+SUMMARY_FORMAT = (
+    "共 %d 个文件：图片 %d、成对 json %d、其他 %d、忽略 %d（原样镜像 %d）"
+)
+IGNORED_FORMAT = "忽略 %d 个无同名图片的 json（不写入 zip）"
+BLOCKED_FORMAT = "发现 %d 处阻塞，不能重命名，未写入任何文件（含 .part）："
+BLOCKED_B1_FORMAT = "图片缺少同名 json（%d 张）："
+BLOCKED_OTHER_TEXT = "其他问题："
+PENDING_FORMAT = "待改名 %d 个："
+PENDING_NONE_TEXT = "没有需要改名的文件"
+EMPTY_PLAN_TEXT = "目录为空：可以重命名（会得到一个 0 条目的 zip）"
+PARSE_FAIL_FORMAT = "无法解析目录：%s"
+RENAME_LINE_FORMAT = "%s -> %s"
+PROGRESS_LINE_FORMAT = "%s -> %s    %d/%d"
+DONE_FORMAT = "已导出：%s"
+DONE_SUMMARY_FORMAT = (
+    "共 %d 个文件：改名 %d、保持原名 %d、原样镜像 %d、忽略 %d"
+)
+FAIL_FORMAT = "重命名失败：%s"
+FAIL_PART_FORMAT = "半成品已保留：%s"
+FAIL_PART_PATTERN = re.compile(r"半成品已保留：(.+?)[）)]")
+FAIL_TITLE = "重命名失败"
+
+HINT_TEXT = "导出到数据集同级目录：<源目录名>%s.zip（重名自动加 _2、_3…）"
+NAME_HINT_TEXT = HINT_TEXT % rename_core.ZIP_DEFAULT_SUFFIX
 DROP_ONLY_FOLDERS = "仅支持文件夹，未改动源目录"
 DROP_FILE_REASON = "仅支持文件夹"
 DROP_EXTRA_FOLDER_REASON = "仅取第一个文件夹"
@@ -137,10 +142,21 @@ def launch_rename_tool(parent=None):
 
 
 class RenameDialog(QtWidgets.QDialog):
-    """One click rename window: set a folder, get one zip next to it."""
+    """One click rename window: set a folder, get one zip next to it.
+
+    The text display is the whole report. It is read only and capped
+    at DISPLAY_MAX_BLOCKS lines; because Qt clears the widget memory
+    under that cap, the lines are kept in ``self._lines`` as well and
+    read back through plain_text() / log_lines().
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._plan = None
+        self._busy = False
+        self._lines = []
+        self._rename_total = 0
+        self._rename_done = 0
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
         self.setAcceptDrops(True)
@@ -150,7 +166,7 @@ class RenameDialog(QtWidgets.QDialog):
     # ---------------------------------------------------------------- UI
 
     def _build_ui(self):
-        """Build the source row, the table and the status bar."""
+        """Build the source row, the display, the bar and the status."""
 
         root = QtWidgets.QVBoxLayout(self)
         root.setSpacing(6)
@@ -177,34 +193,20 @@ class RenameDialog(QtWidgets.QDialog):
         button_row.addStretch(1)
         root.addLayout(button_row)
 
-        self.stats_label = QtWidgets.QLabel(NOT_RUN_TEXT)
-        root.addWidget(self.stats_label)
-
-        self.blocker_label = QtWidgets.QLabel(NO_BLOCKER_TEXT)
-        self.blocker_label.setWordWrap(True)
-        self.blocker_label.setStyleSheet(BLOCKER_STYLE)
-        root.addWidget(self.blocker_label)
-
-        self.table = QtWidgets.QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(
-            ["原文件名", "主标签", "新文件名", "状态"]
+        self.log = QtWidgets.QPlainTextEdit()
+        self.log.setObjectName(LOG_NAME)
+        self.log.setReadOnly(True)
+        self.log.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
         )
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        self.log.setMaximumBlockCount(DISPLAY_MAX_BLOCKS)
+        self.log.setPlaceholderText(LOG_PLACEHOLDER)
+        self.log.setFont(
+            QtGui.QFontDatabase.systemFont(
+                QtGui.QFontDatabase.SystemFont.FixedFont
+            )
         )
-        self.table.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
-        )
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.Interactive
-        )
-        self.table.setColumnWidth(0, 250)
-        self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(2, 250)
-        self.table.setColumnWidth(3, 220)
-        root.addWidget(self.table, stretch=1)
+        root.addWidget(self.log, stretch=1)
 
         self.progress = QtWidgets.QProgressBar()
         self.progress.setTextVisible(False)
@@ -254,7 +256,8 @@ class RenameDialog(QtWidgets.QDialog):
 
         Only folders are accepted: a dropped file is reported in the
         status bar and the current source directory is kept. Dropping
-        never exports anything, the user still clicks the main button.
+        never exports anything, it only parses the folder; the user
+        still clicks the main button.
         """
 
         folders, ignored = self.drop_entries(event.mimeData())
@@ -310,7 +313,7 @@ class RenameDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ 选择
 
     def pick_source_dir(self):
-        """Ask for the source folder and reset the previous result."""
+        """Ask for the source folder and parse it right away."""
 
         chosen = QtWidgets.QFileDialog.getExistingDirectory(
             self, "选择源目录", self.source_dir() or ""
@@ -348,73 +351,63 @@ class RenameDialog(QtWidgets.QDialog):
         return parent
 
     def set_source_dir(self, directory: str):
-        """Remember the source folder and reset the previous result."""
+        """Remember the source folder, clear the display and parse it.
+
+        This is the single entry of both the picker and the drop: the
+        display is emptied, the folder is remembered and the folder is
+        parsed immediately, so the user sees the summary and the
+        blockers without a second click.
+        """
 
         directory = (directory or "").strip()
         if not directory:
             return
+        self._clear_display()
         self.source_label.setText(directory)
-        self._reset_result()
+        self.parse_source()
         self._refresh_actions()
 
-    def _reset_result(self):
-        """Drop the previous table and counters."""
+    def _clear_display(self):
+        """Drop the previous plan, the text display and the counters."""
 
-        self.table.setRowCount(0)
-        self.stats_label.setText(NOT_RUN_TEXT)
-        self.show_blockers([])
+        self._plan = None
+        self._lines = []
+        self._rename_total = 0
+        self._rename_done = 0
+        self.log.clear()
+        self.progress.hide()
+        self.status_bar.clearMessage()
 
     def _refresh_actions(self):
-        """Enable the main button exactly when a source folder is set."""
+        """Enable the main button exactly when a run is possible.
 
-        self.execute_button.setEnabled(bool(self.source_dir()))
+        The four conditions are: a source folder, an export folder
+        derived from it, a parsed plan that is not blocked, and no
+        running scan or write.
+        """
 
-    # ------------------------------------------------------------ 执行
+        source = self.source_dir()
+        ready = bool(source) and bool(self.export_dir(source))
+        ready = ready and self._plan is not None
+        ready = ready and not self._plan.blocked()
+        self.execute_button.setEnabled(bool(ready) and not self._busy)
 
-    def execute(self):
-        """Scan the source folder and export the archive in one click.
+    # ------------------------------------------------------------ 解析
 
-        The scan, the blocker check and the packaging run in a row.
-        A blocked folder shows the blockers, fills the table with the
-        blocked status and writes nothing at all: no zip and no .part
-        file.
+    def parse_source(self):
+        """Parse the current source folder into a plan and render it.
 
-        Returns:
-            The write_zip result dictionary, or None when nothing was
-            exported (no source, no parent folder, a blocked plan or
-            an error).
+        The scan runs on the main thread while the window is disabled
+        and the progress bar reports it. A folder that cannot be read
+        is reported in the display instead of raising; in both cases
+        the button is refreshed from the new plan.
         """
 
         directory = self.source_dir()
         if not directory:
-            self._warn(SOURCE_NEEDED_TEXT)
             return None
-        out_dir = self.export_dir(directory)
-        if not out_dir:
-            self._warn(NO_PARENT_TEXT)
-            return None
-        plan = self._scan(directory)
-        if plan is None:
-            return None
-        if plan.blocked():
-            self._report_blocked(plan)
-            return None
-        name = osp.basename(osp.normpath(directory))
-        target = rename_core.resolve_output_path(
-            out_dir, ZIP_NAME_FORMAT % (name, rename_core.ZIP_DEFAULT_SUFFIX)
-        )
-        result = self._write(plan, target)
-        if result is None:
-            return None
-        self.fill_table(plan)
-        self.update_stats(plan)
-        self.show_blockers([])
-        self._report_success(result)
-        return result
-
-    def _scan(self, directory: str):
-        """Scan the folder and merge the entry name check into it."""
-
+        self._busy = True
+        self._refresh_actions()
         self.setEnabled(False)
         try:
             plan = rename_core.plan_directory(
@@ -426,16 +419,31 @@ class RenameDialog(QtWidgets.QDialog):
             if problems:
                 plan.blockers.extend(problems)
         except rename_core.RenameError as error:
-            self._discard_result()
-            self._report_failure(error)
+            self._fail_parse(error)
             return None
         finally:
             self.progress.hide()
+            self._busy = False
             self.setEnabled(True)
             self._refresh_actions()
-        self.fill_table(plan)
-        self.update_stats(plan)
+        self._apply_plan(plan)
         return plan
+
+    def _fail_parse(self, error):
+        """Report a folder that cannot be parsed at all."""
+
+        self._plan = None
+        self._append_line(PARSE_FAIL_FORMAT % error)
+        self.status_bar.showMessage(PARSE_FAIL_FORMAT % error)
+        return self._lines
+
+    def _apply_plan(self, plan):
+        """Store a parsed plan and render its lines."""
+
+        self._plan = plan
+        lines = self._render_plan(plan)
+        self._refresh_actions()
+        return lines
 
     def _scan_progress(self, done: int, total: int, message: str):
         """Drive the busy bar from a plan_directory callback."""
@@ -444,183 +452,287 @@ class RenameDialog(QtWidgets.QDialog):
         self.progress.setRange(0, max(int(total), 1))
         self.progress.setValue(int(done))
         if message and message != "Done":
-            self.status_bar.showMessage("正在扫描：%s" % message)
+            self.status_bar.showMessage("正在解析：%s" % message)
         QtCore.QCoreApplication.processEvents()
 
-    def _write(self, plan, path: str):
-        """Write the archive of plan into path with a busy dialog."""
+    def _render_plan(self, plan):
+        """Print every line of one parsed plan into the display."""
 
-        progress = QtWidgets.QProgressDialog(
-            "正在打包…", None, 0, 100, self
+        for line in self._plan_lines(plan):
+            self._append_line(line)
+        if not self._lines:
+            self.status_bar.showMessage(LOG_PLACEHOLDER)
+        else:
+            self.status_bar.showMessage(self._lines[0])
+        return list(self._lines)
+
+    def _plan_lines(self, plan):
+        """Return the display lines of a parsed plan.
+
+        The order is fixed: the summary counters, the ignored json
+        count, then either the blockers or the pending renames. Only
+        the files that really change their name are listed by name, an
+        ignored json and a mirrored file are just counted.
+        """
+
+        stats = plan.stats()
+        mirrored = len(plan.mirrored)
+        other = (
+            stats["total"]
+            - stats["images"]
+            - stats["json"]
+            - stats["ignored"]
         )
-        progress.setWindowTitle("正在打包…")
-        progress.setWindowModality(
-            QtCore.Qt.WindowModality.WindowModal
+        lines = [
+            SUMMARY_FORMAT % (
+                stats["total"],
+                stats["images"],
+                stats["json"],
+                other,
+                stats["ignored"],
+                mirrored,
+            ),
+            IGNORED_FORMAT % stats["ignored"],
+        ]
+        if plan.blocked():
+            lines.append(BLOCKED_FORMAT % self._blocker_count(plan))
+            b1 = self._b1_names(plan)
+            if b1:
+                lines.append(BLOCKED_B1_FORMAT % len(b1))
+                lines.extend(b1)
+            rest = [
+                text for text in plan.blockers
+                if "图片缺少同名 json" not in text
+            ]
+            if rest:
+                lines.append(BLOCKED_OTHER_TEXT)
+                lines.extend(rest)
+            return lines
+        pairs = self._rename_pairs(plan)
+        if not pairs:
+            if not plan.entries():
+                lines.append(EMPTY_PLAN_TEXT)
+            else:
+                lines.append(PENDING_NONE_TEXT)
+            return lines
+        lines.append(PENDING_FORMAT % len(pairs))
+        for source, target in pairs:
+            lines.append(RENAME_LINE_FORMAT % (source, target))
+        return lines
+
+    def _b1_names(self, plan):
+        """Return the file names of the images that miss their json."""
+
+        names = []
+        for item in plan.items:
+            if item.error != "缺少同名 json":
+                continue
+            names.append(item.image_name)
+        return names
+
+    def _blocker_count(self, plan):
+        """Return the number of problems shown in the blocker block.
+
+        One blocker text may name several files: the B1 blocker counts
+        once per missing image, every other blocker counts once. An
+        image listed twice - two images sharing a stem - is counted
+        once, because the B5 blocker already covers the double name.
+        """
+
+        count = len(self._b1_names(plan))
+        for text in plan.blockers:
+            if "图片缺少同名 json" not in text:
+                count += 1
+        return count
+
+    def _rename_pairs(self, plan):
+        """Return the (source name, target name) pairs that change name.
+
+        One pair per file that really gets a new name: the image of a
+        renamed item plus its json when that json exists. The json of
+        an item whose json is missing (the B1 blocker) is never part of
+        the archive and never part of this list.
+        """
+
+        pairs = []
+        for item in plan.valid_items():
+            pairs.append((item.image_name, item.target_image_name()))
+            json_name = item.json_name
+            if osp.isfile(osp.join(plan.directory, json_name)):
+                pairs.append((json_name, item.target_json_name()))
+        return pairs
+
+    # ------------------------------------------------------------ 执行
+
+    def execute(self):
+        """Export the archive of the current plan.
+
+        The plan comes from the parse that ran when the source folder
+        was set; a blocked plan keeps the button disabled, and this
+        method refuses such a plan defensively as well.
+
+        Returns:
+            The write_zip result dictionary, or None when nothing was
+            exported (no source, no parent folder, a blocked or
+            missing plan, or an error).
+        """
+
+        directory = self.source_dir()
+        if not directory:
+            self._warn(SOURCE_NEEDED_TEXT)
+            return None
+        out_dir = self.export_dir(directory)
+        if not out_dir:
+            self._warn(NO_PARENT_TEXT)
+            return None
+        if self._plan is None:
+            self._warn(PLAN_MISSING_TEXT)
+            return None
+        plan = self._plan
+        if plan.blocked():
+            self._report_blocked(plan)
+            return None
+        name = osp.basename(osp.normpath(directory))
+        target = rename_core.resolve_output_path(
+            out_dir, ZIP_NAME_FORMAT % (name, rename_core.ZIP_DEFAULT_SUFFIX)
         )
-        progress.setAutoClose(False)
-        progress.setCancelButton(None)
-        progress.show()
+        return self._write(plan, target)
+
+    def _write(self, plan, path: str):
+        """Write the archive of plan into path, streaming its progress.
+
+        The display gets one line per renamed entry and two closing
+        lines; a failure appends its reason instead of a success line
+        and keeps the progress lines that were already printed.
+        """
+
+        self._begin_write_log(len(self._rename_pairs(plan)))
+        self._busy = True
+        self._refresh_actions()
         self.setEnabled(False)
         try:
-            return rename_core.write_zip(
+            result = rename_core.write_zip(
                 plan,
                 path,
-                progress=lambda done, total, message: self._zip_progress(
-                    progress, done, total, message
-                ),
+                progress=self._write_progress,
             )
         except Exception as error:  # noqa: BLE001
-            self._discard_result()
+            self._finish_write_log(plan, error)
             self._report_failure(error)
             return None
         finally:
-            progress.close()
+            self.progress.hide()
+            self._busy = False
             self.setEnabled(True)
             self._refresh_actions()
+        self._finish_write_log(plan, None, result)
+        self._report_success(result)
+        return result
 
-    def _zip_progress(self, dialog, done: int, total: int, message: str):
-        """Drive the packaging dialog from a write_zip callback."""
+    def _begin_write_log(self, total: int):
+        """Reset the progress counter of the write phase."""
 
-        dialog.setMaximum(max(int(total), 1))
-        dialog.setValue(int(done))
-        dialog.setLabelText(message)
-        QtWidgets.QApplication.processEvents()
+        self._rename_total = max(int(total), 0)
+        self._rename_done = 0
+        self.progress.show()
+        self.progress.setRange(0, max(self._rename_total, 1))
+        self.progress.setValue(0)
+        QtCore.QCoreApplication.processEvents()
+        return self._rename_total
 
-    # ------------------------------------------------------------ 结果
+    def _write_progress(
+        self,
+        done: int,
+        total: int,
+        entry_name: str,
+        source_name: str,
+        changed: bool,
+    ):
+        """Print one line per renamed entry of the archive.
 
-    def fill_table(self, plan):
-        """Render the plan: one row per top level file, natural order."""
-
-        rows = self.table_rows(plan)
-        self.table.setRowCount(len(rows))
-        for index, cells in enumerate(rows):
-            for column, text in enumerate(cells):
-                self.table.setItem(
-                    index, column, QtWidgets.QTableWidgetItem(text)
-                )
-        return rows
-
-    def table_rows(self, plan):
-        """Return the (name, label, target, status) rows of a plan."""
-
-        rows = []
-        for item in plan.items:
-            for name in (item.image_name, item.json_name):
-                if not osp.isfile(osp.join(plan.directory, name)):
-                    continue
-                rows.append((
-                    name,
-                    item.label or EMPTY_TEXT,
-                    self._target_text(plan, item, name),
-                    self._status_text(plan, item),
-                ))
-        for name, flag in self.mirrored_rows(plan):
-            rows.append((name, EMPTY_TEXT, name, flag))
-        return rows
-
-    def mirrored_rows(self, plan):
-        """Return (name, status) of the files that are mirrored as is."""
-
-        flag = STATUS_BLOCKED if plan.blocked() else STATUS_MIRRORED
-        return [(name, flag) for name in plan.mirrored]
-
-    def _target_text(self, plan, item, name: str) -> str:
-        """Return the new name of one row, or the placeholder."""
-
-        if plan.blocked() or not item.target_stem:
-            return EMPTY_TEXT
-        if name == item.json_name:
-            return item.target_json_name()
-        if osp.splitext(name)[1].lower() in rename_core.IMAGE_EXTS:
-            return item.target_image_name()
-        return EMPTY_TEXT
-
-    def _status_text(self, plan, item) -> str:
-        """Return the Chinese status of one item."""
-
-        if plan.blocked():
-            return STATUS_BLOCKED
-        return ACTION_TEXT.get(item.action, EMPTY_TEXT)
-
-    def update_stats(self, plan):
-        """Show the file counters of the plan."""
-
-        renamed = len(plan.valid_items())
-        already = sum(
-            1 for item in plan.items
-            if item.action == rename_core.ACTION_ALREADY
-        )
-        orphans = sum(
-            1 for item in plan.items
-            if item.action == rename_core.ACTION_ORPHAN
-        )
-        text = STATS_TEXT % (
-            plan.total_files(),
-            STATS_PENDING if plan.blocked() else STATS_RENAMED,
-            renamed,
-            already,
-            orphans,
-            len(plan.mirrored),
-        )
-        self.stats_label.setText(text)
-        return text
-
-    def _discard_result(self):
-        """Take the success look back after a failed export.
-
-        The table and the counters are rendered by ``_scan``,
-        that is before the archive is written, so a failed ``_scan``
-        or ``_write`` has to undo that preview: no row may keep a
-        "renamed" status and the counters go back to their initial
-        text.
+        The write_zip callback counts the entries of the archive, but
+        the display only reports the entries that really change their
+        name: i is "the i-th renamed file" and N was set by
+        _begin_write_log to the number of files the plan renames. An
+        entry that keeps its name leaves the bar alone, so the value
+        follows the renamed files only and never walks backwards.
         """
 
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, STATUS_COLUMN)
-            if item is not None:
-                item.setText(STATUS_NOT_EXPORTED)
-        self.stats_label.setText(NOT_RUN_TEXT)
+        if entry_name == "Done":
+            return None
+        if not changed:
+            QtCore.QCoreApplication.processEvents()
+            return None
+        source = source_name or entry_name
+        self._rename_done += 1
+        line = PROGRESS_LINE_FORMAT % (
+            source,
+            entry_name,
+            self._rename_done,
+            self._rename_total,
+        )
+        self._append_line(line)
+        self.progress.setValue(self._rename_done)
+        self.status_bar.showMessage("正在打包：%s" % entry_name)
+        QtCore.QCoreApplication.processEvents()
+        return line
 
-    def show_blockers(self, blockers):
-        """Show the first blockers plus the total count."""
+    def _finish_write_log(self, plan, error=None, result=None):
+        """Print the closing lines of the write phase."""
 
-        items = list(blockers or [])
-        if not items:
-            self.blocker_label.setText(NO_BLOCKER_TEXT)
-            return NO_BLOCKER_TEXT
-        text = "；".join(items[:MAX_BLOCKERS_SHOWN])
-        if len(items) > MAX_BLOCKERS_SHOWN:
-            text += "；…共 %d 条" % len(items)
-        self.blocker_label.setText(text)
-        return text
+        if error is not None:
+            text = FAIL_FORMAT % error
+            self._append_line(text)
+            match = FAIL_PART_PATTERN.search(str(error))
+            if match is not None:
+                self._append_line(FAIL_PART_FORMAT % match.group(1))
+            self.status_bar.showMessage(text)
+            return list(self._lines)
+        result = result or {}
+        zip_path = result.get("zip_path", "")
+        files = result.get("files", 0)
+        renamed = result.get("renamed", 0)
+        ignored = result.get("ignored", len(plan.ignored))
+        mirrored = len(plan.mirrored)
+        # files is the entry count of the archive, so it leaves out the
+        # ignored json: the closing line counts the whole source folder,
+        # like the parse summary does. The four buckets print there are
+        # mutually exclusive and add up to that total.
+        source_total = files + ignored
+        kept = files - renamed - mirrored
+        self._append_line(DONE_FORMAT % zip_path)
+        summary = DONE_SUMMARY_FORMAT % (
+            source_total,
+            renamed,
+            kept,
+            mirrored,
+            ignored,
+        )
+        self._append_line(summary)
+        self.status_bar.showMessage(DONE_FORMAT % zip_path)
+        return list(self._lines)
 
     # ------------------------------------------------------------ 报告
 
     def _report_blocked(self, plan):
-        """Show the blockers; the folder is left exactly as it was."""
+        """Keep the folder untouched and report the blockers again."""
 
-        text = self.show_blockers(plan.blockers)
+        text = BLOCKED_FORMAT % self._blocker_count(plan)
         self.status_bar.showMessage(text)
-        QtWidgets.QMessageBox.warning(self, BLOCKED_TITLE, text)
         return text
 
     def _report_success(self, result):
         """Tell the user the full path of the archive."""
 
-        text = DONE_TEXT % (
-            result["zip_path"],
-            result["files"],
-            result["renamed"],
-        )
+        text = DONE_FORMAT % result["zip_path"]
         self.status_bar.showMessage(text)
-        QtWidgets.QMessageBox.information(self, DONE_TITLE, text)
+        QtWidgets.QMessageBox.information(self, WINDOW_TITLE, text)
         return text
 
     def _report_failure(self, error):
         """Show the failure, half finished archive path included."""
 
-        text = "重命名失败：%s" % error
-        self.blocker_label.setText(FAIL_BLOCKER_FORMAT % error)
+        text = FAIL_FORMAT % error
         self.status_bar.showMessage(text)
         QtWidgets.QMessageBox.warning(self, FAIL_TITLE, text)
         return text
@@ -631,3 +743,27 @@ class RenameDialog(QtWidgets.QDialog):
         self.status_bar.showMessage(text)
         QtWidgets.QMessageBox.warning(self, WINDOW_TITLE, text)
         return text
+
+    # ------------------------------------------------------------ 显示器
+
+    def _append_line(self, text: str):
+        """Append one line to the display and to the in memory log.
+
+        The widget is capped at DISPLAY_MAX_BLOCKS lines, so its own
+        text may be dropped; the log list keeps the whole run.
+        """
+
+        text = str(text)
+        self.log.appendPlainText(text)
+        self._lines.append(text)
+        return text
+
+    def plain_text(self) -> str:
+        """Return the whole display as one newline joined string."""
+
+        return "\n".join(self._lines)
+
+    def log_lines(self):
+        """Return the display lines as a list of strings."""
+
+        return list(self._lines)

@@ -102,8 +102,8 @@
       ],
       "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v",
       "mounts": [
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 43, "anchor": "from anylabeling.custom.smudge_tool import install_smudge_tool", "matcher": "line", "form": "import", "owner": "<module>"},
-        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2630, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 42, "anchor": "from anylabeling.custom.smudge_tool import install_smudge_tool", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/views/labeling/label_widget.py", "line": 2622, "anchor": "install_smudge_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
       ],
       "soft_mounts_prefix": "anylabeling/custom/smudge_tool/",
       "soft_mounts": [

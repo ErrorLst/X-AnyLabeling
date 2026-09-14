@@ -514,13 +514,15 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 输入框、没有输出目录选择控件，也没有预览步骤，点一次「重命名」就串起扫描、
 阻塞检查与打包，zip 名与落点都在执行时从源目录派生：`<源目录名>_renamed.zip`
 写到源目录的上级目录（即数据集的同级目录），重名自动 `_2`、`_3`…，只产出那
-一个 zip。
+一个 zip。结果是**只读文本显示器**：选择或拖入目录即解析、逐行打印汇总 / 忽略数 /
+阻塞明细或待改名映射，有阻塞就禁用主按钮（不弹窗），写阶段实时打印被改名的条目，
+**只打印真正改名的文件**，保持原名与原样镜像的只在结束汇总里计数。
 
 ### 代码与体量
 
-`anylabeling/custom/rename_tool/`（4 个文件 1547 行：`rename_core.py` 规则与打包、
-`dialog.py` Qt 层、`launcher.py` 惰性启动、`__init__.py` 导出）；
-测试 `tests/custom/rename_tool/`（8 个文件 2471 行）。
+`anylabeling/custom/rename_tool/`（4 个文件 1762 行：`rename_core.py` 规则与打包
+913 行、`dialog.py` Qt 层 769 行、`launcher.py` 惰性启动、`__init__.py` 导出）；
+测试 `tests/custom/rename_tool/`（8 个文件 2985 行）。
 
 ### 入口符号
 
@@ -565,52 +567,69 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 - **R6 孤儿 `_aug`**：纯 stem 在源目录没有对应图片 → `orphan`：不改名、不占编号、
   以当前名字原样镜像进 zip（它的 json 也不重写 `imagePath`），结果表里单列一类，不阻塞。
 - **R7 阻塞条件**（任一存在即不导出（不写 zip、不碰 `.part`）；blockers 每项一句
-  中文，带文件名）：B1 图片没有同名 json；B2 json 没有同名图片；B3 json 无法解析或
-  顶层不是对象；B4 目录内有子目录（只处理顶层文件）；B5 同一 stem 有多张图片或多份 json。
+  中文，带文件名）：B1 图片没有同名 json；B3 json 无法解析或顶层不是对象；B4 目录内
+  有子目录（只处理顶层文件）；B5 同一 stem 有多张图片或多份 json。
+- **R7b 忽略语义**：顶层 `.json`（大小写不敏感）且同 stem 没有图片 → **忽略**：不进
+  `items` / `mirrored` / `entries()` / zip / `total_files()` / 镜像素数，不阻塞；
+  只进 `plan.ignored`（自然排序），界面只报数量、不列名字。`RenamePlan.stats()` 给出
+  `{total, images, json, ignored, other}`，满足 images+json+ignored+other==total 与
+  total-ignored==total_files()；四个桶按**目录清单**归类（图片 / 有图的 json /
+  无图的 json=ignored / 其余），因此同 stem 出现大小写变体 json（B5）时也没有文件落空；
+  目录读不了时全 0（不抛异常）。
 - **R8 条目名校验**：条目名非空、不含斜杠、不含 `..`、非绝对路径；每个源文件名在
-  计划里恰好出现一次（`check_entry_names` 会重新列一遍源目录顶层文件，漏镜像或重复
-  计入都算问题）；任何改名目标名不得等于任何「原样镜像」文件的名字（already /
-  orphan / mirrored 三类），否则阻塞。结果表显示的名字就是 zip 里的名字，执行期不补后缀。
-  `entry_name_ok` 拒绝任何含连续两个点的名字（`v1..2.txt` 即非法），比「不含 `../`」
-  更严；`execute()` 会把 `check_entry_names` 的结果并入阻塞项，因此非法条目名在扫描
-  阶段就变成阻塞弹窗，而不是等到写 zip 才失败。
-- **R9 只读源目录 + 产出 zip**：zip 是源目录顶层的完整镜像（每个顶层文件一个条目，
-  含 `classes.txt`、隐藏文件、任意二进制文件，原字节）。`plan.mirrored` 的定义就是
-  「顶层里没有被任何 item 的 image_name / json_name 引用的文件」，所以孤儿 json（B2）
-  与同 stem 冲突里的第二张图（B5）也在这里，结果表因此能列出全部文件。先写
-  `<最终名>.part`，成功后 `os.replace` 到最终名；zip 最终名在执行时由
-  `<源目录名>_renamed.zip` 派生、已存在则自动取 `_2`、`_3`…（界面没有文件名输入框，
-  完整路径只在成功弹窗与状态栏里给出）；`write_zip` 自身也把关：`plan.blocked()` 或
-  最终名已存在时直接 `raise RenameError`（不依赖对话框）。失败时**不删除** `.part`，
-  异常信息里带上它的完整路径；图片条目 `ZIP_STORED`，其余条目 `ZIP_DEFLATED`，
-  `allowZip64=True`，不写目录条目；输出 zip 不得落在源目录内。
+  计划里恰好出现一次（`check_entry_names` 会重新列一遍源目录顶层文件，漏镜像、重复
+  计入、幽灵文件、忽略集合与计划重叠都算问题；`plan.ignored` 是完整性守卫的唯一例外，
+  既不被要求镜像、也不允许出现在计划里）；任何改名目标名不得等于任何「原样镜像」文件
+  的名字（already / orphan / mirrored 三类），否则阻塞。`entry_name_ok` 拒绝任何含
+  连续两个点的名字（`v1..2.txt` 即非法），比「不含 `../`」更严；`execute()` 会把
+  `check_entry_names` 的结果并入阻塞项，非法条目名在解析阶段就阻塞（按钮禁用），
+  而不是等到写 zip 才失败。
+- **R9 只读源目录 + 产出 zip**：zip 是源目录顶层的镜像（每个未被忽略的顶层文件一个
+  条目，含 `classes.txt`、隐藏文件、任意二进制文件，原字节）。`plan.mirrored` =
+  「顶层里没有被任何 item 引用的文件」（B5 冲突的第二张图、二进制文件），`plan.ignored`
+  里的 json 有意排除。先写 `<最终名>.part`，成功后 `os.replace` 到最终名；zip 最终名
+  执行时由 `<源目录名>_renamed.zip` 派生、已存在则取 `_2`、`_3`…（界面没有文件名
+  输入框）；`write_zip` 自身把关：`plan.blocked()` 或最终名已存在时 `raise RenameError`；
+  返回 dict 含 `ignored` 计数。`progress(done, total, entry_name, source_name, changed)`
+  **每个条目回调一次**（不节流），终止回调 `progress(total, total, "Done", "", False)`。
+  失败时**不删除** `.part`，异常信息里带上它的完整路径；图片条目 `ZIP_STORED`，其余
+  `ZIP_DEFLATED`，`allowZip64=True`，不写目录条目；输出 zip 不得落在源目录内。
 - **R10 惰性单实例 + 主线程**：`launch_rename_tool(parent)` 内延迟 import 对话框，
   复用 `parent._rename_tool_dialog`；执行在主线程完成，`QCoreApplication.processEvents()`
   驱动进度、期间 `dialog.setEnabled(False)`，**不引入线程、不提供取消**。
-- **R11 交互（拖拽目录 + 一键导出到数据集同级目录）**：`setAcceptDrops(True)`；
-  `dragEnterEvent` 与 `dragMoveEvent` 走同一个辅助方法，只在拖入项里有文件夹时接受、
-  否则忽略，`dropEvent` 取第一个文件夹（`os.path.abspath` 归一化）为源
-  目录，非文件夹项与多余文件夹在状态栏提示「已忽略: 名字（仅支持文件夹 /
-  仅取第一个文件夹）」，一个文件夹都没有时提示「仅支持文件夹」且不改动源目录；
-  拖拽只设定目录，绝不自动导出。界面只有源目录一行与一条只读提示行
-  （「导出到数据集同级目录：<源目录名>_renamed.zip（重名自动加 _2、_3…）」），
-  **没有输出目录选择控件**（没有 `output_button` / `output_label`，也没有
-  `pick_output_dir` / `set_output_dir` / `output_dir`）。主按钮「重命名」
-  （objectName `primary`）在源目录为空时禁用；没有「预览计划」按钮、没有 zip 文件名
-  控件，也没有「确认执行」二次确认。点击后依次做：校验源目录（缺失则告警）；
-  由源目录派生导出目录（`os.path.dirname(os.path.normpath(os.path.abspath(源)))`，
-  即数据集同级目录），派生不出上级（源目录是文件系统根，或上级规范化后等于源目录
-  本身）则告警「源目录没有上级目录，无法导出」并中止，**不写任何文件、不碰 `.part`**；
-  主线程跑 `plan_directory` → `resolve_targets` →
-  `check_entry_names` 并入 blockers（进度条 + `processEvents`，`setEnabled(False)`
-  防重入、finally 恢复）；阻塞则 `QMessageBox.warning` 列前 8 条 + 总数、状态列写
-  「阻塞，未导出」，**不写 zip、不碰 `.part`**；否则写 zip 成功后
-  `QMessageBox.information` 给出完整路径与计数，状态列写「已改名 / 符合规范，保持原名 /
-  孤儿增强文件，保持原名 / 原样镜像」。扫描失败（`plan_directory` 抛 `RenameError`，
-  例如源目录被删或失去读权限）与写 zip 失败（例如上级目录不可写）共用同一条失败出口：
-  先 `_discard_result()` 再 `_report_failure()`，结果表立刻退出成功外观（状态列全部
-  改回「未导出」、统计回到「尚未重命名」，有意保留「新文件名」列），阻塞提示条改显示
-  「导出失败：<原因>」，弹窗与状态栏给出「重命名失败」与半成品 `.part` 路径。
+- **R11 交互（只读显示器 + 选择即解析 + 一键导出）**：`setAcceptDrops(True)`；
+  `dragEnterEvent` / `dragMoveEvent` 走同一辅助方法，只在拖入项里有文件夹时接受；
+  `dropEvent` 取第一个文件夹（`os.path.abspath` 归一化），非文件夹项与多余文件夹
+  在状态栏提示「已忽略: 名字（仅支持文件夹 / 仅取第一个文件夹）」，没有文件夹时提示
+  「仅支持文件夹」；拖拽只设定目录、绝不自动导出。界面 = 源目录一行 + 只读提示行
+  （「导出到数据集同级目录：<源目录名>_renamed.zip（重名自动加 _2、_3…）」）+ 按钮行 +
+  **只读显示器** `QPlainTextEdit`（objectName `rename_log`、等宽、NoWrap、上限
+  `DISPLAY_MAX_BLOCKS = 5000`）+ 进度条 + 状态栏一行；**没有表格 / 统计标签 / 阻塞
+  标签 / `QProgressDialog`**，也没有输出目录控件（`output_button` / `output_label` /
+  `pick_output_dir` / `set_output_dir` / `output_dir`）、预览按钮、zip 文件名控件与
+  二次确认。`pick_source_dir()` 与 `dropEvent()` 同走 `set_source_dir(path)` =
+  清显示器 → 记源 → 立即 `parse_source()`（主线程同步跑，进度条 + `processEvents`，
+  `setEnabled(False)` 防重入、finally 恢复），解析完即刷新按钮。主按钮「重命名」
+  （objectName `primary`）仅在**四条件**同时满足时启用：源目录非空、`export_dir(源)`
+  非空、`self._plan is not None and not self._plan.blocked()`、不在忙碌中；
+  `_refresh_actions()` 是唯一出口。显示器逐行输出（行顺序固定、不折叠、不列 ignored
+  名字）：①汇总行「共 N 个文件：图片 i、成对 json j、其他 o、忽略 k（原样镜像 m）」；
+  ②忽略行（只数量）；③阻塞时「发现 N 处阻塞，不能重命名，未写入任何文件（含 .part）：」
+  + B1 明细「图片缺少同名 json（N 张）：」与每行一个文件名 + 「其他问题：」与每行一条；
+  ④无阻塞时「待改名 N 个：」与每行一个 `a.jpg -> person_1.jpg`（N==0 打印「没有需要
+  改名的文件」；目录为空打印「目录为空：可以重命名（会得到一个 0 条目的 zip）」）；
+  ⑤解析失败打印「无法解析目录：<RenameError 文案>」（按钮禁用）。**阻塞不弹窗**：靠
+  显示器首行 + 状态栏 + 禁用按钮提示。点击后：校验源目录（缺失则告警）；派生导出目录
+  `os.path.dirname(os.path.normpath(os.path.abspath(源)))`，派生不出上级（根目录 / 上级
+  规范化后等于源目录）则告警「源目录没有上级目录，无法导出」并中止；再校验 `self._plan`
+  存在且未阻塞（防御性），否则不导出。写阶段只打印**真正被改名**的条目
+  「a.jpg -> person_1.jpg    12/45」（i/N = 第 i 个改名文件 / 待改名文件总数，未改名者
+  不打印，进度条也**只随改名的文件前进**、不因未改名条目回跳）；结束打印
+  「已导出：<zip 绝对路径>」与「共 N 个文件：改名 X、保持原名 Y、原样镜像 Z、忽略 K」，
+  **N = 归档条目数 + 忽略数**（即整个源目录，与解析汇总同口径），四个桶互斥且加起来
+  就是 N；状态栏的「发现 N 处阻塞」与显示器同一口径（B1 按图片张数计，其余 blocker
+  每条计 1）；失败**不追加成功行**，追加「重命名失败：<原因>」与（有则）
+  「半成品已保留：<path>.part」，状态栏同步，**写失败弹窗保留**（裁决 1 只针对阻塞）。
 - **例子**（`tests/custom/rename_tool/test_rt_plan.py` 逐条断言）：
   - E1 `a.jpg`+`a.json`(person) → `person_1.jpg` / `person_1.json`（rename）
   - E2 `person_1.jpg`+`person_1.json`(person) → 目标 == 当前 → already，占位 1
@@ -626,7 +645,7 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/rename_tool -v`
-（需 PyQt6；本工作区 237 个用例全部通过）。
+（需 PyQt6；本工作区 271 个用例全部通过）。
 
 ### 已知坑
 
@@ -635,21 +654,22 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 - 空目录、或没有任何待改名项的目录（全部已符合规范）点一次也会导出一份镜像 zip：
   前者是 0 条目的 zip，后者条目全部原样镜像；源目录只读，绝不覆盖既有文件（zip
   重名时自动取 `_2`、`_3`…）。
-- 缺 json、坏 json、只有 json 没图片、子目录、同 stem 多文件都会**整体阻塞**，
-  一项都不改；点击「重命名」被阻塞时结果表仍列出顶层全部文件，但每一行的状态列都是
-  「阻塞，未导出」（因为确实什么都没导出），弹窗与阻塞提示条给出原因（最多前 8 条 +
-  总数），数据集同级目录里不会出现任何文件，包括 `.part`。
+- 缺 json、坏 json、子目录、同 stem 多文件都会**整体阻塞**，一项都不改；显示器给出
+  原因（全部列出，界面上限 5000 行），主按钮禁用、状态栏同步提示，数据集同级目录里不会
+  出现任何文件，包括 `.part`。**只有 json 没有图片不再阻塞**：忽略它，只报数量。
 - 孤儿 `_aug` 放行且保持原名（它没有父项可继承编号），也不占号。
-- 失败出口只回退「状态」列与统计，「新文件名」列保留本次扫描算出的结果，方便用户看到
-  本会改成什么名字；此时阻塞提示条与状态栏写的是失败原因，而不是「未发现阻塞项」。
+- 失败出口（扫描与写 zip 共两条分支）都在显示器里追加失败原因、不追加成功行，已经打印
+  的写进度行保留；写失败同时回退按钮（`_refresh_actions()`）并弹窗，状态栏同步。
+- 显示器开了 `setMaximumBlockCount(5000)`：Qt 到上限会丢行，`toPlainText()` 可能返回
+  空串，读回一律用自有的 `plain_text()` / `log_lines()`（那一份不受上限影响）。
 - 失败留下的 `.part` 要自行处理：工具绝不删除任何文件，下一次执行会被「临时文件
   已存在」挡下来，需要人工确认后处理。
 - 图片条目 `ZIP_STORED`、其余条目 `ZIP_DEFLATED`：图片本来就不压缩，再套一层
   deflate 只会变慢；json 文本压得动。
 - R8 第 3 条（改名目标不得等于已被占用的名字）分两种来源：
   ① 光看 `plan.mirrored` 在可解析的目录里撞不上——图片形状的名字只有在同 stem 已被
-  另一张图片占用（那是 B5，已阻塞）时才会进 mirrored，`.json` 形状则只可能是孤儿
-  json（B2）或 B5 重复，所以扩展名形状互斥；白盒用例（手工往 `plan.mirrored` 里加
+  另一张图片占用（那是 B5，已阻塞）时才会进 mirrored，`.json` 形状则只可能是 B5
+  重复，所以扩展名形状互斥；白盒用例（手工往 `plan.mirrored` 里加
   撞名）钉的就是这个分支。
   ② 但 `plan.unchanged_names()` 还包含 already / orphan 两类 item 的当前名字，orphan
   的名字就是普通的 `<stem>_aug<x>.jpg` 形状，**真实目录里撞得上**：`b.jpg` +
@@ -659,8 +679,9 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
   `person_1` 没有图片成为 orphan 保持原名，于是撞名阻塞。不拦就会写出两个同名 zip 条目，
   所以这是真实可达的阻塞，用例见 `test_rt_blockers.py` 的
   `test_target_collides_with_orphan_name_in_a_real_folder`。
-- 扫描与打包都在主线程：几千个文件的大目录会卡住界面，靠进度条 +
+- 扫描与打包都在主线程：几千个文件的大目录会在解析时短暂卡住界面，靠进度条 +
   `processEvents` 维持响应，不提供取消（取消会留下用户看不见的 `.part`）。
+- 阻塞不弹窗（裁决 1）：只有显示器首行 + 状态栏 + 禁用按钮；写 zip 失败仍然弹窗。
 
 ## 变更台账
 

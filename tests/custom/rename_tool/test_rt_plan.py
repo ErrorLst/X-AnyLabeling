@@ -281,3 +281,109 @@ class TestPlanSurface:
         )
         assert seen[-1] == (2, 2, "Done")
         assert [entry[:2] for entry in seen[:-1]] == [(1, 2), (2, 2)]
+
+
+class TestPlanStats:
+    """stats() splits every top level file into one of its buckets."""
+
+    def test_exact_counts(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        write_image(rt_dataset, "b.png")
+        write_json(rt_dataset, "c.json", shapes=[])
+        write_image(rt_dataset, "classes.txt", b"person\n")
+        plan = _plan(rt_dataset)
+        assert plan.blocked() is True
+        assert plan.ignored == ["c.json"]
+        assert plan.mirrored == ["classes.txt"]
+        assert plan.stats() == {
+            "total": 5,
+            "images": 2,
+            "json": 1,
+            "ignored": 1,
+            "other": 1,
+        }
+
+    def test_adds_up_to_the_listing(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        make_pair(rt_dataset, "a_aug1", "person")
+        write_json(rt_dataset, "gone.json", shapes=[])
+        write_image(rt_dataset, "blob.bin", b"\x00\x01")
+        plan = _plan(rt_dataset)
+        stats = plan.stats()
+        assert stats["total"] == len(os.listdir(rt_dataset))
+        assert (
+            stats["images"]
+            + stats["json"]
+            + stats["ignored"]
+            + stats["other"]
+            == stats["total"]
+        )
+        assert stats["total"] - stats["ignored"] == plan.total_files()
+
+    def test_ignored_json_with_kept_files(self, rt_dataset):
+        """R7b: ignored json never cost a kept file its bucket."""
+
+        make_pair(rt_dataset, "person_1", "person")
+        make_pair(rt_dataset, "b", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        plan = _plan(rt_dataset)
+        assert plan.ignored == ["c.json"]
+        assert sorted(
+            item.image_name for item in plan.unchanged_items()
+        ) == ["person_1.jpg"]
+        stats = plan.stats()
+        assert stats == {
+            "total": 5,
+            "images": 2,
+            "json": 2,
+            "ignored": 1,
+            "other": 0,
+        }
+        assert (
+            stats["images"]
+            + stats["json"]
+            + stats["ignored"]
+            + stats["other"]
+            == stats["total"]
+        )
+
+    def test_case_variant_json_without_image_stays_classified(
+        self, rt_dataset
+    ):
+        """a.json + a.JSON without an image: no bucket loses a file."""
+
+        write_json(rt_dataset, "a.json", shapes=[])
+        write_json(rt_dataset, "a.JSON", shapes=[])
+        write_image(rt_dataset, "blob.bin", b"\x00\x01")
+        plan = _plan(rt_dataset)
+        assert plan.blocked() is True
+        assert "组同名冲突" in "".join(plan.blockers)
+        stats = plan.stats()
+        assert stats["total"] == 3
+        assert (
+            stats["images"]
+            + stats["json"]
+            + stats["ignored"]
+            + stats["other"]
+            == stats["total"]
+        )
+
+    def test_empty_folder_is_all_zero(self, rt_dataset):
+        assert _plan(rt_dataset).stats() == {
+            "total": 0,
+            "images": 0,
+            "json": 0,
+            "ignored": 0,
+            "other": 0,
+        }
+
+    def test_unreadable_folder_is_all_zero(self, rt_make):
+        missing = os.path.join(rt_make(), "gone")
+        plan = core.RenamePlan(directory=missing)
+        assert plan.stats() == {
+            "total": 0,
+            "images": 0,
+            "json": 0,
+            "ignored": 0,
+            "other": 0,
+        }

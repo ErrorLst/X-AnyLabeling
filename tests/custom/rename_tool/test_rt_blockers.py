@@ -63,24 +63,56 @@ class TestB1MissingJson:
         assert all(source != "bad.json" for source, _ in plan.entries())
 
 
-class TestB2OrphanJson:
-    """A json without an image blocks the whole folder."""
+class TestIgnoredOrphanJson:
+    """A json without an image is ignored, never a blocker.
 
-    def test_reports_the_json(self, rt_dataset):
+    It is not an item, not a mirrored entry, not a zip entry and not
+    counted by total_files(); only plan.ignored and stats() report it.
+    """
+
+    def test_does_not_block(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
         write_json(rt_dataset, "c.json", shapes=[])
         plan = _plan(rt_dataset)
-        assert plan.blocked() is True
-        text = " | ".join(plan.blockers)
-        assert "1 个 json 没有同名图片" in text
-        assert "c.json" in text
+        assert plan.blocked() is False
+        assert plan.blockers == []
+        assert plan.ignored == ["c.json"]
 
-    def test_orphan_json_is_mirrored_for_the_preview(self, rt_dataset):
+    def test_is_not_an_item_nor_mirrored(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
         write_json(rt_dataset, "c.json", shapes=[])
         plan = _plan(rt_dataset)
-        assert "c.json" in plan.mirrored
-        assert ("c.json", "c.json") in plan.entries()
+        assert "c.json" not in plan.mirrored
+        assert plan.item_by_filename("c.json") is None
+
+    def test_is_not_an_entry(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        plan = _plan(rt_dataset)
+        assert ("c.json", "c.json") not in plan.entries()
+        assert plan.total_files() == 2
+
+    def test_is_counted_by_stats(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        stats = _plan(rt_dataset).stats()
+        assert stats["total"] == 3
+        assert stats["ignored"] == 1
+        assert stats["total"] - stats["ignored"] == 2
+
+    def test_several_keep_the_natural_order(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c10.json", shapes=[])
+        write_json(rt_dataset, "c2.json", shapes=[])
+        plan = _plan(rt_dataset)
+        assert plan.ignored == ["c2.json", "c10.json"]
+        assert plan.blocked() is False
+
+    def test_paired_json_is_not_ignored(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        plan = _plan(rt_dataset)
+        assert plan.ignored == []
+        assert plan.blocked() is False
 
 
 class TestB3BrokenJson:
@@ -176,11 +208,13 @@ class TestCombined:
         os.makedirs(os.path.join(rt_dataset, "sub"))
         plan = _plan(rt_dataset)
         text = " | ".join(plan.blockers)
-        assert len(plan.blockers) == 4
+        assert len(plan.blockers) == 3
+        assert plan.blocked() is True
         assert "缺少同名 json" in text
-        assert "没有同名图片" in text
+        assert "没有同名图片" not in text
         assert "无法解析" in text
         assert "子目录" in text
+        assert plan.ignored == ["c.json"]
 
     def test_blockers_are_chinese_sentences(self, rt_dataset):
         write_image(rt_dataset, "a.jpg")
@@ -286,6 +320,21 @@ class TestEntryNameBlocking:
         make_pair(rt_dataset, "a", "person")
         write_image(rt_dataset, "a.txt", b"text")
         assert core.check_entry_names(_plan(rt_dataset)) == []
+
+    def test_ignored_json_is_not_reported_as_missing(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        plan = _plan(rt_dataset)
+        assert plan.ignored == ["c.json"]
+        assert core.check_entry_names(plan) == []
+
+    def test_ignored_json_inside_the_plan_is_reported(self, rt_dataset):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        plan = _plan(rt_dataset)
+        plan.entries = lambda: [("c.json", "c.json")]
+        problems = core.check_entry_names(plan)
+        assert "忽略集合与计划重叠：c.json" in problems
 
 
 class TestNonDecimalDigits:
