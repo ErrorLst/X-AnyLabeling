@@ -56,6 +56,8 @@ class StubMainWindow(QtWidgets.QWidget):
         self.minimized = minimized
         self.loaded = []
         self.asked_may_continue = 0
+        # every call that would lift the window or take the keyboard:
+        # a jump may not make any of them (see the activation tests)
         self.activation = []
 
     def load_file(self, filename):
@@ -426,28 +428,28 @@ def test_unsaved_annotations_stop_the_jump(qt_app, tmp_path):
         widget.deleteLater()
 
 
-def test_open_record_loads_the_image_and_activates_the_window(
+def test_open_record_loads_the_image_without_lifting_the_window(
     bridge, window, tmp_path
 ):
-    "A passing jump loads the staging picture and fronts the window."
+    "A passing jump loads the staging picture and lifts nothing."
 
     record = make_record(tmp_path)
     spy = QSignalSpy(bridge.status_message)
     assert bridge.open_record(record) is True
     assert window.loaded == [record.staging_image_path]
-    # the window was neither minimized nor maximized by the jump: the
-    # plain front is enough and showNormal() would unmaximize it
-    assert window.activation == ["raise_", "activateWindow"]
+    # the jump switches the current file of the main window alone: no
+    # raise and no activation, so the keyboard stays where the user
+    # left it and the follow never pulls the focus out of the
+    # validation window
+    assert window.activation == []
     assert window.minimized is False
     assert window.asked_may_continue == 1
     assert len(spy) == 1
     assert "打开" in spy[0][0]
 
 
-def test_a_minimized_main_window_comes_back_to_normal(
-    qt_app, tmp_path
-):
-    "The one state showNormal() is for: a window in the task bar."
+def test_a_minimized_main_window_stays_in_the_task_bar(qt_app, tmp_path):
+    "A minimized main window is not brought back by a jump either."
 
     widget = StubMainWindow(minimized=True)
     item = MainWindowBridge(widget)
@@ -455,12 +457,12 @@ def test_a_minimized_main_window_comes_back_to_normal(
     try:
         assert item.open_record(record) is True
         assert widget.loaded == [record.staging_image_path]
-        assert widget.activation[0] == "showNormal"
-        assert widget.activation == [
-            "showNormal",
-            "raise_",
-            "activateWindow",
-        ]
+        # even a window in the task bar is left there: bringing it
+        # back would mean taking the keyboard away from the window
+        # the user is working in, which is exactly the bug this
+        # contract pins
+        assert widget.activation == []
+        assert widget.minimized is True
     finally:
         item.detach()
         widget.close()

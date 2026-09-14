@@ -491,6 +491,14 @@ class MainWindowBridge(QtCore.QObject):
         the main window reads. True means the record is on screen in
         the main window.
 
+        The jump only switches the current file of the main window: it
+        never lifts the main window and never takes the keyboard focus,
+        because the user is the one who decides where the focus goes.
+        ``load_file`` ends on ``canvas.setFocus()`` upstream, so the
+        window that asked for the jump is the one that takes the focus
+        back (see ``ModelValidationDialog._restore_validation_focus``);
+        a raise or a front is the click of the user alone.
+
         The sibling is refreshed from the canonical label before it is
         handed to the main window, and a save the debounce has not
         carried back yet is flushed first: refreshing the mirror before
@@ -564,7 +572,6 @@ class MainWindowBridge(QtCore.QObject):
             return False
         self._sync.note_sibling(record)
         window.load_file(image_path)
-        self._activate(window)
         self.status_message.emit(
             "已在主窗口中打开：%s" % osp.basename(image_path)
         )
@@ -654,31 +661,6 @@ class MainWindowBridge(QtCore.QObject):
         except OSError:
             return False
         return True
-
-    @staticmethod
-    def _activate(window) -> None:
-        """Bring the main window to the front.
-
-        A LabelingWidget is not a top level window, so the widget
-        window() answers is the one to show, raise and activate. A
-        maximized main window is left maximized: showNormal() is only
-        the way back from the task bar, so it is called for a minimized
-        window alone.
-        """
-
-        getter = getattr(window, "window", None)
-        top = getter() if callable(getter) else None
-        if top is None:
-            top = window
-        is_minimized = getattr(top, "isMinimized", None)
-        if callable(is_minimized) and is_minimized():
-            show = getattr(top, "showNormal", None)
-            if callable(show):
-                show()
-        for name in ("raise_", "activateWindow"):
-            method = getattr(top, name, None)
-            if callable(method):
-                method()
 
 
 __all__ = [

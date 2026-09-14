@@ -148,6 +148,9 @@ class StubMainWindow(QtWidgets.QWidget):
         self.loaded = []
         self.output_dir = ""
         self.requests = 0
+        # every call that would lift the main window or take the
+        # keyboard: a follow may not make any of them
+        self.activation = []
 
     def load_file(self, path: str) -> bool:
         self.loaded.append(str(path))
@@ -156,6 +159,18 @@ class StubMainWindow(QtWidgets.QWidget):
     def may_continue(self) -> bool:
         self.requests += 1
         return True
+
+    def isMinimized(self) -> bool:  # noqa: N802
+        return False
+
+    def showNormal(self) -> None:
+        self.activation.append("showNormal")
+
+    def raise_(self) -> None:
+        self.activation.append("raise_")
+
+    def activateWindow(self) -> None:
+        self.activation.append("activateWindow")
 
 
 class StubWorker(QtCore.QObject):
@@ -228,6 +243,32 @@ def silence_scheduler(dialog, monkeypatch) -> list:
 
     monkeypatch.setattr(dialog.scan_scheduler, "schedule", schedule)
     return calls
+
+
+def monkeypatch_focus(dialog, calls: list) -> None:
+    "Record the order of the two focus calls of the window."
+
+    monkeypatch_activate(dialog, lambda: calls.append("activateWindow"))
+    page = dialog.results_page
+    real_focus = page.focus_results
+
+    def focus_results() -> None:
+        calls.append("focus_results")
+        real_focus()
+
+    page.focus_results = focus_results
+
+
+def monkeypatch_activate(dialog, activate) -> None:
+    "Replace the activation of the window, keeping Qt out of the test."
+
+    dialog.activateWindow = activate
+
+
+def monkeypatch_minimized(dialog, minimized: bool) -> None:
+    "Report the window as minimized, as a window manager would."
+
+    dialog.isMinimized = lambda: bool(minimized)
 
 
 # ------------------------------------------------------------- residue
@@ -490,6 +531,100 @@ def test_the_follow_only_runs_while_the_results_page_is_shown(
         dialog.close()
         window.close()
         keep_alive(dialog, window)
+
+
+# ------------------------------------------------------- focus of a jump
+def test_a_follow_takes_the_focus_back_to_the_validation_window(
+    qt_app, tmp_path, monkeypatch
+):
+    "The follow loads the record and leaves the keyboard in the window."
+
+    root = staging_root(str(tmp_path))
+    record = staged_record(root, "a.png")
+    window = StubMainWindow()
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        # the real page entry is kept: the focus has to land on the
+        # list for real, not on a stub of it
+        activations = []
+        monkeypatch_focus(dialog, activations)
+        finish_run(dialog, root, [record])
+        assert wait_for(lambda: window.loaded == [record.staging_image_path])
+        assert wait_for(lambda: len(activations) >= 2)
+        QtTest.QTest.qWait(50)
+
+        # the upstream load_file ends on canvas.setFocus(): the
+        # keyboard is asked back on the next turn, and the main
+        # window is neither raised nor activated by the jump
+        assert activations == ["activateWindow", "focus_results"]
+        assert window.activation == []
+        assert dialog.results_page.table.hasFocus() is True
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_a_refused_follow_never_takes_the_focus(qt_app, tmp_path):
+    "A rejected jump loaded no file, so it steals no focus."
+
+    root = staging_root(str(tmp_path))
+    record = staged_record(root, "a.png")
+    window = StubMainWindow()
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        finish_run(dialog, root, [record])
+        assert dialog.results_page.displayed_record() is record
+        calls = []
+        dialog.bridge.open_record = (
+            lambda item: calls.append(item) or False
+        )
+        activations = []
+        monkeypatch_focus(dialog, activations)
+        dialog.follow_timer.stop()
+        dialog._open_current_in_main_window()
+        QtTest.QTest.qWait(50)
+
+        # the jump was asked for and refused: no file was loaded, so
+        # the window that refused it never takes the focus either
+        assert calls == [record]
+        assert window.loaded == []
+        assert activations == []
+        assert window.activation == []
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_the_focus_comes_back_only_to_a_visible_window(
+    qt_app, monkeypatch
+):
+    "A hidden or minimized window is left exactly as it is."
+
+    dialog = ModelValidationDialog()
+    try:
+        activations = []
+        monkeypatch_focus(dialog, activations)
+        # a window nobody showed: the queued call must not raise the
+        # window the user never opened
+        assert dialog.isVisible() is False
+        dialog._restore_validation_focus()
+        assert activations == []
+
+        show_dialog(dialog)
+        dialog._restore_validation_focus()
+        assert activations == ["activateWindow", "focus_results"]
+
+        monkeypatch_minimized(dialog, True)
+        activations.clear()
+        dialog._restore_validation_focus()
+        assert activations == []
+    finally:
+        dialog.close()
+        keep_alive(dialog)
 
 
 # --------------------------------------------------------- watcher flow

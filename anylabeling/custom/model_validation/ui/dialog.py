@@ -406,7 +406,39 @@ class ModelValidationDialog(QtWidgets.QDialog):
         if record is None:
             self._show_status_message(self.tr("没有可打开的记录"))
             return
-        self.bridge.open_record(record)
+        if not self.bridge.open_record(record):
+            # a refused jump never loaded a file, so there is no focus
+            # to take back and the refusal stays the only effect
+            return
+        # The upstream load_file ends on canvas.setFocus(), which hands
+        # the active window to the main window; the keyboard belongs to
+        # this window, so it is asked back one turn later. The call is
+        # deferred because load_file is still running: the focus set
+        # here would be the one the upstream line overwrites.
+        QtCore.QTimer.singleShot(0, self._restore_validation_focus)
+
+    def _restore_validation_focus(self) -> None:
+        """Give the keyboard back to the validation window.
+
+        Called one turn after a successful follow. The jump switches
+        the file of the main window alone and this window is never
+        lifted by it, so what is restored here is the focus and not
+        the stacking: the page that carries the A / D navigation gets
+        the focus back and the user can keep browsing.
+
+        A window the user hid or minimized is left exactly as it is,
+        and every call is guarded: the queued turn may arrive after
+        the window was closed and its C++ side deleted, which is the
+        ordinary end of a window, not a failure.
+        """
+
+        try:
+            if not self.isVisible() or self.isMinimized():
+                return
+            self.activateWindow()
+            self.results_page.focus_results()
+        except RuntimeError:
+            pass
 
     def _on_current_record_changed(self, record_id: str) -> None:
         """Restart the debounce that follows the record on screen.

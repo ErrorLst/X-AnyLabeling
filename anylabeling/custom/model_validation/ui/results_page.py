@@ -1286,6 +1286,21 @@ class ResultsPage(QtWidgets.QWidget):
             if record.record_id in wanted and record.kind == kind
         ]
 
+    def focus_results(self) -> None:
+        """Give the keyboard back to this page.
+
+        This is the page level entry of the focus: the list is the
+        widget the A / D navigation is meant to be used from, and both
+        shortcuts fire while any child of this page holds the focus.
+        A window that was closed and whose C++ side was deleted is the
+        ordinary end of a window, not a failure.
+        """
+
+        try:
+            self.table.setFocus()
+        except RuntimeError:
+            pass
+
     def current_record(self) -> Optional[ValidationRecord]:
         """Return the record of the current row."""
 

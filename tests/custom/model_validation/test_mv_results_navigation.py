@@ -634,6 +634,37 @@ def test_the_page_keeps_the_canvases_and_the_list_in_step(qt_app, tmp_path):
         page.close()
 
 
+def test_focus_results_gives_the_list_the_keyboard(qt_app):
+    "The page level focus entry lands on the list, once per call."
+
+    page = ResultsPage()
+    records = [
+        records_module.make_record(
+            records_module.KIND_ORIGINAL, f"a{index}.png", ""
+        )
+        for index in range(3)
+    ]
+    page.resize(1024, 640)
+    page.set_records(records)
+    page.filter_combo.setCurrentIndex(0)
+    page.show()
+    QtWidgets.QApplication.processEvents()
+    try:
+        page.table.clearFocus()
+        assert page.table.hasFocus() is False
+        page.focus_results()
+        QtWidgets.QApplication.processEvents()
+        assert page.table.hasFocus() is True
+        # the A / D navigation still works from that focus, and the
+        # page hands it out again without any effect of its own
+        page.focus_results()
+        QTest.keyClick(page.table, QtCore.Qt.Key.Key_D)
+        QtWidgets.QApplication.processEvents()
+        assert page.table.currentRow() == 1
+    finally:
+        page.close()
+
+
 def test_the_top_level_widget_keeps_the_focus_path(qt_app):
     "A key sent to the page itself walks the list as well."
 
