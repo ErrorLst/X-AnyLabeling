@@ -37,6 +37,7 @@ from anylabeling.custom.remote_training.poller import (
     cancel_outcome,
     client_error_view,
     command_outcome,
+    files_from_payload,
     is_terminal,
     looks_terminal_by_model,
     merge_job_into_ledger,
@@ -617,6 +618,39 @@ def test_ct39_external_resume_and_the_single_files_resend(workdir):
     record = workdir.load_ledger().record(jid)
     assert record.is_terminal is False
     assert record.status == "queued"
+
+
+def test_files_from_payload_shapes():
+    """The one manifest parser: the tick and the explicit read agree.
+
+    The polling tick and the explicit read of a terminal job
+    (worker.ManifestWorker) share this function, so the body of route 13
+    renders one and the same table whichever path fetched it.  A bare
+    list is the rows too; every other shape - a missing key, a string,
+    null - is an empty list and never an exception (spec §3.2.2 #13
+    promises the shape, and a violation must not read as "no
+    artifacts").
+    """
+
+    rows = [{"file_id": "f_1", "path": "weights/best.pt", "partial": False}]
+    mapping = {"files": rows}
+    parsed = files_from_payload(mapping)
+    assert parsed == rows
+    assert parsed is not rows, "the payload list must be copied, not shared"
+    assert parsed is not mapping["files"]
+    parsed.append({"file_id": "f_2"})
+    assert mapping["files"] == rows
+    assert files_from_payload({"files": tuple(rows)}) == rows
+
+    assert files_from_payload(rows) == rows
+    assert files_from_payload(rows) is not rows
+    assert files_from_payload(()) == []
+
+    assert files_from_payload({}) == []
+    assert files_from_payload(None) == []
+    assert files_from_payload("str") == []
+    assert files_from_payload({"files": None}) == []
+    assert files_from_payload({"files": "str"}) == []
 
 
 def test_ct39_fallback_whitelist_keeps_the_other_fields(workdir):

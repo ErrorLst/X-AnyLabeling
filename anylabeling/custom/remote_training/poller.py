@@ -85,6 +85,7 @@ __all__ = [
     "command_outcome",
     "event_display",
     "failure_exit",
+    "files_from_payload",
     "format_event",
     "has_field",
     "is_terminal",
@@ -1233,6 +1234,28 @@ def command_outcome(
     return resume_outcome(job_id, data, error)
 
 
+def files_from_payload(data: Any) -> List[Any]:
+    """The artifact list of one route 13 / route 13 shaped payload.
+
+    The one parser of the manifest body: the polling tick and the
+    explicit read of a terminal job (worker.ManifestWorker) must agree
+    on what a manifest is, or the same server body would render two
+    different tables.  A mapping carries the rows under "files"; a bare
+    list is the rows.  Anything else - a missing key, a string, null -
+    is an empty list, never an error: spec §3.2.2 #13 promises the
+    shape and a violation must not be mistaken for "no artifacts".
+    """
+
+    if isinstance(data, Mapping):
+        raw = data.get("files")
+        if isinstance(raw, (list, tuple)):
+            return list(raw)
+        return []
+    if isinstance(data, (list, tuple)):
+        return list(data)
+    return []
+
+
 # --------------------------------------------------------------------
 # The scheduler: one poll tick
 # --------------------------------------------------------------------
@@ -1739,13 +1762,7 @@ class Scheduler:
             return
         outcome.attempted += 1
         self._success()
-        files: List[Any] = []
-        if isinstance(data, Mapping):
-            raw = data.get("files")
-            if isinstance(raw, (list, tuple)):
-                files = list(raw)
-        elif isinstance(data, (list, tuple)):
-            files = list(data)
+        files = files_from_payload(data)
         self._note(job_id, files_count=len(files))
         if outcome.results:
             target = outcome.results[-1]

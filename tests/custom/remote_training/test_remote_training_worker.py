@@ -8,6 +8,7 @@ worker) before the window is allowed to go away.
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
@@ -699,6 +700,83 @@ def test_results_page_entry_polls_its_own_page(qapp, tmp_path):
     window.stop_polling()
 
 
+#: The manifest of a finished job: the two rows the report is about.
+MANIFEST = [
+    {
+        "file_id": "f_best",
+        "path": "run/train/weights/best.pt",
+        "size": 1024,
+        "mtime": "2026-01-01T11:00:00Z",
+        "partial": False,
+    },
+    {
+        "file_id": "f_summary",
+        "path": "summary.json",
+        "size": 128,
+        "mtime": "2026-01-01T11:00:00Z",
+        "partial": False,
+    },
+]
+SUMMARY = {"duration_seconds": 612.5, "final_metrics": {"mAP50": 0.512}}
+
+
+class ArtifactBody:
+    """The in-memory body of one route 14 read (no socket involved)."""
+
+    def __init__(self, payload):
+        self._raw = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_chunks(self):
+        yield self._raw
+
+
+def test_a_finished_job_fills_the_results_page_on_entry(qapp, tmp_path):
+    """§5.2-F: a terminal job shows its manifest on entry, not never.
+
+    The poller skips the files route on a terminal tick (spec §5.5.2),
+    so the table show_results() cleared could never be refilled and the
+    summary, which is read out of that same table, stayed empty.  The
+    page now reads the manifest once, explicitly, on entry.
+    """
+
+    store = Store(str(tmp_path / "ledger"))
+    seed(store, status="completed", is_terminal=True,
+         finished_at="2026-01-01T11:00:00Z")
+    client = ScriptedClient()
+    client.jobs = [job(status="completed", is_terminal=True,
+                       finished_at="2026-01-01T11:00:00Z")]
+    calls = []
+
+    def counting(job_id, include_partial=True):
+        calls.append((job_id, bool(include_partial)))
+        return {"files": [dict(item) for item in MANIFEST]}
+
+    client.list_job_files = counting
+    client.open_job_file = lambda job_id, file_id, **kw: ArtifactBody(SUMMARY)
+    window = open_window(Parent(), store, client)
+    window.show_results(JOB_ID)
+    pump(qapp, 600)
+    window.stop_polling()
+
+    assert calls == [(JOB_ID, True)]
+    assert window.results_page.files_job_id == JOB_ID
+    assert window.results_page.tree.rowCount() == len(MANIFEST)
+    assert window.results_page.files == MANIFEST
+    assert "已加载产物清单" in window.results_page.debug_text()
+    assert "duration_seconds: 612.5" in (
+        window.results_page.summary_edit.toPlainText()
+    )
+    # The latch: a second tick never re-reads the same manifest.
+    assert window.load_manifest(JOB_ID) is None
+    assert calls == [(JOB_ID, True)]
+
+
 def test_manual_resume_event_reaches_the_debug_area(qapp, tmp_path):
     """A manual_resume event is written back and logged (spec §5.5.3)."""
 
@@ -1085,6 +1163,7 @@ def test_r3_close_channels_cover_the_new_workers():
     assert "submitted" in CLOSE_CHANNELS
     assert "reconciled" in CLOSE_CHANNELS
     assert "polled" in CLOSE_CHANNELS and "command_done" in CLOSE_CHANNELS
+    assert "manifest_loaded" in CLOSE_CHANNELS
 
 
 def test_r3_cancelled_submit_worker_emits_nothing(qapp):

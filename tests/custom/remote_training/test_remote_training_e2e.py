@@ -1014,5 +1014,33 @@ def test_b8_chain_polls_cancels_resumes_and_downloads(
         assert record.status == "completed"
         assert record.is_terminal is True
         assert window.detail_page.badge.text() == "已完成"
+
+        # 13) the terminal results page: the tick never pulls route 13
+        # for a finished job (5.5.2), so the *increment* of this entry
+        # has to be exactly one - the explicit read of the result step -
+        # and the routine 60 s tick must not ask again (the latch).
+        files_before = server.files_calls
+        window.show_results(JOB_ID)
+        deadline = time.monotonic() + 5.0
+        while (
+            server.files_calls == files_before
+            and time.monotonic() < deadline
+        ):
+            pump(qapp, 50)
+        assert server.files_calls == files_before + 1
+        assert window.results_page.tree.rowCount() == 3
+        assert [row["path"] for row in window.results_page.files] == [
+            "summary.json",
+            "weights/best.pt",
+            "partial/weights/last.pt",
+        ]
+        assert "final_metrics: mAP50={0}".format(
+            summary["final_metrics"]["mAP50"]
+        ) in window.results_page.summary_edit.toPlainText()
+        assert "已加载产物清单" in window.results_page.debug_text()
+        # The latch holds on the terminal fallback tick as well.
+        assert window.wake_polling("results") is True
+        pump(qapp, 400)
+        assert server.files_calls == files_before + 1
     finally:
         close_window(window, qapp)

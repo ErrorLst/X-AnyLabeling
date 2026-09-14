@@ -34,6 +34,7 @@ from anylabeling.custom.remote_training.ui import config_page as config_ui
 from anylabeling.custom.remote_training.ui import detail_page as detail_ui
 from anylabeling.custom.remote_training.ui import jobs_page as jobs_ui
 from anylabeling.custom.remote_training.ui import results_page as res_ui
+from anylabeling.custom.remote_training.ui.close_guard import workers_finished
 from anylabeling.custom.remote_training.ui.dialog import (
     CLOSE_CHANNELS,
     RemoteTrainingDialog,
@@ -412,6 +413,11 @@ class DownloadClient:
         self.chunk_delay = float(chunk_delay)
         self.files = list(FILES if files is None else files)
         self.requests: list = []
+        #: The explicit manifest read of a terminal job (spec §5.6.2) is
+        #: counted apart from `requests`: those two download routes are
+        #: asserted to stay empty by several existing cases.
+        self.files_calls = 0
+        self.files_requests: list = []
 
     # -- the read routes a window needs once its pages start polling
     def get_job(self, job_id):
@@ -424,6 +430,8 @@ class DownloadClient:
         return {"events": [], "last_seq": int(after)}
 
     def list_job_files(self, job_id, include_partial=True):
+        self.files_calls += 1
+        self.files_requests.append((job_id, bool(include_partial)))
         return {"files": list(self.files)}
 
     # -- the download routes
@@ -827,6 +835,171 @@ def test_ct19_the_summary_area_is_filled_by_file_id(qapp, tmp_path):
     assert window.load_summary(JOB_ID) is None
     assert len(client.requests) == 1
     assert "summary_loaded" in CLOSE_CHANNELS
+    close_window(qapp, window)
+
+
+# ------------------------------------- the explicit manifest read (5.6.2)
+
+
+def pump_until(qapp: Any, condition: Any, *, tries: int = 50) -> bool:
+    """Process events until `condition()` holds, bounded (never a sleep)."""
+
+    for _ in range(int(tries)):
+        qapp.processEvents()
+        QtCore.QThread.msleep(20)
+        if condition():
+            return True
+    qapp.processEvents()
+    return bool(condition())
+
+
+def prepare_terminal_results(qapp: Any, tmp_path: Any, client: Any) -> Any:
+    """One window on the results page of a job that is ALREADY terminal.
+
+    The results tick never pulls route 13 for such a job (spec §5.5.2),
+    so the frozen manifest can only come from the explicit read of the
+    results step.  The settle pass lets the start-up workers end and
+    then resets the counters, so a test observes that read alone; it
+    does NOT wait on the poller, whose own tick would trigger the read
+    while the counters are still being primed.
+    """
+
+    store = Store(str(tmp_path / "ledger"))
+    seed(store)
+    window = open_window(store, client)
+    qapp.processEvents()
+    client.requests.clear()
+    client.files_calls = 0
+    client.files_requests.clear()
+    window.show_results(JOB_ID)
+    return window
+
+
+def test_ct19_a_terminal_job_reads_its_manifest_once(qapp, tmp_path):
+    """§5.6.2: an already terminal job still shows its frozen manifest.
+
+    The poller skips route 13 once the job is terminal, so the table
+    show_results() cleared could never be refilled: the results page
+    therefore reads it once, explicitly, and latches the job so the
+    60 s fallback tick never asks again.
+    """
+
+    client = DownloadClient(b"unused")
+    window = prepare_terminal_results(qapp, tmp_path, client)
+    page = window.results_page
+    # The table AND the summary, which is read out of that very table.
+    assert pump_until(
+        qapp,
+        lambda: page.tree.rowCount() == 3
+        and "final_metrics" in page.summary_edit.toPlainText(),
+    ) is True
+    assert window.results_page.files_job_id == JOB_ID
+    assert client.files_requests == [(JOB_ID, True)]
+
+    assert page.files == FILES
+    assert [cell(page, row, 0) for row in range(page.tree.rowCount())] == [
+        entry["path"] for entry in FILES
+    ]
+    assert page.download_button.isEnabled() is True
+    # The summary is read out of the table this very read filled.
+    assert "final_metrics: mAP50=0.512, box_loss=1.02" in (
+        page.summary_edit.toPlainText()
+    )
+    assert "已加载产物清单" in page.debug_text()
+    assert "manifest_loaded" in CLOSE_CHANNELS
+    # Exactly one read for a job that is already terminal: the tick
+    # pulls route 13 for a running job only.
+    assert client.files_calls == 1
+
+    # The latch: the routine 60 s tick of a terminal job re-reads
+    # nothing, even when it is explicitly woken.
+    assert window.wake_polling("results") is True
+    pump_until(qapp, lambda: False, tries=25)
+    assert client.files_calls == 1
+    assert window.load_manifest(JOB_ID) is None
+    close_window(qapp, window)
+
+
+def test_a_manifest_read_failure_is_rendered_and_retried_once_per_tick(
+    qapp, tmp_path
+):
+    """§5.6.4 / §5.6.2: an unreadable manifest is visible and self heals.
+
+    The failure is rendered like every other artifact failure and the
+    latch stays unset, so the next 60 s tick of the terminal job reads
+    the manifest once more - the routine tick is the only retry.
+    """
+
+    client = DownloadClient(b"unused")
+    calls: list = []
+
+    def failing(job_id, include_partial=True):
+        calls.append((job_id, bool(include_partial)))
+        raise api.TransportError("connection refused")
+
+    client.list_job_files = failing
+    window = prepare_terminal_results(qapp, tmp_path, client)
+    # Nothing escaped the worker: the failure is on the page row.
+    assert pump_until(qapp, lambda: calls) is True
+    assert pump_until(qapp, lambda: window.results_page.status_row.lines())
+    lines = window.results_page.status_row.lines()
+    assert any(poll_mod.RED_BAR_TEXT in line for line in lines), lines
+    assert window.results_page.tree.rowCount() == 0
+    assert window.results_page.download_button.isEnabled() is False
+    assert calls == [(JOB_ID, True)]
+
+    # The latch was NOT set: the next tick retries the very same read.
+    assert window.wake_polling("results") is True
+    assert pump_until(qapp, lambda: len(calls) >= 2) is True
+    assert calls == [(JOB_ID, True), (JOB_ID, True)]
+    close_window(qapp, window)
+
+
+def test_the_manifest_read_is_cancelled_by_the_close_machine(
+    qapp, tmp_path, qt_messages
+):
+    """§5.1.4 step 3 also wakes the explicit manifest read.
+
+    The read is modelled as a socket that answers only when the test
+    lets it: the cancel therefore lands while list_job_files is already
+    executing, which is exactly the moment a plain worker would render
+    rows of a window that is going away.
+    """
+
+    client = DownloadClient(b"unused")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(job_id, include_partial=True):
+        client.files_calls += 1
+        client.files_requests.append((job_id, bool(include_partial)))
+        entered.set()
+        if not release.wait(10):  # pragma: no cover - test deadlock guard
+            return {"files": []}
+        return {"files": list(FILES)}
+
+    client.list_job_files = blocking
+    window = prepare_terminal_results(qapp, tmp_path, client)
+    # A blocking read only starts once the event loop has dispatched the
+    # tick that triggers it, so the wait has to keep pumping.
+    assert pump_until(
+        qapp, entered.is_set, tries=250
+    ) is True
+    worker = window.manifest_worker
+    assert worker is not None, "no explicit read was issued"
+    assert window.cancel_workers() >= 1
+    release.set()
+    assert worker.wait(15000) is True
+    # The read is dropped by the worker itself (should_stop), never by
+    # the slot: the cancel landed while the body was already awaited.
+    qapp.processEvents()
+    assert window._manifest_loaded is None
+
+    assert worker.cancelled is True
+    assert window.results_page.files == []
+    assert window.results_page.tree.rowCount() == 0
+    assert workers_finished(window) is True
+    assert "Destroyed while thread is still running" not in qt_messages()
     close_window(qapp, window)
 
 

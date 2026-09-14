@@ -67,6 +67,7 @@ from ..worker import (
     CommandWorker,
     DownloadWorker,
     JobMonitor,
+    ManifestWorker,
     DatasetPacker,
     PollWorker,
     ReconcileWorker,
@@ -170,12 +171,18 @@ CLOSE_CHANNELS = (
     "command_done",
     "reconciled",
     "submitted",
-    # The result step (spec §5.6.3): the download stream and the
-    # summary.json read each report on their own channel.  The summary
-    # one is named `summary_loaded`, not `loaded`, so no future worker
-    # that happens to expose a `loaded` attribute is harvested here.
+    # The result step (spec §5.6.3): the download stream, the
+    # summary.json read and the explicit manifest read each report on
+    # their own channel.  The two read channels are named
+    # `summary_loaded` / `manifest_loaded`, not `loaded`, so no future
+    # worker that happens to expose a `loaded` attribute is harvested
+    # here.
     "download_done",
     "summary_loaded",
+    # The explicit manifest read of a terminal job: the poller never
+    # pulls route 13 for it (spec §5.5.2), so the results page reads it
+    # through its own worker instead.
+    "manifest_loaded",
 )
 
 #: Cancel / resume wording (spec §5.5.7); one place for both dialogs.
@@ -302,6 +309,13 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
         self.summary_worker: Optional[Any] = None
         self._summary_key: Optional[Any] = None
         self._summary_pending: Optional[Any] = None
+        #: The one explicit manifest read of a terminal job (the poller
+        #: skips route 13 once the job is terminal, spec §5.5.2), the
+        #: job whose manifest was already read (latch) and the job of a
+        #: read still in flight.
+        self.manifest_worker: Optional[Any] = None
+        self._manifest_loaded: Optional[Any] = None
+        self._manifest_pending: Optional[Any] = None
         # The frozen result of the last successful pre-check (R1): the
         # submit reads THIS, never an attribute of the pipeline, because
         # Pipeline.assemble() only returns the run and stores nothing.
@@ -445,6 +459,9 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
                 self.results_page.set_files([], job_id=incoming)
                 self.results_page.set_summary(None)
                 self._summary_key = None
+                # The next terminal tick reads this job's manifest once,
+                # explicitly (see load_manifest).
+                self._manifest_loaded = None
             self.results_page.job_id = incoming
             self.results_page.job_label.setText(
                 "产物：{0}".format(incoming)
@@ -790,7 +807,16 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
         elif result.page == PAGE_DETAIL:
             self._render_detail(result)
         elif result.page == PAGE_RESULTS:
-            self._render_results(result)
+            # A failed tick carries no manifest either; the explicit read
+            # of a terminal job is skipped there (see _render_results).
+            self._render_results(
+                result,
+                failed=(
+                    outcome is None
+                    or outcome.error_view is not None
+                    or bool(getattr(outcome, "unauthorized", False))
+                ),
+            )
 
     def _render_jobs(self, outcome: Optional[PollOutcome]) -> None:
         if outcome is None or not outcome.results:
@@ -841,14 +867,28 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
                 STATE_LINE_TERMINAL.format(status_of(job))
             )
 
-    def _render_results(self, result: PollJob) -> None:
+    def _render_results(
+        self, result: PollJob, *, failed: bool = False
+    ) -> None:
         job = result.job
         if job is None:
             return
         files = result.files
         if files is None:
             files = self.results_page.files
+        else:
+            # Rows arrived from the tick itself, so the table is fed by
+            # the poller again: release the latch and let the next
+            # terminal edge read the manifest explicitly once more.
+            self._manifest_loaded = None
         self.results_page.set_job(job, files)
+        # A terminal job needs the one explicit read: the tick never
+        # pulls route 13 for it (see load_manifest).  Not on a failed
+        # tick - result.files is None there too, and re-issuing the very
+        # same route inside one tick would bypass the failure ladder of
+        # spec §5.5.6.
+        if is_terminal(job) and not failed:
+            self.load_manifest(result.job_id)
         # A tick may be the first one that carries the artifact list, so
         # the summary read is retried here (it is a no-op once loaded).
         self.load_summary(result.job_id)
@@ -1108,10 +1148,11 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
         manifest that lists the unreadable file_id is already on
         screen, so resetting the table and waking the results poller
         would re-read the very same file_id as fast as the round trip
-        allows.  For a *terminal* job the results tick never fetches
-        the manifest again (the poller skips the files route once the
-        job is terminal), so that reset would also leave the artifact
-        table permanently empty.
+        allows.  For a *terminal* job resetting the table is not
+        permanent any more: reset_results_files() releases the manifest
+        latch and the next terminal tick reads the manifest once more
+        through ManifestWorker (the poller itself still skips the files
+        route once the job is terminal).
         """
 
         page = self.current_page_name()
@@ -1218,6 +1259,9 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
 
         if job_id and job_id == self.results_page.job_id:
             self.results_page.set_files([])
+            # The cleared table must be refillable: the next terminal
+            # tick reads the manifest once more (see load_manifest).
+            self._manifest_loaded = None
 
     def _ledger_record(self, job_id: str) -> Optional[TaskRecord]:
         try:
@@ -2944,6 +2988,112 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
             path = str(getattr(record, "download_path", "") or "")
         return self.open_directory(path)
 
+    def load_manifest(self, job_id: str = "") -> Any:
+        """Read the manifest of a terminal job once (spec §5.6.2).
+
+        The polling tick skips route 13 once the job is terminal (spec
+        §5.5.2): the manifest of a finished job is frozen, so the
+        routine tick never asks again.  A job that is ALREADY terminal
+        when the results page is opened would then never get a single
+        row, and the summary - which is read out of that very table -
+        would stay empty as well.  This is the one explicit read that
+        covers the case, and it runs in a worker (a network read never
+        happens on the GUI thread).
+
+        The latch is per job: once the manifest was read for `job_id`
+        the routine 60 s tick of a terminal job does not ask again.  A
+        tick that carries rows of its own (a running job) releases the
+        latch, so the next terminal edge reads it exactly once more.
+        """
+
+        job_id = str(job_id or "")
+        if not job_id or str(self.results_page.job_id) != job_id:
+            return None
+        if self._manifest_loaded == job_id:
+            return None
+        if self._manifest_pending == job_id:
+            return None
+        client = self.ensure_client()
+        worker = ManifestWorker(
+            lambda: client.list_job_files(job_id, include_partial=True),
+            self,
+            job_id=job_id,
+        )
+        generation = self._generation
+        self.manifest_worker = worker
+        self._manifest_pending = job_id
+        worker.manifest_loaded.connect(
+            lambda files, g=generation, k=job_id: self._on_manifest_loaded(
+                files, k, g
+            )
+        )
+        worker.failed.connect(
+            lambda error, g=generation, k=job_id: self._on_manifest_failed(
+                error, k, g
+            )
+        )
+        self.register_worker(worker, "download")
+        worker.finished.connect(
+            lambda k=job_id: self._clear_manifest_pending(k)
+        )
+        # A cancelled read emits nothing, so the pending job is also
+        # released when the worker ends: the next entry into the page is
+        # allowed to retry it.
+        worker.start()
+        return worker
+
+    def _clear_manifest_pending(self, key: Any = None) -> None:
+        if self._manifest_pending == key:
+            self._manifest_pending = None
+
+    def _on_manifest_loaded(
+        self, files: Any, job_id: str = "", generation: Any = None
+    ) -> None:
+        """Render the explicit manifest read (spec §5.6.2)."""
+
+        self._clear_manifest_pending(job_id)
+        if self._is_stale(generation):
+            return
+        if str(self.results_page.job_id) != str(job_id):
+            # The page moved on while the read was in flight: the rows
+            # belong to another job and must not answer a lookup for
+            # this one.
+            return
+        self._manifest_loaded = job_id
+        rows = list(files or [])
+        job = getattr(self.results_page, "job", None)
+        if job is not None:
+            self.results_page.set_job(job, rows)
+        else:  # pragma: no cover - the tick renders before the read
+            self.results_page.set_files(rows, job_id=job_id)
+        self.log_debug(
+            "已加载产物清单（{0} 条，job_id={1}）".format(
+                len(rows), job_id
+            )
+        )
+        self.load_summary(job_id)
+
+    def _on_manifest_failed(
+        self, error: Any, job_id: str = "", generation: Any = None
+    ) -> None:
+        """An unreadable manifest is reported, never fatal.
+
+        The latch is NOT set: the next 60 s tick of the terminal job
+        reads the manifest once more, which is the self healing path of
+        a transient failure.  wake=False (see _on_summary_failed) keeps
+        the "refresh the manifest" reset of a 404 away from a table
+        that this very read could not fill.
+        """
+
+        self._clear_manifest_pending(job_id)
+        self._render_artifact_error(
+            error,
+            job_id,
+            generation,
+            prefix="读取产物清单失败",
+            wake=False,
+        )
+
     def load_summary(self, job_id: str = "") -> Any:
         """Fetch `summary.json` in memory for the results page (§5.6.3).
 
@@ -3041,10 +3191,10 @@ class RemoteTrainingDialog(QtWidgets.QDialog):
         on screen, so the ARTIFACT_NOT_FOUND reset would clear the
         artifact table and wake the results poller at once, whose tick
         re-reads the very same file_id: a refresh loop bounded only by
-        the round trip.  For a terminal job it is worse - the results
-        tick never fetches the manifest again, so the cleared table
-        could not be refilled.  The routine tick retries the read at
-        its own cadence instead.
+        the round trip.  For a terminal job the manifest comes from
+        ManifestWorker instead, and a cleared table is refilled by the
+        next terminal tick (reset_results_files releases the latch);
+        the routine tick retries the read at its own cadence.
         """
 
         self._summary_pending = None

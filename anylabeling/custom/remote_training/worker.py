@@ -1,6 +1,6 @@
 """Qt carriers of the workflow steps (spec §5.1.4, §5.4 to §5.6).
 
-Six workers live here, all plain QThread subclasses so the close state
+Seven workers live here, all plain QThread subclasses so the close state
 machine of spec §5.1.4 can treat them exactly like the upload worker:
 
 - PollWorker: one polling thread per visible page.  Every wait is an
@@ -20,6 +20,10 @@ machine of spec §5.1.4 can treat them exactly like the upload worker:
 - SummaryWorker: one `summary.json` read for the results page (spec
   §5.6.3), parsed in memory - the feature never unpacks or copies a
   result onto disk.
+- ManifestWorker: the one explicit artifact manifest read (route 13)
+  of a job the poller no longer pulls it for, because the job was
+  already terminal when the results page was opened (spec §5.5.2,
+  §5.6.2).
 
 Every worker exposes cancel() plus a cancel Event, which is the hook
 pair the dialog close machine looks for.
@@ -55,6 +59,7 @@ __all__ = [
     "DownloadOutcome",
     "DownloadWorker",
     "JobMonitor",
+    "ManifestWorker",
     "OPERATION_CANCEL",
     "OPERATION_RESUME",
     "DatasetPacker",
@@ -582,6 +587,69 @@ class SummaryWorker(QtCore.QThread):
                 "summary.json 不是 JSON 对象"
             )
         return payload
+
+
+class ManifestWorker(QtCore.QThread):
+    """Read one artifact manifest for the results page (spec §5.6.2).
+
+    The polling tick only pulls route 13 while the job is not terminal
+    (spec §5.5.2): the manifest of a finished job is frozen, so the
+    routine tick never asks for it again.  A job that is *already*
+    terminal when the user opens the results page would then never get
+    a single row.  This worker is the one explicit read that covers
+    that case; the body is parsed by poller.files_from_payload, the one
+    parser the tick uses too, so both render the same table.
+
+    `manifest_loaded` and not `loaded`: the close machine walks a
+    fixed channel list by name (spec §5.1.4 step 2), so a generic name
+    would be picked up by any future worker object that happens to
+    expose a `loaded` attribute.
+    """
+
+    manifest_loaded = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(object)
+
+    def __init__(
+        self,
+        open_files: Callable[[], Any],
+        parent: Optional[QtCore.QObject] = None,
+        *,
+        job_id: str = "",
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._open_files = open_files
+        self._cancel_event = cancel_event or threading.Event()
+        self.job_id = str(job_id)
+        self.files: Optional[List[Any]] = None
+        self.cancelled = False
+        self.error: Optional[BaseException] = None
+
+    def cancel(self) -> None:
+        """The step 3 hook of the close machine (spec §5.1.4)."""
+
+        self._cancel_event.set()
+
+    def should_stop(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def run(self) -> None:  # noqa: D102 - QThread entry point
+        if self.should_stop():
+            self.cancelled = True
+            return
+        try:
+            data = self._open_files()
+        except Exception as exc:  # noqa: BLE001 - rendered by the page
+            self.error = exc
+            self.failed.emit(exc)
+            return
+        if self.should_stop():
+            # The read landed, but the window is going away: emitting
+            # now could touch a widget of a torn down page.
+            self.cancelled = True
+            return
+        self.files = poll_mod.files_from_payload(data)
+        self.manifest_loaded.emit(self.files)
 
 
 @dataclass
