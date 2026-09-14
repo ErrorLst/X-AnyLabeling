@@ -441,6 +441,19 @@ def test_the_rows_follow_the_file_name_in_natural_order(qt_app, tmp_path):
         page.close()
 
 
+def test_a_digit_name_and_a_letter_name_stay_comparable(tmp_path):
+    "The name key of two kinds of name compares instead of raising."
+
+    staging = staging_layout(str(tmp_path), "nav_mixed")
+    records = [
+        staged_original(staging, name)
+        for name in ("bk (1).png", "1 (10).png", "1 (1).png")
+    ]
+    assert [
+        record.relpath for record in sorted(records, key=record_sort_key)
+    ] == ["1 (1).png", "1 (10).png", "bk (1).png"]
+
+
 def test_the_verdict_filter_keeps_the_file_name_order(qt_app, tmp_path):
     "The filter groups the rows by verdict, the order inside stays."
 

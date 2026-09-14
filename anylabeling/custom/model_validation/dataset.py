@@ -16,7 +16,7 @@ import os.path as osp
 import shutil
 import tempfile
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .labelme_io import IMAGE_EXTENSIONS
 
@@ -51,21 +51,33 @@ class DatasetScan:
     unreadable_label_pairs: List[str] = field(default_factory=list)
 
 
-def natural_key(value: str) -> List[object]:
-    """Sort key that keeps image_2 before image_10."""
+def natural_key(value: str) -> List[Tuple[int, object]]:
+    """Sort key that keeps image_2 before image_10.
 
-    chunks: List[object] = []
+    Every chunk carries its kind in front of its value: 0 for a run of
+    digits, 1 for a folded character. Two chunks of the same kind
+    compare by number or by text, two chunks of a different kind compare
+    by kind first, so a directory that holds both "1 (1).jpg" and
+    "bk (1).jpg" sorts instead of raising a TypeError.
+
+    Only decimal digits open a numeric run: a superscript such as the
+    two of a² passes str.isdigit() but int() rejects it with a
+    ValueError. That matters because collect_pairs runs inside a Qt
+    slot, where an uncaught exception aborts the whole application.
+    """
+
+    chunks: List[Tuple[int, object]] = []
     buffer = ""
     for char in value:
-        if char.isdigit():
+        if char.isdecimal():
             buffer += char
         else:
             if buffer:
-                chunks.append(int(buffer))
+                chunks.append((0, int(buffer)))
                 buffer = ""
-            chunks.append(char.lower())
+            chunks.append((1, char.lower()))
     if buffer:
-        chunks.append(int(buffer))
+        chunks.append((0, int(buffer)))
     return chunks
 
 

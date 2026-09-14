@@ -91,6 +91,40 @@ def test_collect_pairs_natural_sort(tmp_path):
     ]
 
 
+def test_collect_pairs_mixes_digit_and_letter_names(tmp_path):
+    """A directory holding 1 (1).jpg next to bk (1).jpg must sort.
+
+    natural_key returns one chunk per run, tagged with its kind, so the
+    numeric chunk of a name and the character chunk of another name
+    compare by kind first. Before that tag the sort compared an int with
+    a str, the TypeError escaped the Qt slot that asked for the count
+    and PyQt aborted the whole application.
+    """
+
+    source = tmp_path / "mixed"
+    for name in ("1 (1)", "1 (10)", "bk (1)", "bk (10)"):
+        write_image(str(source / (name + ".png")))
+        write_label(str(source / (name + ".json")), name + ".png")
+    scan = dataset.collect_pairs(str(source))
+    assert [pair.relpath for pair in scan.pairs] == [
+        "1 (1).png",
+        "1 (10).png",
+        "bk (1).png",
+        "bk (10).png",
+    ]
+
+
+def test_collect_pairs_keeps_a_superscript_name(tmp_path):
+    """a².png is an ordinary name: int("²") raises a ValueError."""
+
+    source = tmp_path / "superscript"
+    for name in ("a2", "a²"):
+        write_image(str(source / (name + ".png")))
+        write_label(str(source / (name + ".json")), name + ".png")
+    scan = dataset.collect_pairs(str(source))
+    assert [pair.relpath for pair in scan.pairs] == ["a2.png", "a².png"]
+
+
 def test_stage_dataset_mirrors_relpaths_and_contents(tmp_path, mv_scratch):
     source = build_source(tmp_path)
     staging = make_staging_root(mv_scratch)

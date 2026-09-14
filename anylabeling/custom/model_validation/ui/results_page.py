@@ -390,13 +390,21 @@ def pred_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
 def sort_chunk_key(chunk: object) -> Tuple[int, int, str]:
     """Return a comparable key of one natural sort chunk.
 
-    dataset.natural_key mixes numbers and folded characters in one list,
-    so a name like "a1.png" next to "a_.png" would compare an int with a
-    str and raise. Tagging the two kinds keeps the numeric order of the
-    digits ("a2" before "a10") and puts a digit before any other
-    character, which is the order the file manager shows as well.
+    dataset.natural_key already tags every chunk with its kind: (0,
+    count) for a run of digits, (1, char) for any other character, so
+    the chunks of two names are comparable even when one name starts
+    with a digit and the other with a letter. A bare int or str - a
+    chunk list a caller built by hand - is tagged here as well. The tag
+    keeps the numeric order of the digits ("a2" before "a10") and puts a
+    digit before any other character, which is the order the file
+    manager shows as well.
     """
 
+    if isinstance(chunk, tuple) and len(chunk) == 2:
+        kind, value = chunk
+        if kind == 0 and isinstance(value, int):
+            return (0, int(value), "")
+        return (1, 0, str(value))
     if isinstance(chunk, bool):
         return (1, 0, str(chunk))
     if isinstance(chunk, int):

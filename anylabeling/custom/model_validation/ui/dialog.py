@@ -206,7 +206,10 @@ class ModelValidationDialog(QtWidgets.QDialog):
             if directory and osp.isdir(directory):
                 try:
                     scan = dataset.collect_pairs(directory)
-                except OSError:
+                except Exception:  # noqa: BLE001 - a preview count
+                    # A directory that cannot be enumerated counts 0: this
+                    # runs inside a Qt slot and an uncaught exception there
+                    # aborts the whole application instead of the preview.
                     scan = None
                 if scan is not None:
                     self.source_pair_count = len(scan.pairs)

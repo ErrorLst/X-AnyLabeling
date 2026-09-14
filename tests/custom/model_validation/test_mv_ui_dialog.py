@@ -229,6 +229,23 @@ def test_source_directory_is_enumerated_once(dialog, tmp_path, monkeypatch):
     )
 
 
+def test_a_failing_scan_leaves_the_count_at_zero(
+    dialog, tmp_path, monkeypatch
+):
+    "An enumeration error must not abort the slot that asked for it."
+
+    source = str(tmp_path / "broken")
+    write_image(osp.join(source, "a.png"))
+
+    def failing_collect(directory):
+        raise TypeError("'<' not supported between 'str' and 'int'")
+
+    monkeypatch.setattr(dataset, "collect_pairs", failing_collect)
+    page = dialog.config_page
+    page.set_dataset(source)
+    assert dialog.source_pair_count == 0
+
+
 def interactive_controls(page):
     """Return the interactive controls owned by a configuration page."""
 
