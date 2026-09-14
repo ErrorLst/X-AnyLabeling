@@ -28,6 +28,7 @@
 | smudge_tool | 涂抹修复：取别处纹理覆盖缺陷并撤销 | `anylabeling/custom/smudge_tool/` | `tests/custom/smudge_tool/` | 1 个（1 行 import + 1 行调用） | 5 |
 | rename_tool | 按主分类批量重命名并打包成 zip（拖拽目录一键导出，源目录只读） | `anylabeling/custom/rename_tool/` | `tests/custom/rename_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 | label_filter | 按标签分类过滤文件列表（Tool 菜单运行时追加，实例级包装 import_image_folder） | `anylabeling/custom/label_filter/` | `tests/custom/label_filter/` | 1 个（1 行 import + 1 行调用） | 2 |
+| crash_log | 崩溃与运行日志落盘 `~/.xanylabeling/logs/xany-*.log`（faulthandler + 异常钩子 + Qt 钩子；异常退出检测） | `anylabeling/custom/crash_log/` | `tests/custom/crash_log/` | 1 个（1 行 import + 1 行调用） | 0 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -971,6 +972,98 @@ Tool 菜单里的「标签过滤」：按标签分类过滤文件列表。窗口
   右键菜单会按旧索引取到错行；已用 1 万条目用例兜底。
 - 复用窗口的刷新依赖 launcher 复用分支调用 `rescan()`：删掉这个调用，同一会话里切目录
   后再打开窗口就会显示上一个目录的分类与计数（窗口构造只扫一次）。
+
+## crash_log
+
+### 职责
+
+无控制台（打包版 `console=False`）时的崩溃取证：把 faulthandler、三个 Python 级异常钩子
+（`sys.excepthook` / `threading.excepthook` / `sys.unraisablehook`）、应用日志器与
+Qt message handler 的输出全部镜像到当天的 `xany-YYYYMMDD.log`，并用 session marker
+区分正常退出与异常退出（崩溃、被强杀、断电）。只做记录，不改变任何原有行为。
+
+### 代码与体量
+
+`anylabeling/custom/crash_log/`（5 个文件 968 行：`handlers.py` 518 行、
+`install.py` 160 行、`session.py` 139 行、`paths.py` 123 行、`__init__.py` 28 行）；测试
+`tests/custom/crash_log/`（8 个文件 1040 行，46 个用例）。
+
+### 入口符号
+
+`anylabeling.custom.crash_log.install_crash_log`（幂等安装，永不抛）、
+`anylabeling.custom.crash_log.uninstall_crash_log`（完整回滚，测试用）、
+`anylabeling.custom.crash_log.get_log_directory`（本次会话解析出的目录，降级时为 None）。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/app.py`（**模块顶层，位于 `LabelingWidget` 之前**）：
+  `from anylabeling.custom.crash_log import install_crash_log  # fork 挂载点`
+- `anylabeling/app.py`（模块顶层）：`install_crash_log()  # fork 挂载点`
+- 软挂载：无（`soft_mounts: []`）。所有接管都发生在进程全局钩子与 `logging` 上，
+  不包装任何上游方法，上游文件 diff 只有上面两行。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `anylabeling/app.py` 的导入顺序 | direct | 挂载点必须留在 `sys.path.append(...)` 之后、`import yaml` 之前：要早于 PyQt6 与上游包初始化，才能覆盖这些导入链上的异常 |
+| `anylabeling.views.labeling.logger.logger` | direct | custom 不 import 该模块，只按硬编码名 `"X-AnyLabeling"` 取同名 logger 并挂 StreamHandler；上游改名即静默丢日志（已有测试钉住） |
+
+### 行为级契约（不可机器校验）
+
+- **挂载点不可挪**：`install_crash_log()` 在 `anylabeling/app.py` 模块顶层执行，必须位于
+  `sys.path.append(...)` 之后（否则 custom 包 import 失败）、`import yaml` 与
+  `from PyQt6 import ...` 之前（否则覆盖不到这些导入链上的异常）；挪进 `main()`
+  就晚于 PyQt6 导入，也晚于上游 logger 的创建。
+- **日志目录三级降级**：`XANY_LOG_DIR`（非空时按 `expanduser` + `abspath` 用）→
+  `~/.xanylabeling/logs` → 系统临时目录下的 `xanylabeling-logs` → 都建不出来则目录为
+  None（只镜像 stderr、不开 faulthandler）。与 `--work-dir` 无关：这里刻意不 import
+  `anylabeling.config`，避免安装时刻引入会崩的依赖链。
+- **只清理自有模式**：prune 只列、只删匹配 `^xany-\d{8}\.log$` 的文件名，同目录里
+  他人的文件永不触碰；保留最新 14 份（`KEEP_LOGS`），删除失败静默。
+- **`install_crash_log()` 永不抛**：目录解析、开流、faulthandler、三个 Python 钩子、
+  app logger、session marker、Qt handler 每一步各自 try/except，任一步失败只降级、
+  不影响启动；`XANY_LOG_DISABLE=1` 时零副作用（连 marker 都不写、目录都不建；
+  已有测试覆盖，含目标目录未被创建）。
+- **四钩子链式且不吞原行为**：三个 Python 钩子先写日志再调用安装时捕获的前一个钩子
+  （前一个抛异常也吞掉，绝不把可恢复错误升级成致命错误）；Qt handler 有前一个就转交给它、
+  没有才退回 stderr。`uninstall_crash_log()` 精确还原安装时捕获的对象（含「原本不存在」
+  的 `sys.unraisablehook`），可反复安装 / 卸载。
+- **跨天惰性轮转**：每次写日志时若日期变了，两个 append 句柄切到新文件、顺手 prune，
+  并让 faulthandler 重新指向新文件描述符（faulthandler 直接写 fd，不切就会留在旧文件）。
+- **worker 子进程不碰会话标记**：spawn / fork / frozen 三条路径（以及 frozen 下的
+  `resource_tracker` 助手）都会重跑 `anylabeling/app.py` 的挂载点。`install_crash_log()`
+  先用三层判据识别 worker（`multiprocessing.parent_process()`、「真的名为 `__mp_main__`
+  的模块」、frozen 的 `spawn.is_forking(argv)`），`session.prepare_session_marker()`
+  再兜一层：marker 的 pid == `os.getppid()` 说明父进程还活着 → 不报 stale、不覆写、
+  不注册 atexit。worker 仍写自己的 SESSION START / faulthandler / 钩子，但绝不写、
+  不删 marker——marker 是「该日志目录有一个存活会话」的单例事实，属于整个进程组。
+
+### 测试
+
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/crash_log -v`
+（需 PyQt6；本工作区 `--collect-only` 核实 8 个文件 46 个用例）。覆盖目录降级、prune 只删
+自有文件、三个钩子的链式与回滚、Qt handler 的等级过滤、子进程里的真实 SIGSEGV / SIGABRT /
+SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后 app logger 重绑定到新流、
+`XANY_LOG_DISABLE` 零副作用（目标目录不被创建）。
+
+### 已知坑
+
+- **C++ 帧不符号化**：faulthandler 采到的 Qt / onnxruntime 原生栈只有地址没有函数名；
+  要符号化得另配符号表，本功能不做。
+- **SIGKILL / OOM / 断电只能靠会话标记**：这些情况下没有任何 Python 代码会执行，
+  日志里只会有下一次启动写下的 `PREVIOUS SESSION DID NOT EXIT CLEANLY`；
+  因此不能指望「日志最后一行」，要看这条标记。
+- **spawn worker 的 SESSION START 是设计内的取证**：模块级挂载点会在 worker 里重跑，
+  实测每次启动多出 2 条 SESSION START（worker 自己 + frozen 下的 `resource_tracker`
+  助手）；它们不是噪音，不做过滤。
+- **PID 复用只会推迟 stale 报告，不会丢标记**：`prepare_session_marker()` 用
+  `pid == os.getppid()` 判定「marker 属于还活着的父进程」。崩溃进程的 pid 恰好等于
+  当前父进程 pid 时这一次不报 stale；marker 仍在，下一次启动照样报出来。
+- **`anylabeling` 包初始化链自身的导入崩溃不覆盖**：挂载点在 `anylabeling/app.py` 里
+  执行，若崩在 `import anylabeling` 的包 `__init__` 阶段，日志里不会有记录。
+- **Linux 上 PyInstaller 忽略 `--noconsole`**：Linux 下 `sys.stderr` 始终存在，
+  `stderr is None` 的分支只在 Windows / macOS 的 windowed 打包里才走得到。
 
 ## 变更台账
 

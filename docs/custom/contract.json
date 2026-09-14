@@ -162,6 +162,27 @@
         "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["menus", "file_list_widget", "import_image_folder", "may_continue", "fn_to_index", "filename", "open_next_image", "load_file", "last_open_dir", "output_dir", "statusBar"],
         "anylabeling/views/labeling/utils/qt.py:@module": ["new_action", "scan_all_images"]
       }
+    },
+    "crash_log": {
+      "summary": "无控制台打包版崩溃取证：faulthandler + 三个 Python 钩子 + Qt message handler 全部镜像到 ~/.xanylabeling/logs/xany-YYYYMMDD.log，并用 session marker 区分正常/异常退出。",
+      "code": ["anylabeling/custom/crash_log/"],
+      "tests": ["tests/custom/crash_log/"],
+      "enter": [
+        {"module": "anylabeling.custom.crash_log", "symbol": "install_crash_log"},
+        {"module": "anylabeling.custom.crash_log", "symbol": "uninstall_crash_log"},
+        {"module": "anylabeling.custom.crash_log", "symbol": "get_log_directory"}
+      ],
+      "test_cmd": "python -m pytest -p no:cacheprovider tests/custom/crash_log -v",
+      "mounts": [
+        {"file": "anylabeling/app.py", "line": 23, "anchor": "from anylabeling.custom.crash_log import install_crash_log  # fork 挂载点", "matcher": "line", "form": "import", "owner": "<module>"},
+        {"file": "anylabeling/app.py", "line": 24, "anchor": "install_crash_log()", "matcher": "startswith", "form": "call", "owner": "<module>"}
+      ],
+      "soft_mounts": [],
+      "upstream": {
+        "anylabeling/views/labeling/logger.py:@module": [
+          {"name": "logger", "anchor": "logger = AppLogger()", "matcher": "startswith"}
+        ]
+      }
     }
   }
 }

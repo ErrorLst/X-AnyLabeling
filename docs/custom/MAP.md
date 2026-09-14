@@ -33,10 +33,12 @@
                 -> 远端模型：anylabeling/services/auto_labeling/remote_server.py
                      class RemoteServer（HTTP 到 X-AnyLabeling-Server）
 
-自研功能的挂载点全部落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
-与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有三处：模型验证的菜单动作与
-方法定义、重命名工具的 Tool 菜单动作追加，以及标签过滤的 Tool 菜单运行时追加
-（`menus.tool.addAction`）与 `LabelingWidget.import_image_folder` 的实例级包装。
+自研功能的挂载点绝大多数落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
+与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有四处：模型验证的菜单动作与
+方法定义、重命名工具的 Tool 菜单动作追加、标签过滤的 Tool 菜单运行时追加
+（`menus.tool.addAction`）与 `LabelingWidget.import_image_folder` 的实例级包装，
+以及崩溃日志的第四处——`anylabeling/app.py` **模块顶层**挂载（1 行 import + 1 行调用，
+发生在 `LabelingWidget` 之前，是整个进程里最早安装的自研功能）。
 逐条清单见 `docs/custom/contract.json` 的 `features.<id>.mounts`。
 
 ## 数据流
@@ -72,14 +74,14 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   （`chatbot`、`classifier`、`ppocr`、`settings`、`utils`、`video_classifier`、`vqa`、`widgets`）。
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
-- `anylabeling/custom/`：61 个 .py / 34946 行（目录内全部 .py；FEATURES.md 登记其中
-  6 个自研功能，另有未登记的 `remote_training`）。
-- `anylabeling/custom/model_validation/`：23 个 .py / 11597 行（关键文件：`ui/` 下的
-  `dialog.py` 1156、`results_page.py` 1709、`image_view.py` 1127，以及
-  `main_window_bridge.py` 689、`async_scan.py` 189）；本轮新增
-  `main_window_bridge.py`（689 行，跳主窗口 + 保存回写）与 `async_scan.py`（189 行，
+- `anylabeling/custom/`：66 个 .py / 36317 行（目录内全部 .py；FEATURES.md 登记其中
+  7 个自研功能，另有未登记的 `remote_training`）。
+- `anylabeling/custom/model_validation/`：23 个 .py / 11961 行（关键文件：`ui/` 下的
+  `dialog.py` 1188、`results_page.py` 1763、`image_view.py` 1266，以及
+  `main_window_bridge.py` 671、`async_scan.py` 189）；本轮新增
+  `main_window_bridge.py`（671 行，跳主窗口 + 保存回写）与 `async_scan.py`（189 行，
   异步目录扫描），删除 `label_dialog.py`（内置标签弹窗）。
-- `tests/custom/`：74 个 .py / 36903 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
+- `tests/custom/`：84 个 .py / 39369 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
 
 ## 想改 X 该看哪里
 
@@ -89,6 +91,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
 | 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
 | 按标签分类过滤文件列表 | `anylabeling/custom/label_filter/`（Tool 菜单「标签过滤」运行时追加，实例级包装 `import_image_folder` 做二道过滤） |
+| 崩溃 / 运行日志（无控制台取证） | `anylabeling/custom/crash_log/`（挂载 `anylabeling/app.py:23-24`；日志 `~/.xanylabeling/logs/xany-YYYYMMDD.log`，保留 14 份；`XANY_LOG_DIR` 改目录、`XANY_LOG_DISABLE=1` 关闭） |
 | 快捷键 | `anylabeling/views/labeling/label_widget.py` 的动作定义（快捷键表取自 `self._config["shortcuts"]`，即 `.xanylabelingrc`） |
 | 标注文件读写（json / LabelFile） | `anylabeling/views/labeling/label_file.py`；保存入口是 `label_widget.py` 的 `save_labels` |
 | 导入导出格式 | `anylabeling/views/labeling/label_converter.py` 与 `anylabeling/views/labeling/utils/export.py` |
