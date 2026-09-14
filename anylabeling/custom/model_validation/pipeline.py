@@ -40,6 +40,7 @@ from .app_config import (
     validate_augment_params,
 )
 from .judge import judge_record, shape_label, shape_type_of
+from .multilabel import expand_multilabel_rows
 from .records import ValidationRecord
 
 STAGE_STAGING = "staging"
@@ -871,21 +872,25 @@ class ValidationWorker(QThread):
 
         label = records_module.read_staging_label(job.record)
         ground_truth = list((label or {}).get("shapes") or [])
+        # The judge works one object at a time while the canvas draws one
+        # box per object: a merged box is handed over once per class it
+        # carries ("one box per class"), therefore every index of the
+        # verdict (matched, false positives, low scores) lives in that
+        # row coordinate system and pred_row_boxes maps a row back to the
+        # payload box it came from.
+        rows, row_boxes = expand_multilabel_rows(predicted)
         result = judge_record(
             ground_truth,
-            predicted,
+            rows,
             self.classes,
             ng_iou_threshold=self.config.ng_iou_threshold,
             ng_score_threshold=self.config.conf_threshold,
         )
         detail = dict(result.detail)
-        detail["predicted_labels"] = [
-            shape_label(shape) for shape in predicted
-        ]
-        detail["predicted_types"] = [
-            shape_type_of(shape) for shape in predicted
-        ]
+        detail["predicted_labels"] = [row["label"] for row in rows]
+        detail["predicted_types"] = [row["shape_type"] for row in rows]
         detail["predictions"] = self._prediction_payload(predicted)
+        detail["pred_row_boxes"] = row_boxes
         return _InferJobResult(
             job=job,
             verdict=result.verdict,

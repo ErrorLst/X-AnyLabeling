@@ -15,6 +15,13 @@ a GT no prediction reaches (a miss), a prediction no GT reaches (a false
 positive), one matched pair and one matched pair whose IoU stays under
 the threshold. The judgement detail is produced by the real judge, so
 the indexes and the states under test are the ones a run really writes.
+
+One prediction is one *box*, while the judge counts and matches one
+*row* per class of that box: a box a whole image merge built carries
+several classes and therefore several rows, and the colour of the box is
+the highest priority state of them (see pred_statuses). The last section
+of this file pins that aggregation for a real judgement detail, and pins
+the reading of a detail written before the rows existed.
 """
 
 import os
@@ -30,9 +37,16 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from anylabeling.custom.model_validation import dataset
 from anylabeling.custom.model_validation import judge as judge_module
+from anylabeling.custom.model_validation import multilabel as labels_module
 from anylabeling.custom.model_validation import records as records_module
+from anylabeling.custom.model_validation.multilabel import (
+    expand_multilabel_rows,
+)
 from anylabeling.custom.model_validation.ui import (
     image_view as image_view_module,
+)
+from anylabeling.custom.model_validation.ui import (
+    results_page as results_page_module,
 )
 from anylabeling.custom.model_validation.ui.dialog import (
     MINIMUM_WIDTH,
@@ -62,6 +76,7 @@ from anylabeling.custom.model_validation.ui.results_page import (
     ResultsPage,
     gt_statuses,
     legend_html,
+    _legacy_pred_statuses,
     matched_pair_state,
     pred_statuses,
 )
@@ -85,6 +100,20 @@ MATCHED = ((10, 10), (50, 50))
 LOW_IOU = ((60, 10), (100, 50))
 MISSED = ((110, 10), (150, 50))
 FALSE_POSITIVE = ((160, 10), (210, 50))
+# The boxes of the multi label section, on the lower half of the same
+# picture and far enough from the four boxes above that a stroke probe
+# never reaches a neighbour. TWO_LEFT_A and TWO_LEFT_B are the two
+# anchors the engine answered for one object: their IoU is 0.95, over
+# the 0.5 threshold of these fixtures, so the whole image merge folds
+# them into the one box the canvas draws.
+TWO_LEFT_A = ((10, 60), (50, 100))
+TWO_LEFT_B = ((12, 62), (52, 102))
+TWO_RIGHT = ((210, 60), (250, 100))
+LOW_SCORE_BOX = ((60, 60), (100, 100))
+# the box of the row of the low score fixture no pair points at: it sits
+# just below the ground truth, so it stays unmatched without leaving the
+# picture
+FREE_ROW_BOX = ((60, 80), (100, 120))
 # Half of the low IoU box overlaps this prediction - 20 x 40 pixels of
 # it, 800 in all - and the union is 1600 + 1600 - 800 = 2400, so its IoU
 # is exactly 1/3: above zero, therefore matched, and under the 0.5
@@ -196,6 +225,592 @@ def low_score_record() -> records_module.ValidationRecord:
     record.detail = dict(detail)
     record.detail["predictions"] = pred_shapes()
     return record
+
+
+def multilabel_rows(labels, scores, box, shape_type="rectangle") -> dict:
+    """Return one payload box carrying one label row per class.
+
+    The payload of a merged box is a single entry whose parallel lists
+    labels and scores hold one row per class, exactly what
+    pipeline._prediction_payload writes for a merged shape. The points
+    of the entry are the geometry of the highest scoring row, which is
+    what a merge of the rows writes as well.
+    """
+
+    return {
+        "label": labels[0],
+        "shape_type": shape_type,
+        "points": [list(point) for point in box],
+        "score": scores[0],
+        "labels": list(labels),
+        "scores": list(scores),
+    }
+
+
+def merged_points(box) -> list:
+    """Return the point list of a box, the way a merge normalises it."""
+
+    return [[float(x), float(y)] for x, y in box]
+
+
+def merged_record(
+    row_payload,
+    ground_truth,
+    record_id,
+    iou_threshold=0.5,
+    score_threshold=None,
+) -> records_module.ValidationRecord:
+    """Return the record of a payload of rows run through the real merge.
+
+    The judged image is the one of the new revision: the row payload is
+    folded by the whole image merge (the highest scoring row of every
+    cluster carries the parallel lists of its classes, and the two
+    anchors of one object are compared without their class), and the
+    very rows of that merge are what the judge counts. The verdict and
+    the payload therefore live in two coordinate systems, exactly like
+    the ones of pipeline._infer_one: every index of the detail is a row,
+    the payload is the box the canvas draws and pred_row_boxes maps one
+    onto the other.
+    """
+
+    payload = labels_module.merge_overlapping_predictions(
+        row_payload, iou_threshold
+    )
+    rows, row_boxes = expand_multilabel_rows(payload)
+    result = judge_module.judge_record(
+        ground_truth,
+        rows,
+        CLASSES,
+        ng_iou_threshold=0.5,
+        ng_score_threshold=score_threshold,
+    )
+    record = records_module.ValidationRecord(
+        record_id=record_id,
+        kind=records_module.KIND_ORIGINAL,
+        relpath=f"{record_id}.png",
+        staging_image_path="",
+        staging_label_path="",
+    )
+    record.detail = dict(result.detail)
+    record.detail["predictions"] = payload
+    record.detail["pred_row_boxes"] = row_boxes
+    record.judged = True
+    record.verdict = result.verdict
+    return record
+
+
+def two_box_record() -> records_module.ValidationRecord:
+    """Return a record of two objects, one of them found twice.
+
+    The engine answered the left object twice - two anchors of one box
+    that only differ by a few pixels, which is what the whole image
+    merge exists for - and the right one once. The merged left box
+    carries two classes, one of them matched: the very case the
+    aggregation rule of the box colours is about.
+    """
+
+    row_payload = [
+        multilabel_rows(["a0_dian"], [0.95], TWO_LEFT_A),
+        multilabel_rows(["c2_dian"], [0.90], TWO_LEFT_B),
+        multilabel_rows(["a0_dian"], [0.80], TWO_LEFT_A),
+        multilabel_rows(["c3_dian"], [0.70], TWO_LEFT_A),
+        multilabel_rows(["c1_dian"], [0.60], TWO_RIGHT),
+    ]
+    ground_truth = [rect(*TWO_LEFT_A, label="a0_dian")]
+    return merged_record(row_payload, ground_truth, "status-colors-rows")
+
+
+def low_score_row_record() -> records_module.ValidationRecord:
+    """Return a record whose one matched row scores under the threshold.
+
+    One object and two boxes: the anchor on the ground truth carries its
+    class and is matched, the anchor below it carries another class of
+    the run and matches nothing. Every score of the record sits under
+    the NG score threshold of the run, so the matched row is the low
+    score state of the judge - what the box has to show even though the
+    unmatched row of the very same box is a false positive.
+    """
+
+    row_payload = [
+        multilabel_rows(["a0_dian"], [0.90], LOW_SCORE_BOX),
+        multilabel_rows(["c0_dian"], [0.40], FREE_ROW_BOX),
+    ]
+    ground_truth = [rect(*LOW_SCORE_BOX, label="a0_dian")]
+    payload = labels_module.merge_overlapping_predictions(row_payload, 0.5)
+    rows, row_boxes = expand_multilabel_rows(payload)
+    result = judge_module.judge_record(
+        ground_truth,
+        rows,
+        CLASSES,
+        ng_iou_threshold=0.5,
+        ng_score_threshold=LOW_SCORE_THRESHOLD,
+    )
+    record = records_module.ValidationRecord(
+        record_id="status-colors-low-row",
+        kind=records_module.KIND_ORIGINAL,
+        relpath="status-colors-low-row.png",
+        staging_image_path="",
+        staging_label_path="",
+    )
+    record.detail = dict(result.detail)
+    record.detail["predictions"] = payload
+    record.detail["pred_row_boxes"] = row_boxes
+    record.judged = True
+    record.verdict = result.verdict
+    return record
+
+
+def pair_palette_record() -> records_module.ValidationRecord:
+    """Return a record whose two rows of one box disagree on the class.
+
+    The one box carries two rows at the same place - the record holds
+    two ground truth boxes there, one on each anchor - so the judge
+    pairs its first row (a0_dian) with the ground truth of the very same
+    class (a match) and its second one (a1_xian) with the other (a class
+    mismatch). Both scores stay under the NG score threshold of the
+    fixture, therefore the mismatched pair is a class mismatch AND a low
+    score at once and only the priority rule of the aggregation can
+    decide the colour of the box.
+    """
+
+    row_payload = [
+        multilabel_rows(["a0_dian"], [0.90], TWO_LEFT_A),
+        multilabel_rows(["a1_xian"], [0.80], TWO_LEFT_A),
+    ]
+    ground_truth = [
+        rect(*TWO_LEFT_A, label="a0_dian"),
+        rect(*TWO_LEFT_B, label="a0_dian"),
+    ]
+    return merged_record(
+        row_payload,
+        ground_truth,
+        "status-colors-priority",
+        score_threshold=LOW_SCORE_THRESHOLD,
+    )
+
+
+def ignored_shape_record() -> records_module.ValidationRecord:
+    """Return a record whose row list starts with an ignored shape.
+
+    The payload holds a point - a shape type the judge never matches -
+    in front of the rectangle the one ground truth meets, which is the
+    order a run of the obb / pose tasks keeps (their merge answers the
+    first seen order). The row list is therefore [point, rectangle]
+    while the verdict was handed the rectangle alone: its own
+    pred_index 0 is the row 1 of the screen, the very shift the reading
+    of that index has to undo.
+    """
+
+    payload = [
+        {
+            "label": "a1_xian",
+            "shape_type": "point",
+            "points": [[5, 5]],
+            "score": 0.90,
+        },
+        rect(*TWO_LEFT_A, label="a0_dian", score=0.80),
+    ]
+    rows, row_boxes = expand_multilabel_rows(payload)
+    ground_truth = [rect(*TWO_LEFT_A, label="a1_xian")]
+    result = judge_module.judge_record(
+        ground_truth, rows, CLASSES, ng_iou_threshold=0.5
+    )
+    record = records_module.ValidationRecord(
+        record_id="status-colors-ignored",
+        kind=records_module.KIND_ORIGINAL,
+        relpath="status-colors-ignored.png",
+        staging_image_path="",
+        staging_label_path="",
+    )
+    record.detail = dict(result.detail)
+    record.detail["predictions"] = payload
+    record.detail["pred_row_boxes"] = row_boxes
+    record.judged = True
+    record.verdict = result.verdict
+    return record
+
+
+def test_a_matched_row_beside_an_ignored_shape_keeps_its_own_box(qt_app):
+    """The judge index counts matchable rows, never the rows on screen.
+
+    The row list of the record is [point, rectangle] while the verdict
+    was handed the rectangle alone, so its pred_index 0 points at the
+    row 1 of the screen. The matched row is the one of another class, so
+    its box is the orange of a class mismatch, and the point keeps the
+    plain colour of an ignored shape (see pred_valid). A reader of that
+    index that skipped the mapping back to the row position would flag
+    the matched row as a false positive instead.
+    """
+
+    record = ignored_shape_record()
+    detail = record.detail
+    payload = detail["predictions"]
+    rows, row_boxes = expand_multilabel_rows(payload)
+
+    # the fixture really is the shape under test: two rows on screen,
+    # one of them matchable, and a verdict whose pair sits at the judge
+    # index 0 and at the row position 1
+    assert [row["shape_type"] for row in rows] == ["point", "rectangle"]
+    assert row_boxes == [0, 1]
+    assert detail["pred_row_boxes"] == row_boxes
+    assert detail["pred_total"] == 2
+    assert detail["pred_valid"] == 1
+    assert [pair["pred_index"] for pair in detail["matched"]] == [0]
+    assert [pair["class_state"] for pair in detail["matched"]] == [
+        "mismatch"
+    ]
+
+    states = pred_statuses(detail, payload)
+    assert states == ["", STATE_CLASS_MISMATCH]
+
+    canvas = make_canvas()
+    canvas.set_shapes([], payload, (), states)
+    rendered = render_rgba(canvas)
+    assert (
+        stroke_pixels(canvas, rendered, CLASS_MISMATCH_COLOR, *TWO_LEFT_A)
+        > MIN_STROKE_PIXELS
+    )
+    # the matched row is never painted as the false positive of another
+    # row of the list
+    assert (
+        stroke_pixels(
+            canvas, rendered, FALSE_POSITIVE_COLOR, *TWO_LEFT_A
+        )
+        == 0
+    )
+
+
+def test_a_box_takes_the_highest_state_of_its_rows(qt_app):
+    """A merged box is coloured by the most important state of its rows.
+
+    The record holds two objects and two boxes: the left object was
+    answered twice by the engine, so its two anchors became one box of
+    four rows, and the right object keeps its own box. The matched row
+    of the left box is joined by the false positive of the rows no
+    ground truth met, and the false positive is the state the box shows
+    - on the stroke as well as in the state list.
+    """
+
+    record = two_box_record()
+    payload = record.detail["predictions"]
+    rows, row_boxes = expand_multilabel_rows(payload)
+
+    # the fixture really is the shape under test: the two overlapping
+    # anchors became one box of four rows and the third one its own box
+    assert len(payload) == 2
+    assert row_boxes == [0, 0, 0, 1]
+    assert record.detail["pred_row_boxes"] == row_boxes
+    assert len(rows) == record.detail["pred_total"] == 4
+    assert record.detail["pred_valid"] == 4
+    assert [row["label"] for row in rows] == [
+        "a0_dian",
+        "c2_dian",
+        "c3_dian",
+        "c1_dian",
+    ]
+    assert payload[0]["points"] == merged_points(TWO_LEFT_A)
+    assert payload[0]["labels"] == [
+        "a0_dian",
+        "c2_dian",
+        "c3_dian",
+    ]
+    # one row of the left box is matched (the a0_dian one, the only row
+    # the class table of the fixture knows), the two other rows of it
+    # are not, and neither is the only row of the right box
+    assert [pair["pred_index"] for pair in record.detail["matched"]] == [0]
+    assert [pair["class_state"] for pair in record.detail["matched"]] == [
+        "match"
+    ]
+    assert [item["index"] for item in record.detail["false_positives"]] == [
+        1,
+        2,
+        3,
+    ]
+
+    states = pred_statuses(record.detail, payload)
+    assert states == [STATE_FALSE_POSITIVE, STATE_FALSE_POSITIVE]
+
+    canvas = make_canvas()
+    canvas.set_shapes([], payload, (), states)
+    rendered = render_rgba(canvas)
+    for start, end in (TWO_LEFT_A, TWO_RIGHT):
+        assert (
+            stroke_pixels(
+                canvas, rendered, FALSE_POSITIVE_COLOR, start, end
+            )
+            > MIN_STROKE_PIXELS
+        )
+    # the matched row of the left box does not repaint it blue
+    assert stroke_pixels(canvas, rendered, PRED_COLOR, *TWO_LEFT_A) == 0
+
+
+def test_the_state_of_a_matched_row_reaches_its_own_box(qt_app):
+    """Two boxes of one card: the state of a matched row reaches its box.
+
+    The anchor on the ground truth is matched and scores under the NG
+    score threshold of the run, so its own row is the low score state;
+    the anchor below it is a matchable row the judge never pairs, so it
+    is the false positive of its own box. Each box therefore shows the
+    state of its own row and the two colours coexist on the one card.
+    """
+
+    record = low_score_row_record()
+    payload = record.detail["predictions"]
+    rows, row_boxes = expand_multilabel_rows(payload)
+
+    assert len(payload) == 2
+    assert row_boxes == [0, 1]
+    assert len(rows) == record.detail["pred_total"] == 2
+    assert record.detail["pred_valid"] == 2
+    assert [pair["pred_index"] for pair in record.detail["matched"]] == [0]
+    assert record.detail["matched"][0]["low_score"] is True
+    assert [item["index"] for item in record.detail["false_positives"]] == [
+        1
+    ]
+
+    states = pred_statuses(record.detail, payload)
+    assert states == [STATE_LOW_SCORE, STATE_FALSE_POSITIVE]
+
+    canvas = make_canvas()
+    canvas.set_shapes([], payload, (), states)
+    rendered = render_rgba(canvas)
+    assert (
+        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *LOW_SCORE_BOX)
+        > MIN_STROKE_PIXELS
+    )
+    assert (
+        stroke_pixels(
+            canvas, rendered, FALSE_POSITIVE_COLOR, *FREE_ROW_BOX
+        )
+        > MIN_STROKE_PIXELS
+    )
+    # neither the plain colour of the matched row nor a colour of the
+    # other box reached the box under test
+    assert stroke_pixels(canvas, rendered, PRED_COLOR, *LOW_SCORE_BOX) == 0
+    assert (
+        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *FREE_ROW_BOX) == 0
+    )
+
+
+def test_the_class_mismatch_of_a_row_wins_over_its_low_score(qt_app):
+    """The class mismatch of a row wins over the low score of the same box.
+
+    The one box carries two rows at the same place and the record holds
+    two ground truth boxes there, so the judge pairs the first row with
+    the ground truth of its own class (a match) and the second one - of
+    another class the run knows - with the other (a class mismatch).
+    Both scores of the record sit under
+    the NG score threshold, therefore the mismatched pair carries a
+    class mismatch AND a low score at once: the class mismatch is the
+    reason the judge ranks in front of the low score, so the box is
+    orange and never teal.
+    """
+
+    record = pair_palette_record()
+    payload = record.detail["predictions"]
+    rows, row_boxes = expand_multilabel_rows(payload)
+
+    assert len(payload) == 1
+    assert row_boxes == [0, 0]
+    assert len(rows) == record.detail["pred_total"] == 2
+    assert record.detail["pred_valid"] == 2
+    assert [pair["pred_index"] for pair in record.detail["matched"]] == [
+        0,
+        1,
+    ]
+    assert [pair["class_state"] for pair in record.detail["matched"]] == [
+        "match",
+        "mismatch",
+    ]
+    # the two matched rows carry the low score flag of the judge, the
+    # mismatched one included: the priority rule is what decides, never
+    # the mere presence of the flag (see matched_pair_state)
+    assert [pair["low_score"] for pair in record.detail["matched"]] == [
+        True,
+        True,
+    ]
+    assert record.detail["false_positives"] == []
+
+    states = pred_statuses(record.detail, payload)
+    assert states == [STATE_CLASS_MISMATCH]
+
+    canvas = make_canvas()
+    canvas.set_shapes([], payload, (), states)
+    rendered = render_rgba(canvas)
+    assert (
+        stroke_pixels(canvas, rendered, CLASS_MISMATCH_COLOR, *TWO_LEFT_A)
+        > MIN_STROKE_PIXELS
+    )
+    # neither the low score of the very same pair nor the plain colour
+    # of the matched row is what the box shows
+    assert (
+        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *TWO_LEFT_A) == 0
+    )
+    assert stroke_pixels(canvas, rendered, PRED_COLOR, *TWO_LEFT_A) == 0
+
+
+# --------------------------------------- a detail written before the rows
+def test_a_detail_without_the_row_map_keeps_the_legacy_colours(qt_app):
+    """A detail of the previous revision is coloured box by box.
+
+    Such a detail indexes its payload boxes directly and carries no
+    pred_row_boxes at all, which is what an old record, an old report
+    and the legacy fixtures of this file look like. The page has to
+    colour every box exactly like it did before the rows existed, so the
+    frozen legacy rule and the new entry point are compared on the very
+    same detail: the two answers line up entry by entry.
+    """
+
+    record = judged_record()
+    detail = dict(record.detail)
+    assert "pred_row_boxes" not in detail
+
+    expected = _legacy_pred_statuses(detail, detail["predictions"])
+    assert pred_statuses(detail, detail["predictions"]) == expected
+    assert expected == [
+        STATE_OK_PAIR,
+        STATE_IOU_BELOW,
+        STATE_FALSE_POSITIVE,
+    ]
+
+    # and the very colours of the boxes did not move either
+    payload = detail["predictions"]
+    colors = shape_colors(payload, PRED_COLOR, expected)
+    assert rgba(colors[0]) == rgba(PRED_COLOR)
+    assert rgba(colors[1]) == rgba(IOU_BELOW_COLOR)
+    assert rgba(colors[2]) == rgba(FALSE_POSITIVE_COLOR)
+
+
+def test_a_row_map_that_does_not_line_up_keeps_every_box_plain(qt_app):
+    """A map or a payload of another revision flags no box at all.
+
+    The guard of the new rule is the count of the rows and the box of
+    every one of them: a detail whose payload lost a merged box, or
+    whose map does not describe the boxes on screen, is answered with
+    the plain Pred colour of every box instead of a half coloured
+    picture, and never with an exception.
+    """
+
+    record = two_box_record()
+    payload = record.detail["predictions"]
+    # the payload on screen is the one of the previous revision: the box
+    # the verdict counted once is not there any more
+    assert pred_statuses(record.detail, payload[:1]) == [""]
+
+    # a map of the wrong length, a map naming a box that is not shown, a
+    # map whose values are no count at all
+    for broken in ([0, 0], [0, 0, 0, 0, 0, 9], [0, 0, 0, 0, 0, "x"]):
+        detail = dict(record.detail)
+        detail["pred_row_boxes"] = broken
+        assert pred_statuses(detail, payload) == ["", ""], broken
+
+    # the rows of the boxes on screen disagree with the rows the verdict
+    # counted: the boxes keep their plain colour, one by one
+    detail = dict(record.detail)
+    detail["pred_total"] = 6
+    assert pred_statuses(detail, payload) == ["", ""]
+
+    canvas = make_canvas()
+    canvas.set_shapes([], payload, (), pred_statuses(detail, payload))
+    rendered = render_rgba(canvas)
+    for start, end in (TWO_LEFT_A, TWO_RIGHT):
+        assert (
+            stroke_pixels(canvas, rendered, PRED_COLOR, start, end)
+            > MIN_STROKE_PIXELS
+        )
+
+
+def legacy_routes(monkeypatch) -> list:
+    """Return the log of the calls the new rule makes to the legacy one.
+
+    The frozen legacy rule and the body of the new one are the two
+    routes of pred_statuses, so a spy on the legacy rule tells which
+    branch a case really took: an empty log is the branch of the new
+    rule (its row guard and its aggregation), a filled one is the
+    fallback of a detail the new rule refuses to read row by row.
+    """
+
+    calls: list = []
+    original = results_page_module._legacy_pred_statuses
+
+    def spy(detail, shapes):
+        calls.append(detail)
+        return original(detail, shapes)
+
+    monkeypatch.setattr(
+        results_page_module, "_legacy_pred_statuses", spy
+    )
+    return calls
+
+
+def test_the_matchable_row_guard_answers_without_the_legacy_rule(
+    qt_app, monkeypatch
+):
+    """The count of the matchable rows is a branch of the new rule.
+
+    The row map of the record is the one of its verdict, so the detail
+    is read row by row: its two payload boxes do not fit the four rows
+    the verdict counted at all, therefore the frozen legacy rule would
+    answer them with the plain colours, while the new rule colours both
+    of them. Breaking the count of the matchable rows alone keeps that
+    very route - no guard of the row map reads pred_valid - and only
+    makes the new rule degrade the whole record to the plain colours:
+    its own branch, and the spy sees no legacy call at all.
+    """
+
+    record = two_box_record()
+    payload = record.detail["predictions"]
+    calls = legacy_routes(monkeypatch)
+
+    # the row path colours the two boxes and never asks the legacy rule
+    assert pred_statuses(record.detail, payload) == [
+        STATE_FALSE_POSITIVE,
+        STATE_FALSE_POSITIVE,
+    ]
+    assert calls == []
+
+    # one matchable row short: the guard of the new rule fails and every
+    # box keeps the plain colour, still without any legacy call
+    detail = dict(record.detail)
+    detail["pred_valid"] = 3
+    assert pred_statuses(detail, payload) == ["", ""]
+    assert calls == []
+
+
+def test_a_row_map_of_another_row_list_falls_back_to_the_legacy_rule(
+    qt_app, monkeypatch
+):
+    """A map that rebuilds another row list is refused as a whole.
+
+    The permuted map has the length the verdict counted and its values
+    are all in range, so the counts of the map itself pass; the rows it
+    describes are not the rows the payload rebuilds, so the new rule
+    hands the detail back to the frozen legacy rule (one call per case,
+    the spy sees them), which reads the two boxes of the payload box by
+    box and answers the plain colours here. Using that map would have
+    shifted the matched state of the first row onto the second box.
+    """
+
+    record = two_box_record()
+    payload = record.detail["predictions"]
+    calls = legacy_routes(monkeypatch)
+
+    # the map the record really carries takes the new path
+    assert pred_statuses(record.detail, payload) == [
+        STATE_FALSE_POSITIVE,
+        STATE_FALSE_POSITIVE,
+    ]
+
+    # a map of legal values in another order, then three maps that are
+    # no row list at all: the last three are refused by the reader of
+    # the map before any count is read (see _row_box_indexes)
+    for odd in ([0, 0, 1, 0], "0001", 5, {"0": 0}):
+        detail = dict(record.detail)
+        detail["pred_row_boxes"] = odd
+        assert pred_statuses(detail, payload) == ["", ""], odd
+
+    # every one of the four went through the legacy fallback
+    assert len(calls) == 4
 
 
 def picture() -> np.ndarray:

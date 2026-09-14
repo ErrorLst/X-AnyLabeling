@@ -25,6 +25,12 @@ from anylabeling.custom.model_validation.onnx_meta import (
 
 PLACEHOLDERS = ["class_0", "class_1"]
 CLASSES = ["a0_dian", "a1_xian"]
+# The stand-ins answer one box per class: the boxes are laid out far
+# enough apart that the whole image, class agnostic NMS of the runner
+# (it folds the rows of one image whose IoU passes the configured cut)
+# can never collapse two of them. A spacing wider than the ten pixel
+# box leaves an IoU of zero.
+BOX_SPACING = 40.0
 
 
 def metadata_for(names) -> dict:
@@ -95,9 +101,11 @@ class FakePoint:
 class FakeShape:
     """Predicted shape carrying the label given by the YOLO wrapper.
 
-    Every shape starts at its own offset so that two classes are two
-    distinct boxes: the runner merges the rows that share their
-    coordinates, while these tests assert one shape per class.
+    Every shape starts at its own offset, one BOX_SPACING away from the
+    next one, so that two classes stay two distinct boxes: the runner
+    folds the rows of one box whose IoU passes the configured cut - and
+    the rows that share their coordinates - while these tests assert one
+    shape per class.
     """
 
     def __init__(
@@ -137,7 +145,7 @@ class FakeYOLO:
         if not image_path or not os.path.isfile(image_path):
             return result_of([])
         return result_of(
-            FakeShape(str(name), offset=float(index))
+            FakeShape(str(name), offset=float(index) * BOX_SPACING)
             for index, name in enumerate(self.classes)
         )
 
@@ -172,7 +180,7 @@ class RealDecoderYOLO:
         if not self.emit_shapes:
             return result_of([])
         return result_of(
-            FakeShape(str(name), offset=float(index))
+            FakeShape(str(name), offset=float(index) * BOX_SPACING)
             for index, name in enumerate(self.classes)
         )
 
@@ -205,7 +213,7 @@ class SwallowingYOLO(RealDecoderYOLO):
         except Exception:  # noqa: BLE001
             return result_of([])
         return result_of(
-            FakeShape(str(name), offset=float(index))
+            FakeShape(str(name), offset=float(index) * BOX_SPACING)
             for index, name in enumerate(self.classes)
         )
 

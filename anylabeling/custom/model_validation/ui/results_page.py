@@ -77,6 +77,7 @@ from .. import records as records_module
 from ..records import ValidationRecord
 from .. import judge as judge_module
 from ..labelme_io import REGION_SHAPE_TYPES
+from ..multilabel import expand_multilabel_rows
 from . import image_view as image_view_module
 from .image_view import (
     CLASS_MISMATCH_COLOR,
@@ -364,16 +365,18 @@ def gt_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
     return statuses
 
 
-def pred_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
-    """Return the judgement state of every prediction of one record.
+def _legacy_pred_statuses(
+    detail: Dict[str, Any], shapes: Sequence[Any]
+) -> List[Any]:
+    """Return the prediction states of a detail written before the rows.
 
-    A matchable prediction no match points at is a false positive, and a
-    low score never changes that: the magenta of a false positive is the
-    miss signal of this side and stays the more important one, while the
-    low score of such a box is still written in the detail and in the
-    reasons of the record. A prediction of an ignored shape type is never
-    matched at all and keeps the plain Pred colour, and so does every
-    prediction of a record without a judgement.
+    This is the whole rule of the revision that drew one box per payload
+    entry: the judge indexes and the shape list are the very same list,
+    so a matchable prediction no match points at is a false positive and
+    a prediction of an ignored shape type keeps the plain Pred colour.
+    The path of a detail without the row map is frozen here, byte for
+    byte, so an old record or an old report keeps exactly the colours it
+    always had.
     """
 
     statuses: List[Any] = [""] * len(shapes)
@@ -400,6 +403,173 @@ def pred_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
         if position not in matched_indexes:
             statuses[offset] = STATE_FALSE_POSITIVE
     return statuses
+
+
+# The ranking of the prediction states inside one box: the state of a
+# box is the highest priority state of its own rows. The order follows
+# the reasons of the judge (see judge.REASON_PRIORITY) and puts the
+# false positive in front of all of them, exactly like the rule of the
+# single row revision (see _legacy_pred_statuses): the miss signal of
+# this side is the more important one, whatever the score, the class or
+# the IoU of the other rows of the box say.
+PRED_STATE_PRIORITY = (
+    STATE_FALSE_POSITIVE,
+    STATE_CLASS_MISMATCH,
+    STATE_LOW_SCORE,
+    STATE_IOU_BELOW,
+)
+
+
+def _state_rank(state: Any) -> int:
+    """Return the rank of one prediction state, lower is more important.
+
+    An unknown or an empty state - a plain OK pair, a shape the judge
+    never matched - is ranked behind every state of the list, so it can
+    never overwrite one of them.
+    """
+
+    try:
+        return PRED_STATE_PRIORITY.index(state)
+    except ValueError:
+        return len(PRED_STATE_PRIORITY)
+
+
+def _row_box_indexes(
+    detail: Dict[str, Any], row_boxes: Any, box_count: int
+) -> Optional[List[int]]:
+    """Return the box of every row, None when the map cannot be read.
+
+    The row map is the one the pipeline wrote next to the judgement (see
+    pipeline._infer_one): one box index per judged row, in the row
+    coordinate system of the matching. It is only handed out while the
+    new rule provably lines up with the displayed boxes; every other map
+    answers None, which is the "this detail is not one of the row
+    revision" answer of the caller.
+    """
+
+    if isinstance(row_boxes, (str, bytes)) or not isinstance(
+        row_boxes, (list, tuple)
+    ):
+        return None
+    total = _count(detail.get("pred_total"))
+    if total is None or total != len(row_boxes):
+        return None
+    indexes: List[int] = []
+    for value in row_boxes:
+        index = _count(value)
+        if index is None or index >= box_count:
+            return None
+        indexes.append(index)
+    return indexes
+
+
+def _aligned_rows(
+    detail: Dict[str, Any], predictions: Sequence[Any]
+) -> Optional[Tuple[List[Dict[str, Any]], List[int]]]:
+    """Return the judged rows of a detail and the box of each of them.
+
+    The new rule reads an index of the judge as a row and an index of
+    the payload as the box the canvas draws, so the two have to be
+    proven to line up before a single box may be flagged: the rows are
+    rebuilt from the displayed payload exactly like the pipeline built
+    them for the verdict, and the rebuilt rows have to be as many as the
+    judgement counted (detail["pred_total"]). None - a detail of the
+    previous revision, a report whose payload was rewritten - sends the
+    caller to the frozen legacy rule, so no box ever carries the
+    judgement of another one.
+    """
+
+    if "pred_row_boxes" not in detail:
+        return None
+    indexes = _row_box_indexes(
+        detail, detail.get("pred_row_boxes"), len(predictions)
+    )
+    if indexes is None:
+        return None
+    rows, row_boxes = expand_multilabel_rows(predictions)
+    if len(rows) != len(indexes) or row_boxes != indexes:
+        return None
+    return rows, indexes
+
+
+def pred_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
+    """Return the judgement state of every predicted box of one record.
+
+    The judge counts and matches one row per class, while the canvas
+    draws one box per prediction: a merged box is therefore coloured by
+    the highest priority state of its own rows (see PRED_STATE_PRIORITY),
+    which is the aggregation rule of the user: a box whose rows disagree
+    carries the most important of them, and the false positive of a row
+    no match points at wins over every other row of its box.
+
+    A detail without a row map is not read row by row at all: it is the
+    detail of a previous revision and is coloured by the frozen legacy
+    rule (see _legacy_pred_statuses), which is exactly what the page did
+    before the rows existed. A detail whose rows do not provably line up
+    with the displayed payload is answered the same way as a record
+    without a judgement: every box keeps the plain Pred colour instead
+    of half of them being flagged.
+
+    The states are read from the detail alone; the display copy never
+    writes anything back into the record (see matched_pair_state).
+
+    The pred_index of the judge is the index of a pair inside the
+    *matchable* rows the verdict was handed (its valid_pred, see
+    judge.judge_record), never a position of the row list the canvas
+    draws: every index of the matched list is therefore mapped back
+    through the matchable row positions below, the very counterpart of
+    pred_valid_offsets on the legacy path. A row of another shape type
+    may sit in front of a matchable one, and reading pred_index as a row
+    position would then flag the rows of one box with the judgement of
+    another one.
+    """
+
+    if "pred_row_boxes" not in detail:
+        return _legacy_pred_statuses(detail, shapes)
+    aligned = _aligned_rows(detail, shapes)
+    if aligned is None:
+        return _legacy_pred_statuses(detail, shapes)
+    rows, row_boxes = aligned
+    valid = [
+        index
+        for index, row in enumerate(rows)
+        if str(row.get("shape_type") or "")
+        in judge_module.MATCHABLE_PRED_TYPES
+    ]
+    if len(valid) != _count(detail.get("pred_valid")):
+        # the verdict counted another matchable list than the one the
+        # canvas shows: the guard failed, so the whole record degrades to
+        # the plain colours instead of a half coloured picture
+        return [""] * len(shapes)
+    matched: Dict[int, str] = {}
+    for pair in detail.get("matched") or []:
+        if not isinstance(pair, dict):
+            continue
+        # the pred_index of the judge is the index of the pair inside the
+        # matchable rows it was handed, so valid - the row positions of
+        # the matchable rows on screen - is what maps it back to a row
+        # (pred_valid_offsets does the same for the payload of the legacy
+        # path). Reading it as a row position would shift the judgement
+        # of a row onto another one as soon as the row list carries a
+        # shape type the judge never matches.
+        index = _count(pair.get("pred_index"))
+        if index is None or index >= len(valid):
+            continue
+        matched[valid[index]] = matched_pair_state(
+            pair.get("iou"),
+            pair.get("class_state"),
+            detail.get("ng_iou_threshold"),
+            pair.get("low_score"),
+        )
+    # the rows of one box are the only ones sharing their box index, so
+    # the highest priority state of a box is found in one scan
+    boxes: List[Any] = [""] * len(shapes)
+    for index in valid:
+        state = matched.get(index, STATE_FALSE_POSITIVE)
+        box = row_boxes[index]
+        if _state_rank(boxes[box]) > _state_rank(state):
+            boxes[box] = state
+    return boxes
 
 
 def sort_chunk_key(chunk: object) -> Tuple[int, int, str]:
@@ -1736,6 +1906,7 @@ __all__ = [
     "MARK_TOOLTIP_AUGMENTED",
     "MARK_TOOLTIP_ORIGINAL",
     "PRED_CANVAS_TITLE",
+    "PRED_STATE_PRIORITY",
     "PREVIEW_HINT_MISSING",
     "PREVIEW_HINT_ORIGINAL",
     "PREVIEW_NOTE_NOT_JUDGED",
