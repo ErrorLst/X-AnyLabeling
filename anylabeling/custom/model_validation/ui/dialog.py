@@ -142,6 +142,9 @@ class ModelValidationDialog(QtWidgets.QDialog):
         # True while export_zip runs: the progress dialog is not modal
         # any more, so this flag is what refuses a second export
         self._exporting: bool = False
+        # the window whose activation lifts this one, and that holds the
+        # event filter of this dialog (see _install_activate_filter)
+        self._activate_filter_target: Optional[Any] = None
 
         self.stack = QtWidgets.QStackedWidget()
         self.config_page = ConfigPage()
@@ -245,6 +248,131 @@ class ModelValidationDialog(QtWidgets.QDialog):
         ):
             return None
         return parent
+
+    # ------------------------------------------------------ raise on activate
+    def eventFilter(  # noqa: N802
+        self, watched: QtCore.QObject, event: QtCore.QEvent
+    ) -> bool:
+        """Lift this window when the main window is activated.
+
+        This is the filter the main window carries (see
+        _install_activate_filter), and the only hook of the feature: an
+        activation of the main window is exactly the moment this window
+        would end up behind it.
+
+        Only activations are of interest here. An event of any other
+        kind is passed on untouched, and no event is ever swallowed -
+        the main window handles every one of its own exactly as it did
+        before the filter was installed. Nothing is raised from the
+        activation of this window itself either: the window is on top
+        when that happens, and a second raise from there would only
+        double the work of the window manager.
+        """
+
+        if event.type() == QtCore.QEvent.Type.WindowActivate:
+            self._raise_above_main_window()
+        return super().eventFilter(watched, event)
+
+    def _activate_target(self) -> Optional[Any]:
+        """Return the window whose activation lifts this one.
+
+        An activation is delivered to the top level window, and the
+        labeling widget handed in as the parent is not one of those (it
+        is a plain widget inside the main window): the widget window()
+        answers is the one to watch. A parent that is already top level
+        - a standalone start of this window, a test stub - answers
+        itself. A parent without that API is watched directly instead.
+        """
+
+        main_window = self._main_window()
+        if main_window is None:
+            return None
+        getter = getattr(main_window, "window", None)
+        if not callable(getter):
+            return main_window
+        try:
+            return getter() or main_window
+        except RuntimeError:
+            # the main window was destroyed under the filter
+            return None
+
+    def _install_activate_filter(self) -> None:
+        """Watch the main window for its own activations, once.
+
+        The call is idempotent and repeated on every show: a Launcher
+        hands the main window in as the constructor parent, but this
+        method does not depend on that being true already. Installing
+        the filter again on the very same object is expensive and
+        pointless, so the target is compared first.
+        """
+
+        target = self._activate_target()
+        if target is None:
+            return
+        if (
+            self._activate_filter_target is not None
+            and self._activate_filter_target is not target
+        ):
+            self._remove_activate_filter()
+        if self._activate_filter_target is not None:
+            return
+        try:
+            target.installEventFilter(self)
+        except RuntimeError:
+            # the main window is on its way out: no filter, no raise
+            return
+        self._activate_filter_target = target
+
+    def _remove_activate_filter(self) -> None:
+        """Drop the filter installed on the main window, if any.
+
+        The filter is held by another widget, so it is removed on close:
+        a stale dialog would otherwise keep watching the main window and
+        raising itself from the grave.
+        """
+
+        target = self._activate_filter_target
+        self._activate_filter_target = None
+        if target is None:
+            return
+        try:
+            target.removeEventFilter(self)
+        except RuntimeError:
+            # the main window is already gone, so is the filter
+            pass
+
+    def _raise_above_main_window(self) -> None:
+        """Queue one raise for the next turn of the event loop.
+
+        The activation of the main window is still being delivered while
+        this runs: the window manager is the one that would put this
+        window back behind the main window, and it settles the stacking
+        order after the activation is over. One turn of the event loop
+        is therefore what makes the raise stick instead of being the
+        losing half of a race with the window manager.
+
+        The user is the one in charge of this window: a hidden or
+        minimized one is left exactly as it is. Nothing here activates
+        anything either - the raise must not take the keyboard away from
+        the canvas the user is editing in.
+        """
+
+        if not self.isVisible() or self.isMinimized():
+            return
+        QtCore.QTimer.singleShot(0, self._raise_deferred)
+
+    def _raise_deferred(self) -> None:
+        """Run the raise the activation filter queued.
+
+        The queued call may arrive after the window was closed and its
+        C++ side deleted: a RuntimeError there is the ordinary end of a
+        window, not a failure.
+        """
+
+        try:
+            self.raise_()
+        except RuntimeError:
+            pass
 
     def _show_status_message(self, message: str) -> None:
         """Write one runtime note on both status lines of the window.
@@ -971,6 +1099,10 @@ class ModelValidationDialog(QtWidgets.QDialog):
 
         super().showEvent(event)
         self.apply_initial_size()
+        # the main window is watched from the first show on: a parent
+        # handed in later still gets its filter here, and _main_window()
+        # answering None leaves this a no-op
+        self._install_activate_filter()
 
     def _running_workers(self) -> List[ValidationWorker]:
         """Return the workers of this window that are still alive."""
@@ -996,6 +1128,9 @@ class ModelValidationDialog(QtWidgets.QDialog):
             event.ignore()
             return
         self.bridge.detach()
+        # the filter lives on the main window: the close has to take it
+        # off, a stale dialog must never raise itself again
+        self._remove_activate_filter()
         # a follow that is still waiting must not reach into the close
         self.follow_timer.stop()
         self.scan_scheduler.shutdown(1000)
