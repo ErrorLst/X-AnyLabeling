@@ -46,9 +46,12 @@ emits no signal, so the tool has to leave the mode from there; the
 tool also calls it itself, to put the canvas into its create mode when
 the mode is entered).
 
-Undo history lives in memory only, one list of steps per image, and is
-dropped when the folder changes, when another folder is opened, or at
-the end of the process. The originals of the modified files stay in
+Undo history lives in memory only, one list of steps per image. A walk
+through the images of one folder keeps it -- switching image and
+coming back to a repaired one leaves its steps in place, which is what
+the model validation follow relies on -- while a folder that really
+changes, and the end of the process, drop it. The originals of the
+modified files stay in
 ``%TEMP%/dsh-smudge/<timestamp>-<pid>`` and are never deleted.
 """
 

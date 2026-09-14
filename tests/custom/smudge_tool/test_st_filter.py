@@ -367,6 +367,92 @@ def test_opening_a_folder_resets_the_history(st_tool):
     assert widget.folder_calls == [1]
 
 
+def test_importing_the_folder_of_the_history_again_keeps_it(st_tool):
+    """A walk away and back keeps the stack of the image.
+
+    The model validation follow opens one staging file at a time, and
+    the file list of the main window imports the folder of that file on
+    every switch: importing the folder the history belongs to again is
+    not a change of folder, and the steps of the image have to be there
+    when the user comes back to it.
+    """
+
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    folder = os.path.dirname(widget.image_path)
+    controller._action.trigger()
+    _fill(canvas, (85.0, 70.0), (10.0, 10.0), (50.0, 40.0))
+    assert list(controller._history) == [widget.image_path]
+    # The follow hands the folder of the file it just opened in; the
+    # path is spelled the way a folder dialog would spell it, which is
+    # not the way the first import handed it in.
+    widget.import_image_folder(os.path.join(folder, "."))
+    assert list(controller._history) == [widget.image_path]
+    # The import asks the widget to load a file of that folder, so the
+    # tool forgets which file it was showing; the history stays, and
+    # the next event adopts the file on screen again -- another file of
+    # the run, whose own bucket is empty while this one is kept.
+    controller._adopt_file()
+    assert controller._current_file == widget.image_path
+    assert controller._can_undo() is True
+
+
+def test_a_walk_to_another_image_and_back_keeps_the_undo(
+    st_scratch, st_image, make_widget
+):
+    """The reported workflow: smudge, switch image, switch back, undo.
+
+    The follow switches the file of the main window and the file list
+    imports the folder of that file on the way; the steps of the image
+    the user returns to have to be there, on screen and on disk.
+    """
+
+    first = os.path.join(st_scratch, "first.png")
+    second = os.path.join(st_scratch, "second.png")
+    PIL.Image.fromarray(st_image, "RGB").save(first)
+    PIL.Image.fromarray(st_image[::-1], "RGB").save(second)
+    widget = make_widget(image_path=first, image_data=_bytes(first))
+    imported = []
+
+    def import_image_folder(dirpath, pattern=None, load=True):
+        imported.append(str(dirpath))
+        return None
+
+    # The wrapper has to take the upstream method over, so the stub is
+    # in place before the tool is installed.
+    widget.import_image_folder = import_image_folder
+    controller = smudge_filter.install_smudge_tool(widget)
+    canvas = widget.canvas
+    before = _bytes(first)
+    assert controller.set_mode(True) is True
+    _fill(canvas, (85.0, 70.0), (10.0, 10.0), (50.0, 40.0))
+    assert widget.messages[-2:] == [
+        "已选择背景源点",
+        "已完成涂抹修复，Ctrl+Z 可撤销",
+    ]
+    assert controller._history[first]
+    # The follow opens the next record of the run: the main window
+    # imports its folder again and shows that file.
+    widget.import_image_folder(st_scratch)
+    _switch_to(widget, controller, second)
+    assert list(controller._history) == [first]
+    assert controller._current_file == second
+    # And back to the image that was repaired.
+    widget.import_image_folder(st_scratch)
+    _switch_to(widget, controller, first)
+    assert controller._current_file == first
+    assert controller._can_undo() is True
+    send_key(
+        canvas,
+        QtCore.Qt.Key.Key_Z,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+    assert _bytes(first) == before
+    assert controller._history == {}
+    assert imported == [st_scratch, st_scratch]
+
+
 def test_another_folder_resets_the_history(st_tool, st_scratch, st_image):
     controller = st_tool.controller
     canvas = st_tool.widget.canvas

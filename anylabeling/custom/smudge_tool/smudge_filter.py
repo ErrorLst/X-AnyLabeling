@@ -5,8 +5,9 @@ labeling widget is only touched by two mount lines, one import and one
 call to :func:`install_smudge_tool`. The controller is attached to the
 instance, never to the class, and the upstream method bodies stay
 untouched: the button is added to the tools toolbar and restored after
-every rebuild of that toolbar, and the history is reset from a wrapper
-around ``import_image_folder``.
+every rebuild of that toolbar, and the history is dropped from a
+wrapper around ``import_image_folder`` when that folder is not the one
+the history belongs to.
 
 Interaction, as approved in the plan:
 
@@ -652,11 +653,13 @@ class SmudgeController(QtCore.QObject):
         The undo history survives a walk through the images of one folder
         and is dropped when the folder changes, or when a single image of
         another folder is opened: both are paths that cannot share the
-        history of the previous folder.
+        history of the previous folder. The folder is remembered the
+        comparable way, so it can be matched against the one an import
+        hands in (see :meth:`_folder_changed`).
         """
         if target == self._current_file:
             return
-        folder = osp.dirname(target) if target else None
+        folder = self._normal_dir(osp.dirname(target)) if target else None
         if folder != self._top_dir:
             self._reset_history()
             self._top_dir = folder
@@ -798,11 +801,17 @@ class SmudgeController(QtCore.QObject):
         self._widget.populate_mode_actions = populate_mode_actions
 
     def _wrap_import_image_folder(self):
-        """Reset the whole history when a folder is opened or reopened.
+        """Drop the history when the folder really changes.
 
-        The upstream method keeps its whole body; the history is dropped
-        before it runs, so even a folder that fails to open starts from an
-        empty history, which is what the plan asks for.
+        The upstream method keeps its whole body. It is called for a
+        folder the user opened, and it is also called for a folder that
+        is opened again: the model validation follow loads one staging
+        file at a time, and the file list of the main window follows
+        that file, so every switch imports the same staging folder
+        again. Dropping the history on those calls would take the undo
+        of every image of the folder with it; only a folder that is not
+        the one the history belongs to is a reason to drop it, which is
+        the same rule :meth:`_container_file` applies to one file.
         """
         original = getattr(self._widget, "import_image_folder", None)
         if not callable(original):
@@ -811,13 +820,40 @@ class SmudgeController(QtCore.QObject):
             return
 
         def import_image_folder(dirpath, pattern=None, load=True):
-            self._reset_history()
-            self._top_dir = str(dirpath) if dirpath else None
+            if self._folder_changed(dirpath):
+                self._reset_history()
+                self._top_dir = self._normal_dir(dirpath)
             self._current_file = None
             return original(dirpath, pattern=pattern, load=load)
 
         self._widget.import_image_folder = import_image_folder
         self._widget._smudge_import_wrapped = True
+
+    def _normal_dir(self, dirpath):
+        """Return the comparable form of a folder, or ``None``.
+
+        The user picks a folder through a dialog, the follow hands one
+        in as it is stored in the run, and a relative path reaches the
+        widget from a command line: two spellings of one folder must
+        compare equal, or the same folder would count as a new one and
+        drop the history. A path the file system cannot resolve is
+        compared as it is; ``None`` and the empty string are one value.
+        """
+        if not dirpath:
+            return None
+        return osp.normcase(osp.normpath(osp.abspath(str(dirpath))))
+
+    def _folder_changed(self, dirpath):
+        """Return ``True`` when ``dirpath`` is not the folder in hand.
+
+        ``_top_dir`` holds the comparable form already (it comes from
+        :meth:`_normal_dir` through this wrapper), and ``None`` means no
+        folder was opened yet: the first import has nothing to drop.
+        """
+        folder = self._normal_dir(dirpath)
+        if folder is None or self._top_dir is None:
+            return False
+        return folder != self._top_dir
 
     def _wrap_canvas_mouse_move(self):
         """Keep the cross cursor of the mode on the canvas.
