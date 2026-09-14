@@ -64,28 +64,38 @@ BOX_COLOR = QtGui.QColor(241, 196, 15)
 # punched out of the crowd: a GT no prediction met (a miss, the false
 # negative of the run) is orange red, a prediction no GT met (a false
 # positive) is magenta, while a matched pair of two different classes is
-# orange and a pair whose IoU stayed under the threshold is dark yellow.
-# A box whose state is unknown - a matched pair, a record nobody judged -
-# keeps the plain GT / Pred colour above.
+# orange, a pair whose IoU stayed under the threshold is dark yellow and
+# a matched prediction whose score stayed under the NG score threshold of
+# the run is teal. A box whose state is unknown - a matched pair, a
+# record nobody judged - keeps the plain GT / Pred colour above.
 MISS_COLOR = QtGui.QColor(231, 76, 60)
 FALSE_POSITIVE_COLOR = QtGui.QColor(155, 89, 182)
 CLASS_MISMATCH_COLOR = QtGui.QColor(230, 126, 34)
 IOU_BELOW_COLOR = QtGui.QColor(241, 196, 15)
-# The states a box can carry. Two of them are the states a matched pair
-# of the judge detail is written with; the other two are the states of a
-# shape no match points at - a GT no prediction met and a prediction no
-# GT met - which the reader of the detail derives from its missed and
-# false positive indexes. The state of a matched pair that is fine keeps
-# the plain colour of its canvas and so does a pair of two labels that
-# are not even known (see results_page.matched_pair_state).
+# The colour of a low score prediction: the box of a matched pair whose
+# prediction score stayed under the NG score threshold of the run. It is
+# a teal green, chosen to sit beside the other six colours above without
+# being mistaken for the plain GT green, the blue of a prediction or the
+# dark yellow of a pair under the IoU threshold.
+LOW_SCORE_COLOR = QtGui.QColor(26, 188, 156)
+# The states a box can carry. Three of them are the states a matched
+# pair of the judge detail is written with (a class mismatch, an IoU
+# under the threshold, a score under the NG score threshold); the other
+# two are the states of a shape no match points at - a GT no prediction
+# met and a prediction no GT met - which the reader of the detail derives
+# from its missed and false positive indexes. The state of a matched
+# pair that is fine keeps the plain colour of its canvas, and so does a
+# pair of two labels that are not even known (see
+# results_page.matched_pair_state).
 MATCH_COLOR = GT_COLOR
 STATE_OK_PAIR = "OK_PAIR"
 STATE_MISS = "MISS"
 STATE_FALSE_POSITIVE = "FALSE_POSITIVE"
 STATE_CLASS_MISMATCH = "CLASS_MISMATCH"
 STATE_IOU_BELOW = "IOU_BELOW"
+STATE_LOW_SCORE = "LOW_SCORE"
 
-# The colour of the four judgement states. The map is keyed by the state
+# The colour of the six judgement states. The map is keyed by the state
 # of a shape; a state it does not carry - OK_PAIR, an empty state, a
 # state of a later revision - has no colour of its own and keeps the
 # plain colour of the canvas it is drawn on. The states of a canvas are
@@ -95,6 +105,7 @@ STATE_TO_COLOR = {
     STATE_FALSE_POSITIVE: FALSE_POSITIVE_COLOR,
     STATE_CLASS_MISMATCH: CLASS_MISMATCH_COLOR,
     STATE_IOU_BELOW: IOU_BELOW_COLOR,
+    STATE_LOW_SCORE: LOW_SCORE_COLOR,
 }
 TEXT_COLOR = QtGui.QColor(255, 255, 255)
 BACKGROUND_COLOR = QtGui.QColor(24, 26, 30)
@@ -105,9 +116,16 @@ OVERLAY_PEN_WIDTH = 2.0
 # it keeps the same readable size whatever the zoom. It is measured and
 # placed in that very widget space: the anchor is the upper left corner
 # of the box, the text sits LABEL_GAP pixels above it and is only moved
-# below the anchor when the room above is missing.
+# below the anchor when the room above is missing. A box two classes met
+# on carries one such block with a row per class: the block is measured
+# and placed as a whole, never row by row.
 LABEL_POINT_SIZE = 8.0
 LABEL_PADDING = 3.0
+# The distance between two rows of a multi line label, in widget
+# pixels: the label block of a multi class box moves every row its own
+# step below the one before it, so the rows never drift with the zoom
+# either. It is measured on the ink of two rows (see _stacked_glyphs).
+LABEL_LINE_SPACING = 1.0
 LABEL_GAP = 2.0
 LABEL_MARGIN = 1.0
 # A label may touch the top and the bottom border of the widget - that
@@ -220,15 +238,82 @@ def shape_score(shape: Any) -> Optional[float]:
     return score
 
 
-def shape_label_text(shape: Any) -> str:
-    """Return the text drawn at the upper left corner of one box."""
+def shape_label_rows(shape: Any) -> List[Tuple[str, Optional[float]]]:
+    """Return the label rows of a box, one entry per class it carries.
 
-    label = shape_label(shape).strip()
-    score = shape_score(shape)
-    if score is None:
-        return label
-    text = SCORE_FORMAT.format(score)
-    return label + " " + text if label else text
+    The predictions of one box the matching merged may carry several
+    classes: the merge writes the parallel lists `labels` and `scores`
+    on the shape - in score descending order, the main `label` and
+    `score` staying the highest scoring pair - and the box has to show
+    every one of them. The rows are read from those two lists, in the
+    very order they were given.
+
+    A shape without them - a ground truth box, a prediction the merge
+    left alone, a record of an older revision - falls back to the one
+    row of its own label and score, which is exactly what a single
+    label box showed before. The two lists are only read while they are
+    parallel and longer than one entry: a shape carrying a single row,
+    or two lists that do not line up, keeps the plain fallback and is
+    therefore never mislabelled with half of a pair.
+    """
+
+    if isinstance(shape, dict):
+        labels = shape.get("labels")
+        scores = shape.get("scores")
+    else:
+        labels = getattr(shape, "labels", None)
+        scores = getattr(shape, "scores", None)
+    if (
+        isinstance(labels, (list, tuple))
+        and isinstance(scores, (list, tuple))
+        and len(labels) == len(scores)
+        and len(labels) > 1
+    ):
+        return [
+            (str(label), _as_score(score))
+            for label, score in zip(labels, scores)
+        ]
+    return [(shape_label(shape), shape_score(shape))]
+
+
+def _as_score(value: Any) -> Optional[float]:
+    """Return one entry of a score list, None when it carries none.
+
+    A row is written without a score when its number is missing or is
+    not a finite number, which is the same rule the single score of a
+    shape follows (see shape_score).
+    """
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(score) or math.isinf(score):
+        return None
+    return score
+
+
+def shape_label_text(shape: Any) -> str:
+    """Return the text drawn at the upper left corner of one box.
+
+    One row per class the box carries, joined by a newline: the single
+    class box of a ground truth is still the one row it always was, and
+    the multi class box of a merge writes its classes one under the
+    other (see shape_label_rows). Every row is formatted like the one
+    label of the previous revision: "label 0.86" for a row with a score
+    and only the label for a row without one.
+    """
+
+    rows: List[str] = []
+    for label, score in shape_label_rows(shape):
+        text = label.strip()
+        if score is not None:
+            written = SCORE_FORMAT.format(score)
+            text = text + " " + written if text else written
+        rows.append(text)
+    return "\n".join(rows)
 
 
 def shape_color(status: Any) -> Optional[QtGui.QColor]:
@@ -824,6 +909,10 @@ class ImageCanvas(QtWidgets.QWidget):
         space; a canvas that hides its labels collects nothing at all, so
         no text of a hidden label is ever measured or shaped.
 
+        The text of a label is read as a whole: a box the merge gave
+        several classes carries one text of several rows, and the newline
+        it holds is stacked by the label pass (see _draw_label).
+
         The colours may be handed over by the caller; they are a pure
         function of the shapes and of their states, so the ground truth
         pass computes them once instead of walking the same list a
@@ -932,7 +1021,9 @@ class ImageCanvas(QtWidgets.QWidget):
         corner when it does not; horizontally it is only pulled back
         inside the widget when it would leave the view. A label that does
         not fit the widget at all is dropped: a box filling the complete
-        view has no room for a label anywhere.
+        view has no room for a label anywhere. A label of several rows -
+        the classes of one merged box - is one block like any other: the
+        rows are stacked inside it and the block as a whole is placed.
         """
 
         if not labels:
@@ -986,6 +1077,39 @@ class ImageCanvas(QtWidgets.QWidget):
             )
         return path
 
+    @classmethod
+    def _stacked_glyphs(
+        cls, font: QtGui.QFont, text: str
+    ) -> QtGui.QPainterPath:
+        """Return the glyphs of a possibly multi line label as one path.
+
+        QPainterPath.addText cannot lay out a newline: a text carrying
+        one would be shaped as a row of replacement boxes. The lines are
+        therefore split here and stacked by hand, one after the other,
+        with one LABEL_LINE_SPACING of widget pixels between their
+        baselines. One path comes back for the whole block - a single
+        line included - so the placement and the two paints of a label
+        stay the one pass they always were (see _draw_label).
+        """
+
+        lines = str(text).split("\n")
+        if len(lines) == 1:
+            return cls._label_glyphs(font, lines[0])
+        path = QtGui.QPainterPath()
+        first_bottom: Optional[float] = None
+        for index, line in enumerate(lines):
+            glyphs = cls._label_glyphs(font, line)
+            box = glyphs.boundingRect()
+            if first_bottom is None:
+                first_bottom = float(box.bottom())
+            offset = float(index) * LABEL_LINE_SPACING - (
+                float(box.bottom()) - first_bottom
+            )
+            stacked = QtGui.QPainterPath(glyphs)
+            stacked.translate(0.0, offset)
+            path.addPath(stacked)
+        return path
+
     def _draw_label(
         self,
         painter: QtGui.QPainter,
@@ -1002,9 +1126,20 @@ class ImageCanvas(QtWidgets.QWidget):
         edge LABEL_GAP pixels above it, and flips below the corner when
         the room above is missing; it is only pulled back horizontally
         and only when it would leave the widget.
+
+        The block of a multi class box is placed as a whole: the lines
+        are stacked into one path (see _stacked_glyphs), its union box
+        is what the room is measured on and what the anchor carries.
+        Therefore a block that does not fit the widget is dropped whole
+        instead of being half written - row by row placement could leave
+        the lines of one box scattered over two corners - and the block
+        only ever moves as a whole: its union box is the anchor, exactly
+        the way the single line of the previous revision was anchored on
+        its own ink. The lines of the block keep the left edge of their
+        first row and the LABEL_LINE_SPACING of their own stacking.
         """
 
-        glyphs = self._label_glyphs(font, text)
+        glyphs = self._stacked_glyphs(font, text)
         ink = glyphs.boundingRect()
         text_width = float(ink.width())
         if text_width <= 0:
@@ -1025,7 +1160,7 @@ class ImageCanvas(QtWidgets.QWidget):
         band_height = ink_height + 2.0 * LABEL_PADDING
         if band_width > width or band_height > height:
             return
-        # one text origin, so the plate and the text never drift apart:
+        # one text origin, so the block and the lines never drift apart:
         # the glyphs are painted at (origin + ink.left, origin + ink.top)
         origin_x = corner.x() - ink_left
         if origin_x + ink_right > width - LABEL_MARGIN:
@@ -1092,12 +1227,14 @@ __all__ = [
     "ImageCanvas",
     "IOU_BELOW_COLOR",
     "LABEL_GAP",
+    "LABEL_LINE_SPACING",
     "LABEL_MARGIN",
     "LABEL_OUTLINE",
     "LABEL_OUTLINE_WIDTH",
     "LABEL_PADDING",
     "LABEL_POINT_SIZE",
     "LABEL_VERTICAL_MARGIN",
+    "LOW_SCORE_COLOR",
     "MATCH_COLOR",
     "MAX_ZOOM",
     "MIN_ZOOM",
@@ -1108,6 +1245,7 @@ __all__ = [
     "STATE_CLASS_MISMATCH",
     "STATE_FALSE_POSITIVE",
     "STATE_IOU_BELOW",
+    "STATE_LOW_SCORE",
     "STATE_MISS",
     "STATE_OK_PAIR",
     "STATE_TO_COLOR",
@@ -1120,6 +1258,7 @@ __all__ = [
     "shape_color",
     "shape_colors",
     "shape_label",
+    "shape_label_rows",
     "shape_label_text",
     "shape_points",
     "shape_score",

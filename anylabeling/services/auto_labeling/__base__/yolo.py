@@ -385,7 +385,7 @@ class YOLO(Model):
                 iou_thres=self.iou_thres,
                 classes=self.filter_classes,
                 agnostic=self.agnostic,
-                multi_label=False,
+                multi_label=self.config.get("multi_label", False),
                 max_det=self.max_det,
                 nc=self.nc,
             )

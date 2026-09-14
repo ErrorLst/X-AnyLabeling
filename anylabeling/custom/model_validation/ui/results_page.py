@@ -83,11 +83,13 @@ from .image_view import (
     FALSE_POSITIVE_COLOR,
     GT_COLOR,
     IOU_BELOW_COLOR,
+    LOW_SCORE_COLOR,
     MISS_COLOR,
     PRED_COLOR,
     STATE_CLASS_MISMATCH,
     STATE_FALSE_POSITIVE,
     STATE_IOU_BELOW,
+    STATE_LOW_SCORE,
     STATE_MISS,
     STATE_OK_PAIR,
     ImageCanvas,
@@ -153,13 +155,15 @@ LEGEND_HTML = (
     "<span style='color:{miss}'>漏报 GT</span> "
     "<span style='color:{fp}'>误报 Pred</span> "
     "<span style='color:{cls}'>类别不一致</span> "
-    "<span style='color:{iou}'>IoU 低</span>"
+    "<span style='color:{iou}'>IoU 低</span> "
+    "<span style='color:{low}'>低分</span>"
     "<br/>两侧同源判定：左侧按 GT 状态、右侧按 Pred 状态着色；"
     "无判定的记录不改色。"
 )
 LEGEND_TOOLTIP = (
     "框色即判定：匹配对保持 GT 绿 / Pred 蓝；漏报（GT 未匹配到预测）橙红；"
-    "误报（预测未匹配到 GT）品红；类别不一致橙；IoU 低于阈值黄。"
+    "误报（预测未匹配到 GT）品红；类别不一致橙；IoU 低于阈值黄；"
+    "匹配对中预测分数低于 NG 分数阈值青绿。"
     "两侧状态来自同一次匹配，无判定明细的记录保持默认框色。"
 )
 
@@ -203,25 +207,54 @@ def legend_html() -> str:
         fp=FALSE_POSITIVE_COLOR.name(),
         cls=CLASS_MISMATCH_COLOR.name(),
         iou=IOU_BELOW_COLOR.name(),
+        low=LOW_SCORE_COLOR.name(),
     )
 
 
-def matched_pair_state(iou: Any, class_state: Any, threshold: Any) -> str:
+def matched_pair_state(
+    iou: Any, class_state: Any, threshold: Any, low_score: Any = None
+) -> str:
     """Return the state of one matched pair of a judgement detail.
 
-    The pair of the judge detail carries its class outcome and its IoU;
-    the two states a reader has to tell apart are the pair of two
-    different classes and the pair that stayed under the threshold of the
-    run. The pair of two classes that are not even known is reported as
-    an unknown label instead of a class mismatch (class_state is
+    The pair of the judge detail carries its class outcome, its IoU and
+    whether its prediction scored under the NG score threshold of the
+    run. The three states a reader has to tell apart are the pair of two
+    different classes, the pair whose prediction scored under the NG
+    score threshold and the pair that stayed under the IoU threshold of
+    the run; they are read in the very priority order the judge writes
+    its own reason in (see judge.REASON_PRIORITY): a class mismatch wins
+    over a low score, which wins over an IoU under the threshold.
+
+    A low score is therefore a state of its own, whatever the IoU of the
+    pair is: the user rule of the score threshold is that a prediction
+    scoring under it counts as NG as well, and the pair the run matched
+    well and still scored low on is exactly the one that would otherwise
+    hide behind the plain colour of a valid pair. The IoU rule is only
+    read for a pair whose score is fine.
+
+    The pair of two classes that are not even known is reported as an
+    unknown label instead of a class mismatch (class_state is
     "unknown_class"), so it keeps the plain colour of its canvas, exactly
     like a pair that is fine. Only the mismatch of the judge is read as
     one: a detail without the key, or with a spelling of a later
     revision, is not a class error of this record.
+
+    `low_score` is the optional tail argument of the frozen contract: a
+    detail of an older revision carries no such key, and None - like
+    False, or an empty string - is read as "the score of this pair is
+    fine", so the three argument call of the previous revision answers
+    exactly what it always did.
+
+    The caller decides what a low score means for a box no match points
+    at: an unmatched prediction stays the magenta of a false positive
+    (see pred_statuses), because the miss signal of its own side is the
+    more important one.
     """
 
     if str(class_state or "") == "mismatch":
         return STATE_CLASS_MISMATCH
+    if low_score:
+        return STATE_LOW_SCORE
     try:
         below = float(iou) < float(threshold)
     except (TypeError, ValueError):
@@ -301,7 +334,8 @@ def gt_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
     A region shape no match points at is a miss, the false negative of
     the run; the pair states are read from the matched list of the very
     same judgement. Every other shape - a non region shape, a record
-    without a judgement - keeps an empty state and the default colour.
+    without a judgement, a detail of an older revision without the score
+    keys - keeps an empty state and the default colour.
     """
 
     statuses: List[Any] = [""] * len(shapes)
@@ -321,6 +355,7 @@ def gt_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
             pair.get("iou"),
             pair.get("class_state"),
             detail.get("ng_iou_threshold"),
+            pair.get("low_score"),
         )
     matched_indexes = {_count(pair.get("gt_index")) for pair in matched}
     for position, offset in enumerate(offsets):
@@ -332,10 +367,13 @@ def gt_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
 def pred_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
     """Return the judgement state of every prediction of one record.
 
-    A matchable prediction no match points at is a false positive. A
-    prediction of an ignored shape type is never matched at all and
-    keeps the plain Pred colour, and so does every prediction of a
-    record without a judgement.
+    A matchable prediction no match points at is a false positive, and a
+    low score never changes that: the magenta of a false positive is the
+    miss signal of this side and stays the more important one, while the
+    low score of such a box is still written in the detail and in the
+    reasons of the record. A prediction of an ignored shape type is never
+    matched at all and keeps the plain Pred colour, and so does every
+    prediction of a record without a judgement.
     """
 
     statuses: List[Any] = [""] * len(shapes)
@@ -355,6 +393,7 @@ def pred_statuses(detail: Dict[str, Any], shapes: Sequence[Any]) -> List[Any]:
             pair.get("iou"),
             pair.get("class_state"),
             detail.get("ng_iou_threshold"),
+            pair.get("low_score"),
         )
     matched_indexes = {_count(pair.get("pred_index")) for pair in matched}
     for position, offset in enumerate(offsets):

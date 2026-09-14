@@ -351,7 +351,7 @@ def test_field_labels_carry_the_tooltip_of_their_control(dialog):
         ("数据来源目录", page.dataset_edit),
         ("类别表 classes.txt", page.classes_edit),
         ("ONNX 模型", page.model_edit),
-        ("置信度 conf", page.conf_spin),
+        ("NG 分数 score", page.conf_spin),
         ("NMS IoU iou", page.iou_spin),
         ("判定 NG IoU", page.ng_iou_spin),
         ("色调 hsv_h", page.hsv_h_spin),
@@ -1010,13 +1010,13 @@ def test_the_augment_grid_labels_keep_the_official_names(dialog):
 
 
 def test_the_threshold_and_amount_labels_are_chinese(dialog):
-    "conf / iou / NG IoU / k / r / N keep their name behind a Chinese one."
+    "score / iou / NG IoU / k / r / N keep their name behind a Chinese one."
 
     page = dialog.config_page
     labels = {label.text() for label in page.findChildren(QtWidgets.QLabel)}
 
     for text in (
-        "置信度 conf",
+        "NG 分数 score",
         "NMS IoU iou",
         "判定 NG IoU",
         "倍数 k",

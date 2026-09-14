@@ -10,6 +10,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from ..app_config import (
     AUGMENT_WORKERS_LIMIT,
     COUNT_MODE,
+    INFERENCE_CONF_THRESHOLD,
     MULTIPLIER_MODE,
     RATIO_MODE,
     AugmentParams,
@@ -91,13 +92,15 @@ TOOLTIP_MODEL = (
 TOOLTIP_BROWSE = "点击浏览并选择本地文件或目录；已选路径只读，不会写回原数据。"
 
 TOOLTIP_THRESHOLDS_ROW = (
-    "本组三个阈值：置信度阈值 conf、NMS IoU 阈值、NG IoU 阈值——取值范围与"
-    "逐项含义见各控件自身的悬停说明。"
+    "本组三个阈值：NG 分数 score、NMS IoU iou、判定 NG IoU——取值范围与"
+    f"逐项含义见各控件自身的悬停说明。推理过滤阈值固定 {INFERENCE_CONF_THRESHOLD}（不在此组）。"
 )
 TOOLTIP_CONF = (
-    "低于该分数的预测框被丢弃。范围 0.00-1.00（建议 ≥0.01），默认 "
-    f"{default_text(config_defaults().conf_threshold)}。调低"
-    "召回更多目标、同时引入更多误检（更易判 NG）。"
+    "NG 分数判定阈值：任一预测框得分低于该值即记 LOW_SCORE 判 NG。推理期的"
+    f"置信度过滤已固定为 {INFERENCE_CONF_THRESHOLD}、不受本值影响；本值设为 ≤"
+    f"{INFERENCE_CONF_THRESHOLD} 时不会有任何框低于它，LOW_SCORE 永不触发。范围 "
+    "0.00-1.00，默认 "
+    f"{default_text(config_defaults().conf_threshold)}。"
 )
 TOOLTIP_IOU = (
     "非极大值抑制的重叠阈值：两个同类框 IoU 超过它时只保留分数高的那个。范围 "
@@ -453,7 +456,7 @@ class ConfigPage(QtWidgets.QWidget):
         thresholds.setContentsMargins(0, 0, 0, 0)
         thresholds.setSpacing(12)
         for label, text, spin in (
-            ("置信度 conf", TOOLTIP_CONF, self.conf_spin),
+            ("NG 分数 score", TOOLTIP_CONF, self.conf_spin),
             ("NMS IoU iou", TOOLTIP_IOU, self.iou_spin),
             ("判定 NG IoU", TOOLTIP_NG_IOU, self.ng_iou_spin),
         ):

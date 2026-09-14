@@ -7,7 +7,10 @@ both driven by one view state. The wheel zoom is animated (a notch
 moves a target, small steps walk towards it) and the left button drags
 the picture. The canvas owns no edit state at all: the box editor of
 the previous revision lived here and is gone (see
-test_the_canvas_owns_no_edit_gesture).
+test_the_canvas_owns_no_edit_gesture). A box the matching merged may
+carry several classes: its label is then one block of one row per
+class, stacked with LABEL_LINE_SPACING widget pixels between the rows
+(see the label block tests at the bottom of this file).
 """
 
 import os
@@ -28,6 +31,7 @@ from anylabeling.custom.model_validation.ui import (
 )
 from anylabeling.custom.model_validation.ui.dialog import ModelValidationDialog
 from anylabeling.custom.model_validation.ui.image_view import (
+    LABEL_LINE_SPACING,
     LABEL_PADDING,
     MAX_ZOOM,
     MIN_ZOOM,
@@ -35,6 +39,7 @@ from anylabeling.custom.model_validation.ui.image_view import (
     WHEEL_DELTA,
     WHEEL_ZOOM_STEP,
     ImageCanvas,
+    shape_label_rows,
     shape_label_text,
     shape_score,
 )
@@ -774,6 +779,200 @@ def test_a_long_label_stays_inside_the_widget(qt_app):
         [rect_box([10, 10], [250, 190], label="a" * 40, score=LABEL_SCORE)],
     )
     assert label_pixels(render_canvas(canvas)) == (None, 0)
+
+
+# ------------------------------------------------------ label blocks
+# A box the matching merged carries one label row per class: the rows are
+# stacked into the one text of the box and placed as a single block.
+MULTI_LABEL = "a0_dian"
+MULTI_OTHER = "a2_henxian_super_long"
+
+
+def multi_label_box(start, end, rows) -> dict:
+    "Return a rectangle carrying one label row per (label, score) pair."
+
+    box = rect_box(start, end, label=rows[0][0], score=rows[0][1])
+    box["labels"] = [label for label, _score in rows]
+    box["scores"] = [score for _label, score in rows]
+    return box
+
+
+def two_line_rows():
+    "Return the rows of the two line box under test."
+
+    return [(MULTI_LABEL, LABEL_SCORE), (MULTI_OTHER, 0.4321)]
+
+
+def test_the_label_rows_of_a_multi_class_box_are_one_row_per_class(qt_app):
+    "One merged box carries its classes on parallel lists, in given order."
+
+    rows = two_line_rows()
+    box = multi_label_box(list(LABEL_START), list(LABEL_END), rows)
+    assert shape_label_rows(box) == rows
+    assert shape_label_text(box) == (
+        MULTI_LABEL + " " + SCORE_FORMAT.format(LABEL_SCORE)
+        + "\n"
+        + MULTI_OTHER + " " + SCORE_FORMAT.format(0.4321)
+    )
+    # one row is not a block: a single class box keeps its one line
+    single = rect_box(list(LABEL_START), list(LABEL_END), score=LABEL_SCORE)
+    single["labels"] = [MULTI_LABEL]
+    single["scores"] = [LABEL_SCORE]
+    assert shape_label_rows(single) == [(MULTI_LABEL, LABEL_SCORE)]
+    assert shape_label_text(single) == shape_label_text(
+        score_box(list(LABEL_START), list(LABEL_END))
+    )
+    assert "\n" not in shape_label_text(single)
+
+
+def test_a_single_class_box_is_the_row_it_always_was(qt_app):
+    "A shape without the two keys falls back to its own label and score."
+
+    predicted = score_box(list(LABEL_START), list(LABEL_END))
+    assert shape_label_rows(predicted) == [(MULTI_LABEL, LABEL_SCORE)]
+    ground_truth = dict(predicted)
+    ground_truth.pop("score")
+    assert shape_label_rows(ground_truth) == [("a0_dian", None)]
+    assert shape_label_text(ground_truth) == "a0_dian"
+    # the two lists are only read while they are parallel and longer than
+    # one row: a broken pair keeps the plain label of the shape
+    for labels, scores in (
+        (["a", "b"], [0.5]),
+        (["a", "b"], 0.5),
+        ("ab", "ab"),
+        ([], []),
+    ):
+        broken = dict(predicted)
+        broken["labels"] = labels
+        broken["scores"] = scores
+        assert shape_label_rows(broken) == [(MULTI_LABEL, LABEL_SCORE)]
+    # a row without a score is written without one, exactly like the row
+    # of a ground truth box
+    half = dict(predicted)
+    half["labels"] = ["a", "b"]
+    half["scores"] = [None, 0.5]
+    assert shape_label_text(half) == "a\nb 0.50"
+
+
+def test_the_rows_of_a_multi_line_block_are_stacked_with_one_step(qt_app):
+    "The block is the lines plus one LABEL_LINE_SPACING per row."
+
+    font = ImageCanvas._label_font()
+    rows = two_line_rows()
+    texts = [
+        label + " " + SCORE_FORMAT.format(score) for label, score in rows
+    ]
+    boxes = [
+        ImageCanvas._label_glyphs(font, text).boundingRect()
+        for text in texts
+    ]
+    # the rows are stacked with one LABEL_LINE_SPACING between their ink
+    # boxes: the block is the union of the first box and of every later
+    # box moved down by that step, which is what the stacking computes
+    tops = [float(boxes[0].top())]
+    bottoms = [float(boxes[0].bottom())]
+    for index, box in enumerate(boxes[1:], start=1):
+        shift = (
+            float(index) * LABEL_LINE_SPACING
+            - float(box.bottom())
+            + float(boxes[0].bottom())
+        )
+        tops.append(float(box.top()) + shift)
+        bottoms.append(float(box.bottom()) + shift)
+    block = ImageCanvas._stacked_glyphs(
+        font, shape_label_text(multi_label_box([0, 0], [1, 1], rows))
+    ).boundingRect()
+    assert LABEL_LINE_SPACING == pytest.approx(1.0)
+    assert block.top() == pytest.approx(min(tops), abs=1e-6)
+    assert block.bottom() == pytest.approx(max(bottoms), abs=1e-6)
+    # the step really spreads the rows instead of stacking them on top
+    # of each other: the block is taller than the taller of its rows
+    heights = [box.height() for box in boxes]
+    assert block.height() > max(heights)
+    # The bound carries no font metric assumption: the rows stack with
+    # one step, so the block is at least one step taller than the shorter
+    # row and at most one step taller than the taller one - the two ends
+    # meet on the one number whenever the rows measure the same ink
+    # height, which is what this platform does. The exact geometry of the
+    # step is already pinned, above, by the top and the bottom of the
+    # block: a row that was NOT moved by the step would be caught there,
+    # not by this height.
+    assert block.height() >= min(heights) + LABEL_LINE_SPACING - 1e-6
+    assert block.height() <= max(heights) + LABEL_LINE_SPACING + 1e-6
+    # the rows are stacked in the given order: the wider row sits under
+    # the narrower one, so the block is wider than its first row alone
+    assert boxes[0].width() < block.width()
+    assert block.width() == pytest.approx(boxes[1].width(), abs=1e-6)
+
+
+def test_the_block_of_a_multi_line_label_hangs_at_the_box_corner(qt_app):
+    "Pixel evidence: the block sits above the corner as a whole."
+
+    canvas = make_label_canvas()
+    rows = two_line_rows()
+    corner = canvas.image_to_widget(QtCore.QPointF(*LABEL_START))
+    single = rect_box(list(LABEL_START), list(LABEL_END), score=LABEL_SCORE)
+    canvas.set_shapes([], [single])
+    one_line = label_pixels(render_canvas(canvas))
+    canvas.set_shapes(
+        [], [multi_label_box(list(LABEL_START), list(LABEL_END), rows)]
+    )
+    rendered = render_canvas(canvas)
+    block = label_pixels(rendered)
+
+    assert one_line[0] is not None and block[0] is not None
+    # the block starts at the very left of its box and its last row ends
+    # at the very spot the one line of the plain box ends: the rows are
+    # stacked upwards, away from the anchor, and never drift off it
+    assert abs(block[0][0] - corner.x()) <= 3
+    assert abs(block[0][3] - one_line[0][3]) <= 2
+    assert block[0][3] < corner.y()
+    # the block is taller than the one line of the very same box: the
+    # second class really is a second row
+    assert (block[0][3] - block[0][1]) > (one_line[0][3] - one_line[0][1])
+    # the block is as wide as its wider row - the long second class - so
+    # both rows were shaped and both were left aligned on the anchor
+    width = max(
+        ImageCanvas._label_glyphs(
+            ImageCanvas._label_font(), label + " " + SCORE_FORMAT.format(score)
+        ).boundingRect().width()
+        for label, score in rows
+    )
+    assert abs((block[0][2] - block[0][0]) - width) <= 4
+    assert abs(block[0][0] - corner.x()) <= 3
+
+
+def test_a_block_that_does_not_fit_the_widget_is_dropped_whole(qt_app):
+    "A block wider or taller than the view is refused, never cut in half."
+
+    canvas = make_label_canvas()
+    # a label wider than the widget would be cut in half: it is refused
+    wide = multi_label_box(
+        [10, 10],
+        [250, 190],
+        [(MULTI_OTHER, 0.9), (MULTI_OTHER * 4, 0.8)],
+    )
+    canvas.set_shapes([], [wide])
+    assert label_pixels(render_canvas(canvas)) == (None, 0)
+
+    # and so is a block taller than the widget, whatever its rows hold:
+    # every row sits LABEL_LINE_SPACING below the one before it, so a
+    # block of hundreds of rows is far taller than the 320 pixel view
+    many = multi_label_box(
+        [10, 10],
+        [250, 190],
+        [(MULTI_OTHER, 0.9)] * 400,
+    )
+    canvas.set_shapes([], [many])
+    assert label_pixels(render_canvas(canvas)) == (None, 0)
+
+    # the very same rows fit the view while there are only a few of them,
+    # which is what proves the block and not a row was measured
+    few = multi_label_box([10, 10], [250, 190], [(MULTI_LABEL, 0.9)] * 3)
+    canvas.set_shapes([], [few])
+    rect, count = label_pixels(render_canvas(canvas))
+    assert rect is not None and count > 40
+    assert rect[2] < LABEL_WIDGET[0] and rect[3] < LABEL_WIDGET[1]
 
 
 def test_the_viewer_owns_no_edit_control(dialog):

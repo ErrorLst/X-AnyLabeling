@@ -93,13 +93,23 @@ class FakePoint:
 
 
 class FakeShape:
-    """Predicted shape carrying the label given by the YOLO wrapper."""
+    """Predicted shape carrying the label given by the YOLO wrapper.
 
-    def __init__(self, label: str, score: float = 0.9) -> None:
+    Every shape starts at its own offset so that two classes are two
+    distinct boxes: the runner merges the rows that share their
+    coordinates, while these tests assert one shape per class.
+    """
+
+    def __init__(
+        self, label: str, score: float = 0.9, offset: float = 0.0
+    ) -> None:
         self.label = label
         self.score = float(score)
         self.shape_type = "rectangle"
-        self.points = [FakePoint(0.0, 0.0), FakePoint(10.0, 10.0)]
+        self.points = [
+            FakePoint(offset, offset),
+            FakePoint(offset + 10.0, offset + 10.0),
+        ]
 
 
 class FakeYOLO:
@@ -126,7 +136,10 @@ class FakeYOLO:
         self.calls.append((image, image_path))
         if not image_path or not os.path.isfile(image_path):
             return result_of([])
-        return result_of(FakeShape(str(name)) for name in self.classes)
+        return result_of(
+            FakeShape(str(name), offset=float(index))
+            for index, name in enumerate(self.classes)
+        )
 
 
 class RealDecoderYOLO:
@@ -158,7 +171,10 @@ class RealDecoderYOLO:
         self.decoded.append(qt_img_to_rgb_cv_img(image, image_path).shape)
         if not self.emit_shapes:
             return result_of([])
-        return result_of(FakeShape(str(name)) for name in self.classes)
+        return result_of(
+            FakeShape(str(name), offset=float(index))
+            for index, name in enumerate(self.classes)
+        )
 
 
 class EmptyResultYOLO(RealDecoderYOLO):
@@ -188,7 +204,10 @@ class SwallowingYOLO(RealDecoderYOLO):
             qt_img_to_rgb_cv_img(image, image_path)
         except Exception:  # noqa: BLE001
             return result_of([])
-        return result_of(FakeShape(str(name)) for name in self.classes)
+        return result_of(
+            FakeShape(str(name), offset=float(index))
+            for index, name in enumerate(self.classes)
+        )
 
 
 def install_model(monkeypatch, tmp_path, metadata, yolo_class) -> str:

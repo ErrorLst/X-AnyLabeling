@@ -337,6 +337,12 @@ def test_the_effective_threads_reach_the_report_snapshot():
     assert snapshot["intra_op_threads"] == intra
     assert snapshot["inter_op_threads"] == inter
     assert snapshot["runtime_default_threads"] is (intra == 0)
+    # the fixed inference cut reaches the snapshot under two new keys
+    assert payload["inference_conf_threshold"] == (
+        app_config.INFERENCE_CONF_THRESHOLD
+    )
+    assert payload["inference_conf_threshold"] == 0.25
+    assert payload["inference_conf_threshold_fixed"] is True
     if default_workers() > 1:
         assert snapshot["inter_op_threads"] == 1
         assert snapshot["intra_op_threads"] >= 1
@@ -801,13 +807,23 @@ def test_the_pool_builds_one_pinned_runner_per_session(
         fake_engine,
         CLASSES,
         3,
-        conf_threshold=0.3,
         iou_threshold=0.4,
         intra_op_threads=7,
         inter_op_threads=1,
     )
     assert len(runners) == 3
     assert len({id(runner) for runner in runners}) == 3
+    # whatever the caller hands over, every runner keeps the frozen cut
+    # and the multi label NMS of a detect model
+    assert all(
+        runner.model.config["conf_threshold"]
+        == app_config.INFERENCE_CONF_THRESHOLD
+        == 0.25
+        for runner in runners
+    )
+    assert all(
+        runner.model.config["multi_label"] is True for runner in runners
+    )
     # every session of the pool carries the very same budget
     assert [item["intra_op_threads"] for item in pinned_session] == [7, 7, 7]
     assert [item["inter_op_threads"] for item in pinned_session] == [1, 1, 1]

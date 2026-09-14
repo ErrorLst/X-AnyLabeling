@@ -8,7 +8,7 @@ reason while lower priority hits are still recorded.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .labelme_io import REGION_SHAPE_TYPES, to_points
 
@@ -19,6 +19,7 @@ UNSUPPORTED_GT_SHAPE = "UNSUPPORTED_GT_SHAPE"
 PRED_UNKNOWN_CLASS = "PRED_UNKNOWN_CLASS"
 COUNT_MISMATCH = "COUNT_MISMATCH"
 CLASS_MISMATCH = "CLASS_MISMATCH"
+LOW_SCORE = "LOW_SCORE"
 IOU_BELOW = "IOU_BELOW"
 MISS_FP = "MISS_FP"
 
@@ -30,6 +31,7 @@ REASON_PRIORITY = (
     PRED_UNKNOWN_CLASS,
     COUNT_MISMATCH,
     CLASS_MISMATCH,
+    LOW_SCORE,
     IOU_BELOW,
     MISS_FP,
 )
@@ -233,6 +235,7 @@ def judge_record(
     classes: Sequence[str],
     ng_iou_threshold: float = 0.5,
     infer_error: Optional[str] = None,
+    ng_score_threshold: Optional[float] = None,
 ) -> JudgeResult:
     """Compute the OK / NG verdict of one image."""
 
@@ -300,6 +303,28 @@ def judge_record(
     matrix = iou_matrix(region_gt, valid_pred)
     pairs, unmatched_gt, unmatched_pred = hungarian_match(matrix)
 
+    # The score rule works on the same valid prediction list and on
+    # the same indices as the matching, so its detail shares the
+    # pred_index coordinate system.
+    low_score_indices: Set[int] = set()
+    low_score_shapes: List[Dict[str, Any]] = []
+    if ng_score_threshold is not None:
+        score_threshold = float(ng_score_threshold)
+        for pred_index, pred_shape in enumerate(valid_pred):
+            score = shape_score(pred_shape)
+            # a shape without a score cannot be judged by the rule:
+            # it is skipped instead of reported as a low score.
+            if score is None or score >= score_threshold:
+                continue
+            low_score_indices.add(pred_index)
+            low_score_shapes.append(
+                {
+                    "index": pred_index,
+                    "label": shape_label(pred_shape),
+                    "score": round(float(score), 6),
+                }
+            )
+
     matched: List[Dict[str, Any]] = []
     unknown_class_pairs: List[Dict[str, Any]] = []
     class_mismatch = False
@@ -341,10 +366,13 @@ def judge_record(
                 "score": shape_score(pred_shape),
                 "class_ok": same_class,
                 "class_state": class_state,
+                "low_score": pred_index in low_score_indices,
             }
         )
     if class_mismatch:
         reasons.append(CLASS_MISMATCH)
+    if low_score_indices:
+        reasons.append(LOW_SCORE)
     if iou_below:
         reasons.append(IOU_BELOW)
     if unmatched_gt or unmatched_pred:
@@ -404,6 +432,12 @@ def judge_record(
             ),
         },
         "ng_iou_threshold": float(ng_iou_threshold),
+        "ng_score_threshold": (
+            None
+            if ng_score_threshold is None
+            else float(ng_score_threshold)
+        ),
+        "low_score": low_score_shapes,
         "dual_empty": dual_empty,
     }
     return JudgeResult(
@@ -423,6 +457,7 @@ __all__ = [
     "IOU_BELOW",
     "IOU_ZERO_EPSILON",
     "JudgeResult",
+    "LOW_SCORE",
     "MATCHABLE_PRED_TYPES",
     "MISS_FP",
     "PRED_UNKNOWN_CLASS",

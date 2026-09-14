@@ -50,6 +50,12 @@ MULTI_IMAGE_AUGMENTATIONS = (
 # transform stack.
 BORDER_FILL = "black"
 
+# The confidence filter of the inference stage is a fixed value: nothing
+# on the configuration page feeds it any more, therefore every run and
+# every report was tuned against the one number below. The threshold the
+# page still carries is the NG score rule of the judge, not this cut.
+INFERENCE_CONF_THRESHOLD = 0.25
+
 # The two CPU bound stages of the tool - the generation of the augmented
 # copies and the inference - run the very same, fixed amount of parallel
 # workers: half of the logical processors of the machine the tool runs
@@ -320,8 +326,11 @@ class ValidationConfig:
     dataset_dir: str = ""
     classes_file: str = ""
     model_path: str = ""
-    # The three verdict thresholds: the confidence cut keeps the boxes
-    # the interface was tuned to, the two IoU values stay where they are.
+    # The three verdict thresholds: the score cut is the LOW_SCORE
+    # rule - one predicted box below it fails the record - while the
+    # two IoU values stay where they are. The name and the default of
+    # the score cut are frozen because both a stored configuration and
+    # the report snapshot carry them.
     conf_threshold: float = 0.5
     iou_threshold: float = 0.45
     ng_iou_threshold: float = 0.5
@@ -370,6 +379,9 @@ class ValidationConfig:
             "infer_session_threads": infer_threads_snapshot(),
             "workers_fixed": True,
             "workers_rule": "max(1, os.cpu_count() // 2)",
+            # the inference cut is a module constant, not a page option
+            "inference_conf_threshold": INFERENCE_CONF_THRESHOLD,
+            "inference_conf_threshold_fixed": True,
         }
 
 
@@ -632,6 +644,7 @@ __all__ = [
     "DEFAULT_INFER_WORKERS",
     "DEFAULT_RATIO",
     "DEFAULT_WORKERS",
+    "INFERENCE_CONF_THRESHOLD",
     "INFER_WORKERS_LIMIT",
     "MULTIPLIER_MODE",
     "MULTI_IMAGE_AUGMENTATIONS",

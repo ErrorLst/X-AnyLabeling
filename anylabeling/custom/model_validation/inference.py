@@ -11,7 +11,13 @@ import os
 import os.path as osp
 from typing import Any, Dict, List, Optional, Sequence
 
-from .app_config import ValidationConfigError
+from .app_config import INFERENCE_CONF_THRESHOLD, ValidationConfigError
+from .judge import (
+    shape_label,
+    shape_point_list,
+    shape_score,
+    shape_type_of,
+)
 from .onnx_meta import (
     class_count_mismatch_message,
     read_onnx_metadata,
@@ -260,7 +266,6 @@ class ModelRunner:
         self,
         model_path: str,
         classes: Sequence[str],
-        conf_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         on_message: Optional[Any] = None,
         intra_op_threads: Optional[int] = None,
@@ -314,7 +319,12 @@ class ModelRunner:
             "display_name": MODEL_DISPLAY_NAME,
             "model_path": self.model_path,
             "classes": list(self.classes),
-            "conf_threshold": float(conf_threshold),
+            # the confidence cut is fixed and decoupled from the page
+            "conf_threshold": INFERENCE_CONF_THRESHOLD,
+            # obb and pose stay single label: this tool validates box
+            # predictions and the interaction of their tensors with the
+            # multi row output was never verified upstream.
+            "multi_label": info["task"] in ("detect", "segment"),
             "iou_threshold": float(iou_threshold),
             "stride": int(info["stride"]),
             "config_file": self.model_path,
@@ -400,7 +410,10 @@ class ModelRunner:
             # but the wrapper also answers [] when its own decode broke:
             # only a second decode can tell both apart.
             verify_decoder_path(path, placeholder, expected=precheck)
-        return shapes
+            return shapes
+        # the rows the multi label NMS produced for one box collapse into
+        # the one box the canvas draws, with one label line per row
+        return merge_multilabel_predictions(shapes)
 
     def model_info(self) -> Dict[str, Any]:
         """Return the model snapshot stored inside the validation report."""
@@ -427,11 +440,92 @@ class ModelRunner:
         }
 
 
+def _multilabel_group_key(shape: Any) -> Any:
+    """Return the key that groups the rows of one predicted box.
+
+    The multi label NMS copies the very same box once per class, so the
+    rows of one box carry coordinates that are identical down to the
+    bit; rounding to six decimals absorbs the float noise of the tensor
+    arithmetic without joining two boxes that really differ. Two rows
+    of one shape type at the very same coordinates cannot describe two
+    distinct objects either: their IoU is 1 and the NMS would have
+    suppressed one of them.
+    """
+
+    points = tuple(
+        (round(float(x), 6), round(float(y), 6))
+        for x, y in shape_point_list(shape)
+    )
+    return (shape_type_of(shape), points)
+
+
+def _multilabel_sort_key(shape: Any) -> Any:
+    """Return the ranking key of one row inside its group.
+
+    A missing score cannot be ranked: it sorts after every scored row.
+    The label breaks the ties of two equal scores, therefore both the
+    order and the primary label it picks are deterministic.
+    """
+
+    score = shape_score(shape)
+    # the ascending order of -score puts the highest score first; a row
+    # without a score can never outrank a scored one
+    rank = float("inf") if score is None else -float(score)
+    return (rank, shape_label(shape))
+
+
+def merge_multilabel_predictions(shapes: Sequence[Any]) -> List[Any]:
+    """Collapse the multi label rows of one predicted box into one shape.
+
+    The multi label NMS of the engine answers one row per class whose
+    score passed the fixed inference cut, all of them carrying the very
+    same box. The canvas draws one box with one label line per row, so
+    the rows of a box are folded into a single shape: the highest score
+    of the group stays the label/score the judge reads, while the whole
+    group is attached as the parallel, score descending lists labels and
+    scores.
+
+    A group of a single row is returned untouched: the payload of a
+    single label prediction keeps exactly the keys it had before this
+    function existed. A Shape object is reused in place (the two lists
+    become dynamic attributes), a dict is copied so that the rows the
+    caller built stay untouched. The groups keep the order of their
+    first row, which is the score descending order of the NMS output.
+    """
+
+    groups: Dict[Any, List[Any]] = {}
+    order: List[Any] = []
+    for shape in shapes:
+        key = _multilabel_group_key(shape)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(shape)
+
+    merged: List[Any] = []
+    for key in order:
+        rows = sorted(groups[key], key=_multilabel_sort_key)
+        primary = rows[0]
+        if len(rows) == 1:
+            merged.append(primary)
+            continue
+        labels = [shape_label(row) for row in rows]
+        scores = [shape_score(row) for row in rows]
+        if isinstance(primary, dict):
+            primary = dict(primary)
+            primary["labels"] = labels
+            primary["scores"] = scores
+        else:
+            primary.labels = labels
+            primary.scores = scores
+        merged.append(primary)
+    return merged
+
+
 def build_runner_pool(
     model_path: str,
     classes: Sequence[str],
     workers: int,
-    conf_threshold: float = 0.25,
     iou_threshold: float = 0.45,
     on_message: Optional[Any] = None,
     intra_op_threads: Optional[int] = None,
@@ -449,7 +543,6 @@ def build_runner_pool(
         ModelRunner(
             model_path,
             classes,
-            conf_threshold=conf_threshold,
             iou_threshold=iou_threshold,
             on_message=on_message,
             intra_op_threads=intra_op_threads,
@@ -472,5 +565,6 @@ __all__ = [
     "ensure_current_config_file",
     "ensure_qimage",
     "load_image_rgb",
+    "merge_multilabel_predictions",
     "verify_decoder_path",
 ]

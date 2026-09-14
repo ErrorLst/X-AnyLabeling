@@ -689,7 +689,6 @@ class ValidationWorker(QThread):
                 self.config.model_path,
                 self.classes,
                 workers,
-                conf_threshold=self.config.conf_threshold,
                 iou_threshold=self.config.iou_threshold,
                 intra_op_threads=budget,
                 inter_op_threads=inter_op if budget else None,
@@ -877,6 +876,7 @@ class ValidationWorker(QThread):
             predicted,
             self.classes,
             ng_iou_threshold=self.config.ng_iou_threshold,
+            ng_score_threshold=self.config.conf_threshold,
         )
         detail = dict(result.detail)
         detail["predicted_labels"] = [
@@ -915,14 +915,26 @@ class ValidationWorker(QThread):
                     points.append([float(point.x()), float(point.y())])
                 else:
                     points.append([float(point[0]), float(point[1])])
-            payload.append(
-                {
-                    "label": shape_label(shape),
-                    "shape_type": shape_type_of(shape),
-                    "points": points,
-                    "score": getattr(shape, "score", None),
-                }
-            )
+            # a merged box carries one label per row of its group; the
+            # two keys are only added when the shape really holds them,
+            # so the payload of a single label prediction is unchanged
+            if isinstance(shape, dict):
+                labels = shape.get("labels")
+                scores = shape.get("scores")
+            else:
+                labels = getattr(shape, "labels", None)
+                scores = getattr(shape, "scores", None)
+            entry = {
+                "label": shape_label(shape),
+                "shape_type": shape_type_of(shape),
+                "points": points,
+                "score": getattr(shape, "score", None),
+            }
+            if labels is not None:
+                entry["labels"] = list(labels)
+            if scores is not None:
+                entry["scores"] = list(scores)
+            payload.append(entry)
         return payload
 
 

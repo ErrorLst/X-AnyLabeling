@@ -3,11 +3,12 @@
 A box of the results page is coloured by what the matching of its record
 did to it: a matched GT stays green and a matched prediction stays blue,
 a GT no prediction met is orange red, a prediction no GT met is magenta,
-a matched pair of two different classes is orange and a pair under the
-IoU threshold is dark yellow. Every assertion of this file reads the
-rendered pixels of a real canvas - the RGBA the painter really wrote -
-and the sizes of the real page, so the rule is checked as the user sees
-it and not as the code intends it.
+a matched pair of two different classes is orange, a pair under the
+IoU threshold is dark yellow and a matched pair whose prediction scored
+under the NG score threshold is teal. Every assertion of this file
+reads the rendered pixels of a real canvas - the RGBA the painter really
+wrote - and the sizes of the real page, so the rule is checked as the
+user sees it and not as the code intends it.
 
 The record of the pixel tests carries one defect of every kind:
 a GT no prediction reaches (a miss), a prediction no GT reaches (a false
@@ -42,11 +43,13 @@ from anylabeling.custom.model_validation.ui.image_view import (
     FALSE_POSITIVE_COLOR,
     GT_COLOR,
     IOU_BELOW_COLOR,
+    LOW_SCORE_COLOR,
     MISS_COLOR,
     PRED_COLOR,
     STATE_CLASS_MISMATCH,
     STATE_FALSE_POSITIVE,
     STATE_IOU_BELOW,
+    STATE_LOW_SCORE,
     STATE_MISS,
     STATE_OK_PAIR,
     ImageCanvas,
@@ -54,6 +57,8 @@ from anylabeling.custom.model_validation.ui.image_view import (
     shape_colors,
 )
 from anylabeling.custom.model_validation.ui.results_page import (
+    LEGEND_HTML,
+    LEGEND_TOOLTIP,
     ResultsPage,
     gt_statuses,
     legend_html,
@@ -158,6 +163,38 @@ def judged_record() -> records_module.ValidationRecord:
     record.detail["predictions"] = predictions
     record.judged = True
     record.verdict = result.verdict
+    return record
+
+
+# The NG score threshold the low score rule is judged with. It sits
+# over every prediction score of the record (0.91, 0.77, 0.64), so all
+# three predictions carry the judge's low score flag. The two matched
+# pairs turn teal; the unmatched one keeps the magenta of its own side,
+# because a false positive is the more important signal of its box (see
+# test_an_unmatched_low_score_box_stays_magenta below).
+LOW_SCORE_THRESHOLD = 0.95
+
+
+def low_score_record() -> records_module.ValidationRecord:
+    """Return the record judged with a threshold over its own scores.
+
+    The predictions and the matching of the record are the ones above;
+    only the NG score threshold is part of the judgement, so every
+    prediction carries a True low score flag. The unmatched prediction -
+    the pair no match points at - keeps its magenta all the same,
+    however low its score is.
+    """
+
+    record = judged_record()
+    detail = judge_module.judge_record(
+        gt_shapes(),
+        pred_shapes(),
+        CLASSES,
+        ng_iou_threshold=0.5,
+        ng_score_threshold=LOW_SCORE_THRESHOLD,
+    ).detail
+    record.detail = dict(detail)
+    record.detail["predictions"] = pred_shapes()
     return record
 
 
@@ -500,8 +537,215 @@ def test_a_status_list_that_does_not_line_up_is_refused_as_a_whole(qt_app):
     assert matched_pair_state(1.0, "mismatch", 0.5) == STATE_CLASS_MISMATCH
 
 
+# ------------------------------------------------------------ low score
+def test_a_low_score_pair_is_teal_on_both_sides(qt_app):
+    """Pixel evidence: the pair whose score is under the NG score threshold.
+
+    The matched pairs of the record are judged with a NG score threshold
+    over their own prediction scores, so both of them carry the low
+    score flag of the judge. Their strokes therefore turn the teal of
+    the low score state on the GT canvas as well as on the Pred one.
+    """
+
+    record = low_score_record()
+    ground_truth = gt_shapes()
+    predictions = record.detail["predictions"]
+    gt_states = gt_statuses(record.detail, ground_truth)
+    pred_states = pred_statuses(record.detail, predictions)
+
+    # both matched pairs carry the flag of the judge, and a flagged pair
+    # is teal whatever its IoU is: the perfectly matched pair is NOT
+    # hidden behind the plain colour of a valid pair, only a class
+    # mismatch wins over the score (see matched_pair_state)
+    assert [pair["low_score"] for pair in record.detail["matched"]] == [
+        True,
+        True,
+    ]
+    assert record.detail["ng_score_threshold"] == pytest.approx(
+        LOW_SCORE_THRESHOLD
+    )
+    assert gt_states == [STATE_LOW_SCORE, STATE_LOW_SCORE, STATE_MISS]
+    assert pred_states == [
+        STATE_LOW_SCORE,
+        STATE_LOW_SCORE,
+        STATE_FALSE_POSITIVE,
+    ]
+
+    for side, shapes, states in (
+        ("gt", ground_truth, gt_states),
+        ("pred", predictions, pred_states),
+    ):
+        canvas = make_canvas()
+        canvas.set_shapes(
+            shapes if side == "gt" else [],
+            [] if side == "gt" else shapes,
+            states if side == "gt" else (),
+            () if side == "gt" else states,
+        )
+        rendered = render_rgba(canvas)
+        # the pair under the IoU threshold and the perfect pair are both
+        # teal: the score rule is not gated on the IoU rule
+        assert (
+            stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *LOW_IOU)
+            > MIN_STROKE_PIXELS
+        ), side
+        assert (
+            stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *MATCHED)
+            > MIN_STROKE_PIXELS
+        ), side
+        # and the teal replaced the dark yellow of the plain IoU rule
+        assert (
+            stroke_pixels(canvas, rendered, IOU_BELOW_COLOR, *LOW_IOU) == 0
+        ), side
+
+
+def test_an_unmatched_low_score_box_stays_magenta(qt_app):
+    """The false positive signal wins over the score of the same box.
+
+    The prediction no GT met scores under the NG score threshold as
+    well, but the miss signal of its own side is the more important one:
+    the box keeps the magenta of a false positive instead of carrying
+    two meanings at once.
+    """
+
+    record = low_score_record()
+    predictions = record.detail["predictions"]
+
+    # the judge reports all three predictions under the threshold - the
+    # rule reads every valid prediction and never only the matched ones -
+    # but the state of the box no GT met is the false positive one
+    assert [item["index"] for item in record.detail["low_score"]] == [
+        0,
+        1,
+        2,
+    ]
+    assert pred_statuses(record.detail, predictions)[2] == (
+        STATE_FALSE_POSITIVE
+    )
+
+    canvas = make_canvas()
+    canvas.set_shapes(
+        [], predictions, (), pred_statuses(record.detail, predictions)
+    )
+    rendered = render_rgba(canvas)
+    assert (
+        stroke_pixels(
+            canvas, rendered, FALSE_POSITIVE_COLOR, *FALSE_POSITIVE
+        )
+        > MIN_STROKE_PIXELS
+    )
+    # the stroke right around that box is the magenta one and never teal
+    assert (
+        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *FALSE_POSITIVE)
+        == 0
+    )
+
+
+def test_the_matched_pair_state_reads_the_low_score_flag(qt_app):
+    """The priority matrix of the optional tail argument.
+
+    The approved rule reads the three states in the priority order of
+    the judge itself: a class mismatch wins over a low score, a low
+    score wins over an IoU under the threshold - a prediction scoring
+    under the NG score threshold counts as NG whatever the IoU of its
+    pair is, so the pair the run matched well and still scored low on is
+    NOT hidden behind the plain colour of a valid pair - and a pair
+    whose score is fine keeps the IoU rule it always had.
+
+    A detail of an older revision carries no low score key at all: the
+    three argument call of the previous revision therefore answers
+    exactly what it always did, and so does an explicit False or an
+    empty value.
+    """
+
+    # iou fine, score fine, score low
+    assert matched_pair_state(1.0, "match", 0.5) == STATE_OK_PAIR
+    assert matched_pair_state(1.0, "match", 0.5, False) == STATE_OK_PAIR
+    assert matched_pair_state(1.0, "match", 0.5, True) == STATE_LOW_SCORE
+    # iou under the threshold, score fine, score low
+    assert matched_pair_state(1.0 / 3.0, "match", 0.5) == STATE_IOU_BELOW
+    assert (
+        matched_pair_state(1.0 / 3.0, "match", 0.5, False)
+        == STATE_IOU_BELOW
+    )
+    assert matched_pair_state(1.0 / 3.0, "match", 0.5, True) == (
+        STATE_LOW_SCORE
+    )
+    # a class mismatch stays the first reason, whatever the score says
+    assert matched_pair_state(1.0, "mismatch", 0.5, True) == (
+        STATE_CLASS_MISMATCH
+    )
+    assert matched_pair_state(1.0 / 3.0, "mismatch", 0.5, True) == (
+        STATE_CLASS_MISMATCH
+    )
+    # an unknown class is not an error of this record: the score rule is
+    # the only one left, which is not the same as the IoU rule
+    assert matched_pair_state(1.0 / 3.0, "unknown_class", 0.5, True) == (
+        STATE_LOW_SCORE
+    )
+    # a missing or empty flag is the old behaviour, in both IoU regimes
+    for missing in (None, "", False):
+        assert matched_pair_state(1.0, "match", 0.5, missing) == (
+            STATE_OK_PAIR
+        ), missing
+        assert matched_pair_state(1.0 / 3.0, "match", 0.5, missing) == (
+            STATE_IOU_BELOW
+        ), missing
+    # an unusable IoU is no IoU error: only the score rule can still fire
+    for odd in ("", None, "abc"):
+        assert matched_pair_state(odd, "match", 0.5) == STATE_OK_PAIR, odd
+        assert matched_pair_state(odd, "match", 0.5, True) == (
+            STATE_LOW_SCORE
+        ), odd
+    # a detail written before the score rule: no key, no low score state
+    old_detail = {
+        "gt_total": 1,
+        "gt_region": 1,
+        "pred_total": 1,
+        "pred_valid": 1,
+        "ng_iou_threshold": 0.5,
+        "matched": [
+            {
+                "gt_index": 0,
+                "pred_index": 0,
+                "class_state": "match",
+                "iou": 0.25,
+            }
+        ],
+    }
+    assert gt_statuses(old_detail, [rect(*MATCHED)]) == [STATE_IOU_BELOW]
+    assert pred_statuses(old_detail, [rect(*MATCHED, score=0.91)]) == [
+        STATE_IOU_BELOW
+    ]
+
+
+def test_the_low_score_state_has_its_own_colour(qt_app):
+    "The teal of the low score state is a named constant of the canvas."
+
+    assert image_view_module.STATE_LOW_SCORE == "LOW_SCORE"
+    assert LOW_SCORE_COLOR == QtGui.QColor(26, 188, 156)
+    assert shape_color(STATE_LOW_SCORE) == LOW_SCORE_COLOR
+    assert image_view_module.STATE_TO_COLOR[STATE_LOW_SCORE] == LOW_SCORE_COLOR
+    # and it is not one of the six colours already in use
+    used = {
+        name: getattr(image_view_module, name)
+        for name in (
+            "GT_COLOR",
+            "PRED_COLOR",
+            "MISS_COLOR",
+            "FALSE_POSITIVE_COLOR",
+            "CLASS_MISMATCH_COLOR",
+            "IOU_BELOW_COLOR",
+        )
+    }
+    for name, color in used.items():
+        assert rgba(color) != rgba(LOW_SCORE_COLOR), name
+    for name in ("STATE_LOW_SCORE", "LOW_SCORE_COLOR"):
+        assert name in image_view_module.__all__, name
+
+
 def test_the_colours_are_module_constants_of_the_canvas(qt_app):
-    "The five judgement colours are named once, in image_view."
+    "The six judgement colours are named once, in image_view."
 
     for name, value in (
         ("GT_COLOR", (46, 204, 113)),
@@ -510,6 +754,7 @@ def test_the_colours_are_module_constants_of_the_canvas(qt_app):
         ("FALSE_POSITIVE_COLOR", (155, 89, 182)),
         ("CLASS_MISMATCH_COLOR", (230, 126, 34)),
         ("IOU_BELOW_COLOR", (241, 196, 15)),
+        ("LOW_SCORE_COLOR", (26, 188, 156)),
     ):
         color = getattr(image_view_module, name)
         assert (color.red(), color.green(), color.blue()) == value, name
@@ -520,6 +765,7 @@ def test_the_colours_are_module_constants_of_the_canvas(qt_app):
         STATE_FALSE_POSITIVE: FALSE_POSITIVE_COLOR,
         STATE_CLASS_MISMATCH: CLASS_MISMATCH_COLOR,
         STATE_IOU_BELOW: IOU_BELOW_COLOR,
+        STATE_LOW_SCORE: LOW_SCORE_COLOR,
     }
     # the canvas knows the state of a box, never a fill
     canvas = make_canvas()
@@ -535,6 +781,7 @@ def legend_colours() -> dict:
         "fp": FALSE_POSITIVE_COLOR.name(),
         "cls": CLASS_MISMATCH_COLOR.name(),
         "iou": IOU_BELOW_COLOR.name(),
+        "low": LOW_SCORE_COLOR.name(),
         "gt": GT_COLOR.name(),
     }
 
@@ -543,10 +790,18 @@ def test_the_legend_names_every_judgement_colour(qt_app):
     "The legend writes the canvas colours next to the state they mean."
 
     text = legend_html()
-    for word in ("图例", "匹配", "漏报", "误报", "类别不一致", "IoU"):
+    for word in ("图例", "匹配", "漏报", "误报", "类别不一致", "IoU", "低分"):
         assert word in text, word
     for color in legend_colours().values():
         assert color in text, color
+    # the sixth entry of the legend writes the teal of the low score
+    # state next to the word that names it
+    assert (
+        "<span style='color:" + LOW_SCORE_COLOR.name() + "'>低分</span>"
+    ) in text
+    # and the tooltip says what that colour means
+    assert "分数阈值" in LEGEND_TOOLTIP
+    assert LOW_SCORE_COLOR.name() not in LEGEND_HTML
     # the legend never explains a fill: a box is an outline
     assert "填充" not in text
     page = ResultsPage()
