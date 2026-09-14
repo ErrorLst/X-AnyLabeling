@@ -169,11 +169,13 @@
 
 ### 代码与体量
 
-`anylabeling/custom/model_validation/`（23 个文件 11597 行，含 `ui/` 子包）；
-测试 `tests/custom/model_validation/`（42 个文件 17886 行）。
-本轮新增 `main_window_bridge.py`（689 行：跳主窗口 + 保存回写）与
-`async_scan.py`（189 行：异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`
-（内置标签弹窗整个文件移除）。
+`anylabeling/custom/model_validation/`（23 个文件 11961 行，含 `ui/` 子包）；
+测试 `tests/custom/model_validation/`（44 个文件 19215 行）。（口径：目录内全部 `*.py`、
+排除 `__pycache__`，行数取 `wc -l`。）「编辑搬到主窗口」那一轮新增
+`main_window_bridge.py`（671 行：跳主窗口 + 保存回写）与 `async_scan.py`（189 行：
+异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`（内置标签弹窗整个文件移除）；
+本轮（固定 0.25 + 多标签 + 低分 NG）只改既有文件，新增测试
+`test_mv_multilabel.py`（27 例）与 `test_mv_low_score.py`（10 例）。
 
 ### 入口符号
 
@@ -208,12 +210,12 @@
 | `LabelingWidget.may_continue` | direct | 跳转前确认主窗口没有未保存的标注 |
 | `LabelingWidget.output_dir` | direct | 非空时警告「编辑不会进入导出」并请用户确认 |
 | `LabelingWidget.filename` | transitive | 不直接读该属性：`load_file` 装载的当前图片；跳转依赖其兄弟 json 约定 |
-| `LabelingWidget.window()`（Qt 基类 API） | direct | 把主窗口提到前台；基类 API 按约定不进 contract.json |
+| `LabelingWidget.window()` | direct | `dialog._activate_target()` 取顶层窗口，装「主窗口被激活 → 抬升验证窗口」的过滤器；基类 API 按约定不进 contract.json |
 | `anylabeling.config.current_config_file` | direct | 推理前确保全局 rc 路径可用 |
 | `anylabeling.config.get_work_directory` | direct | 同上，兜底拼 `.xanylabelingrc` |
 | `anylabeling.views.labeling.utils.opencv.qt_img_to_rgb_cv_img` | direct | 把 QImage 解码成 RGB 数组 |
 | `anylabeling.services.auto_labeling.engines.OnnxBaseModel` | direct | 读输入形状、做元数据校验 |
-| `anylabeling.services.auto_labeling.__base__.yolo.YOLO` | direct | 复用上游预处理/NMS/建 shape 的整条链 |
+| `anylabeling.services.auto_labeling.__base__.yolo.YOLO` | direct | 复用上游预处理/NMS/建 shape 的整条链；另依赖 v8 分支的 `multi_label` config 键（本工具经 `TASK_FAMILY_MAP` 只会走 v8 分支），契约登记见下节 |
 | `anylabeling.app_info.__preferred_device__` | direct | 线程池预算会话选 CPU/GPU |
 
 ### 行为级契约（不可机器校验）
@@ -250,6 +252,19 @@
   标签读不了或缺 `shapes`、`imagePath` / 主窗口 `output_dir` 非空（弹确认）/
   `may_continue` 为假 / sibling json 写不出来。任一道不过只写一行状态说明，
   绝不抛异常、绝不跳转。
+- **跟随不抢焦点**：跳转只切换主窗口的当前文件。`MainWindowBridge.open_record()`
+  既不抬升也不激活主窗口：原来的 `_activate` 方法连同它的调用已删除，
+  `main_window_bridge.py` 全文对 `window()` / `raise_` / `activateWindow` /
+  `showNormal` 的实际调用为 0（grep 一条也搜不到，只剩「不抬升、不夺焦点」的
+  docstring 说明）。上游 `load_file` 结尾的 `canvas.setFocus()`（上游不可改）
+  会把焦点交给主窗口里的画布，所以
+  `anylabeling/custom/model_validation/ui/dialog.py` 的
+  `_open_current_in_main_window()` 只在 `bridge.open_record(record)` 返回 True
+  （成功）时才排一次 `QTimer.singleShot(0, self._restore_validation_focus)`；
+  被拒绝的跟随不排、不抢焦点。`_restore_validation_focus()` 先看 `isVisible()` /
+  `isMinimized()`，窗口不可见或已最小化就直接 return；否则 `self.activateWindow()`
+  + `self.results_page.focus_results()`，焦点落到结果页的记录列表（`A` / `D` 仍
+  只在结果页作用域生效）；整段 `RuntimeError` 兜底，窗口已销毁时静默。
 - **桥接状态双写**：桥接的每一条状态/拒绝信息（跟随被拒、没有主窗口、暂存图片缺失、
   无标签项、`may_continue` 为假等）由 `_show_status_message` 同时写进配置页状态行与
   结果页汇总行。跟随只可能发生在结果页可见时，只写配置页会让用户以为「没反应」；
@@ -292,6 +307,44 @@
   可编辑；**不全局置顶**：不用 `WindowStaysOnTopHint`，不会浮到浏览器等其它应用
   之上；**尊重用户状态**：`isVisible()` 为假或 `isMinimized()` 为真时不抬；
   `__main__` 独立启动（`_main_window()` 为 None）时不装过滤器。
+- **推理过滤固定 0.25**：推理期的置信度过滤只有 `app_config.INFERENCE_CONF_THRESHOLD`
+  （= 0.25）一个来源。`ModelRunner` 与 `build_runner_pool` 都不再接收 `conf_threshold`
+  形参，只把模块常量写进喂给上游 `YOLO` 的 config；报表快照
+  `ValidationConfig.to_dict()` 记录 `inference_conf_threshold`（=0.25）与
+  `inference_conf_threshold_fixed`（=True）。配置页那个分数阈值**不再是推理过滤阈值**，
+  它只作 NG 判定规则（见下一条）。改这两个字段名或让页面值重新喂进推理，都是行为回归。
+- **多标签：一个框多行标签**：上游按 multi-label NMS 为同一个框返回多条**共享坐标**的
+  记录，`inference.merge_multilabel_predictions` 按
+  `(shape_type, 坐标四舍五入到 1e-6)` 分组后合并：整组里最高分那条留作主
+  `label`/`score`，**仅当行数 > 1** 时挂上平行的、按分数降序的 `labels`/`scores`
+  （单标签 payload 与改动前**逐键相等**）。只对 **detect/segment** 开（`obb`/`pose`
+  保持单标签，理由：本工具定位检测类框验证）；GT 侧保持单标签。画布
+  `shape_label_rows` / `_stacked_glyphs` 逐行绘制整块标签，行距
+  `LABEL_LINE_SPACING = 1.0` widget 像素（整块夹取与丢弃，**不逐行截半**）。
+- **低分判 NG**：`judge.LOW_SCORE`，原因优先级
+  `CLASS_MISMATCH → LOW_SCORE → IOU_BELOW → MISS_FP`；`judge_record(..., ng_score_threshold=None)`
+  是可选**尾参**，不传 = 规则关闭（与旧行为逐键相等）。detail 记 `ng_score_threshold`、
+  `low_score`（每项 `{index, label, score}`，`index` 与 `false_positives` /
+  matched pair 的 `pred_index` 同坐标系）与每个 matched pair 的 `low_score` 布尔。
+  画布上匹配对里低分的框为**青绿** `LOW_SCORE_COLOR`：`matched_pair_state` 的判定
+  顺序是 `mismatch → low_score → iou_below → OK_PAIR`，**低分不论 IoU 是否达标都算**；
+  未匹配的低分框仍是品红误报。图例第六项「低分」；配置页标题为「**NG 分数 score**」
+  （属性名/默认 0.5/范围/步进不变），tooltip 说明「≤0.25 时不会有框低于它，
+  LOW_SCORE 永不触发」。
+
+### 上游改动（挂载点之外，需逐行审计）
+
+本功能对上游文件只有 1 行功能性改动，逐字给出前后原文，供同步上游时核对：
+
+文件：`anylabeling/services/auto_labeling/__base__/yolo.py`，第 388 行
+（v8 分支的 `non_max_suppression_v8(...)` 调用点）
+
+原：`                multi_label=False,`
+新：`                multi_label=self.config.get("multi_label", False),`
+
+说明：默认 `False` ⇒ 主窗口自动标注等既有调用方行为零变化；v5 分支（约 354 行）
+保持 `multi_label=False` 不动。本工具经 `TASK_FAMILY_MAP` 只会走 v8 分支，
+因此这条改动只影响本工具传入的 config。
 
 ### 测试
 
@@ -300,10 +353,13 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 本轮删掉 5 个编辑用例（`test_mv_edit_mode.py`、`test_mv_edit_drag.py`、
 `test_mv_edit_persist.py`、`test_mv_edit_exit_on_switch.py`、`test_mv_label_dialog.py`），
 新增 `test_mv_main_window_bridge.py`（22 例）、`test_mv_staging_sync.py`（14 例）、
-`test_mv_async_scan.py`（6 例）、`test_mv_dialog_wiring.py`（18 例）、
-`test_mv_export_nonmodal.py`（6 例）、`test_mv_raise_on_activate.py`（12 例），
-并改写 `test_mv_records_labelme.py`、
-`test_mv_image_view.py`、`test_mv_ui_dialog.py`、`test_mv_cancel.py`。
+`test_mv_async_scan.py`（6 例）、`test_mv_dialog_wiring.py`（21 例）、
+`test_mv_export_nonmodal.py`（6 例）、`test_mv_raise_on_activate.py`（12 例）；
+固定 0.25 + 多标签 + 低分 NG 这一轮又新增 `test_mv_multilabel.py`（27 例）与
+`test_mv_low_score.py`（10 例），并改写 `test_mv_records_labelme.py`、
+`test_mv_image_view.py`（22 例）、`test_mv_ui_dialog.py`、`test_mv_cancel.py`、
+`test_mv_status_colors.py`、`test_mv_inference_runner.py`、`test_mv_infer_workers.py`。
+每条例数都用 `--collect-only -q` 逐个文件核实过（口径见上）。
 
 ### 已知坑
 
@@ -324,6 +380,11 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
   这正是要的效果。抬升用 `raise_()` 而不是置顶，WM 仍可自行决定是否理会。
 - 过滤器的目标是 `main_window.window()`（`LabelingWidget` 不是顶层窗口，
   `WindowActivate` 只发给顶层窗口）；`_main_window()` 为 None 时整条链路是空操作。
+- **Wayland/WSLg 上回抢焦点可能失败**：`_restore_validation_focus()` 的
+  `activateWindow()` 是应用自身的请求，Wayland 合成器可以忽略（WSLg 走的就是
+  Wayland），上游 `canvas.setFocus()` 于是把键盘留在主窗口，跟随之后 `A` / `D`
+  不再响应，要手动点回验证窗口；X11 下正常。这是平台限制，不是跟随逻辑的缺陷
+  （本项目就在 WSLg 上运行，该平台差异已确认存在）。
 
 ## smudge_tool
 
@@ -391,7 +452,21 @@ Orientation 与画布绘制态的回归）。
   `operations.default_backup_dir()`（系统临时目录下的 `dsh-smudge/<时间戳>-<pid>`），
   同名冲突加数字后缀；只复制、不移动、不删除，一个目录里同一文件只备份一次。
 - **撤销**：历史在内存里按图片分组，记录 ROI、原像素块与磁盘路径；Ctrl+Z 把像素放回
-  屏幕与磁盘。换目录、重新打开文件夹、进程结束都会丢掉历史（磁盘上的备份保留）。
+  屏幕与磁盘。
+  - **保留范围**：切图**不丢**——同一文件夹里的每张图各有一份自己的步骤记录，
+    切走再切回这张图，之前的步骤仍在，Ctrl+Z 照常把像素放回屏幕与磁盘；
+    换文件夹（打开另一个目录，或经 `LabelingWidget.import_image_folder` 打开
+    另一个目录的文件）才把上一批图的步骤全部丢掉，进程结束也丢（磁盘上的备份
+    一直保留）。「重新打开同一个文件夹」不算换文件夹：目录按规范路径比较
+    （`_folder_changed` 对两边都做 `normcase + normpath + abspath`），命中同一个
+    目录时历史留着。
+  - **模型验证工作流**：验证窗口的「自动跟随」用 `LabelWidget.load_file(单张
+    暂存图片)` 切图，主窗口的文件列表因此跟着导入**同一个**暂存图片目录；这属于
+    「重新打开同一个文件夹」，不触发清空，所以涂完 A、跟到 B、再回到 A 时 A 的
+    步骤仍在，Ctrl+Z 能撤销。
+  - **只对当前图生效**：Ctrl+Z 撤销的是**当前显示**那张图的最后一步；别的图的步骤
+    留在历史里、等切回那张图才能撤销（`_can_undo` 只看当前文件），状态栏的
+    「已涂抹修复 · 可撤销 N 次」也只在模式开着时按当前图计数。
 - **写回保留原编码参数（按格式分流）**：读图时从已打开的 PIL 对象取出参数，
   写回时只把属于该格式的参数交给 Pillow（门控见 `operations.JPEG_FORMATS`、
   `operations.ICC_FORMATS` 与 `operations.EXIF_FORMATS`）：
