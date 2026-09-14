@@ -249,7 +249,7 @@ def test_a_real_widget_queues_the_wrapped_load_file(
 
     queued_load = real.queued[0]
     assert isinstance(queued_load, functools.partial)
-    assert queued_load.func is widget.load_file
+    assert queued_load.func is widget._ensure_label_file_wrapper
     assert queued_load.func is not LabelingWidget.load_file
     assert queued_load.args == (image,)
     assert widget.actions.delete_file.isEnabled() is False

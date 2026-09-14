@@ -43,6 +43,7 @@ from anylabeling.custom.ensure_label_file import install_ensure_label_file
 from anylabeling.custom.smudge_tool import install_smudge_tool
 from anylabeling.custom.rename_tool import install_rename_tool
 from anylabeling.custom.label_filter import install_label_filter
+from anylabeling.custom import reset_view_on_switch
 
 from ...app_info import (
     __appname__,
@@ -2631,6 +2632,7 @@ class LabelingWidget(LabelDialog):
         install_smudge_tool(self)  # 涂抹工具
         install_rename_tool(self)  # 重命名工具
         install_label_filter(self)  # 标签过滤
+        reset_view_on_switch.install_reset_view_on_switch(self)  # 换图复位缩放/视图
 
         self.set_text_editing(False)
 

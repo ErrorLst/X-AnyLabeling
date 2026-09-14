@@ -29,6 +29,7 @@
 | rename_tool | 按主分类批量重命名并打包成 zip（拖拽目录一键导出，源目录只读） | `anylabeling/custom/rename_tool/` | `tests/custom/rename_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 | label_filter | 按标签分类过滤文件列表（Tool 菜单运行时追加，实例级包装 import_image_folder） | `anylabeling/custom/label_filter/` | `tests/custom/label_filter/` | 1 个（1 行 import + 1 行调用） | 2 |
 | crash_log | 崩溃与运行日志落盘 `~/.xanylabeling/logs/xany-*.log`（faulthandler + 异常钩子 + Qt 钩子；异常退出检测） | `anylabeling/custom/crash_log/` | `tests/custom/crash_log/` | 1 个（1 行 import + 1 行调用） | 0 |
+| reset_view_on_switch | 换到另一张图片时画布缩放/滚动复位成首图初始态（有意压过 keep_prev_scale；同文件重载不复位） | `anylabeling/custom/reset_view_on_switch/` | 同目录 `tests/custom/reset_view_on_switch/` | 1 个（1 行 import + 1 行调用） | 1 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -1148,6 +1149,141 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   执行，若崩在 `import anylabeling` 的包 `__init__` 阶段，日志里不会有记录。
 - **Linux 上 PyInstaller 忽略 `--noconsole`**：Linux 下 `sys.stderr` 始终存在，
   `stderr is None` 的分支只在 Windows / macOS 的 windowed 打包里才走得到。
+
+## reset_view_on_switch
+
+### 职责
+
+切到**另一张**图片后，画布视图落回「新会话第一张图加载完」的样子：适应窗口缩放、两个滚动条
+回到 0（大图左上角 / 小图居中）、缩放与滚动条记忆里没有这个文件的条目。同文件重载
+（改标签、gid、形状管理器、删除标注、成组解组、涂抹后刷新、批量回写触发的重载）**不复位**，
+加载失败也不复位。该行为**有意压过**配置项 `keep_prev_scale`（产品决策，见下）。
+
+### 代码与体量
+
+`anylabeling/custom/reset_view_on_switch/`（2 个文件 315 行：`__init__.py` 34 行只导出两个
+公开符号，`view.py` 281 行是包装与复位实现）。
+
+本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以
+`docs/custom/contract.json` 为准。
+
+### 入口符号
+
+`anylabeling.custom.reset_view_on_switch.install_reset_view_on_switch`（幂等安装实例级包装，
+重复调用不会套两层；widget 的 `load_file` 不可调用时安静返回 None）、
+`anylabeling.custom.reset_view_on_switch.reset_view_on_switch`（`(widget, filename)`：把视图
+复位成首图初始态，永不抛，返回 True，跳过某一步时只写 warning 日志）。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom import reset_view_on_switch`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`，紧跟在
+  `install_label_filter(self)` 之后、`set_text_editing(False)` 之前）：
+  `reset_view_on_switch.install_reset_view_on_switch(self)  # 换图复位缩放/视图`
+- 软挂载：`LabelingWidget.load_file` 的实例级包装，由 `install_reset_view_on_switch` 在
+  `anylabeling/custom/reset_view_on_switch/view.py` 里安装，上游类零改动。
+- **包装层序**：`ensure_label_file` 也实例级包装 `load_file`，且它先安装，所以后装的本次
+  包装是**最外层**：调用链是「reset 包装（外层）→ ensure 包装 → 上游 load_file」。
+  这也要求新包装一律**追加在挂载点 2 之后**；把调用行挪到 `install_ensure_label_file(self)`
+  之前会让本次包装变成内层，复位与失败恢复都看不到最终文件名（不会崩，只是视图不复位）。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.load_file` | wrapped | 软挂载点：换图判定、成功判定与复位触发都在包装层 |
+| `LabelingWidget.filename` | direct | 包装前记 previous、包装后取 loaded 做「换了哪张」判定 |
+| `LabelingWidget.zoom_values` | direct | per-file 缩放记忆；pre/post 两处删掉目标文件条目（不是改值） |
+| `LabelingWidget.scroll_values` | direct | per-file 水平/垂直滚动记忆；同样删条目 |
+| `LabelingWidget.zoom_mode` | direct | 复位后写回 `FIT_WINDOW`（`adjust_scale` 自己不写这个状态） |
+| `LabelingWidget.FIT_WINDOW` | direct | 目标模式的取值来源（取不到时回退 0） |
+| `LabelingWidget.adjust_scale` | direct | 以 `initial=True` 触发，重算适应窗口缩放并刷新导航器 |
+| `LabelingWidget.set_scroll` | direct | 两个方向都设 0.0，顺带刷新导航器视口 |
+| `LabelingWidget.scroll_bars` | direct | `scroll_values` 不是 dict 时用它取方向；缺了就只写 warning |
+| `LabelingWidget.actions` | direct | 取 `fit_window` / `fit_width` 两个动作并纠正勾选态 |
+| `LabelingWidget.settings` | direct | `load_file()` 无参时按上游同样规则解析目标文件名 |
+| `LabelingWidget._config` | direct | 阅读上游记忆/配置开关的位置（`keep_prev_scale` 有意不读） |
+
+### 行为级契约（不可机器校验）
+
+- **默认状态 = 首图初始态**：复位后逐项等于「新会话第一张图加载完」。
+
+  | 状态项 | 目标值 |
+  |---|---|
+  | `zoom_mode` | `LabelingWidget.FIT_WINDOW`（0） |
+  | `actions.fit_window` | checked=True |
+  | `actions.fit_width` | checked=False |
+  | `zoom_widget` | `int(100 * widget.scale_fit_window())`（spinbox 自身钳到 1..1000） |
+  | `zoom_values[filename]` | 本文件无条目（不是「写了旧值」） |
+  | `scroll_values[方向][filename]` | 本文件无条目，且两滚动条值为 0.0 |
+  | `navigator_dialog.set_zoom_value` | 与 `zoom_widget` 同值（经 `adjust_scale` 内部 path） |
+  | `canvas.scale` | `0.01 * zoom_widget`（经 `paint_canvas` 生效） |
+  | 小图位置 | 居中（`canvas.offset_to_center` 自动）；大图左上角 |
+
+- **唯一判定规则**：包装器在调用上游之前记 `previous = widget.filename`，返回后取
+  `loaded = widget.filename`；仅当 `loaded` 为真值、是 `str`、且 `loaded != previous` 时复位。
+  首图加载不经过本包装（挂载点在 `queue_event` 之后，构造函数排队时捕获的是 ensure
+  包装），新会话首图天然处于默认态，不需要也不会有这次复位。
+
+  | 触发场景 | 是否复位 |
+  |---|---|
+  | 切到另一个文件（列表 / 上下张 / 最近文件 / 拖入 / 概览 / 导出跳转 / 批处理 / 模型验证跟随） | 复位 |
+  | **切回看过的文件** | 复位（关键：靠恢复旧缩放等于没重置） |
+  | 同一个文件重新加载（改标后重载、删除标注、成组解组、涂抹刷新、批量回写） | 不复位 |
+  | 加载失败（`load_file` 返回 False）或中途 `return` | 不复位，且预删的记忆条目原样恢复 |
+  | `filename=None` 且 settings 里为空 | 不复位 |
+  | 首图加载（构造函数 `queue_event` 那次） | 不复位（挂载点在排队之后，该次调用不经过本包装；新会话首图本就是默认态） |
+
+- **keep_prev_scale 被有意压过**：复位不读该配置键，`_config["keep_prev_scale"] = True` 时
+  仍然复位。理由是「回退点只有一行 `if`」（写在 `reset_view_on_switch` 顶部），而不是散落
+  在各分支里：要改回「尊重该设置」只需在这一处加条件，别处都不用动。上游的
+  `adjust_scale(initial=True)` 本来就不读该键，所以这条决策只在复位路径上生效。核到的事实
+  是：`keep_prev_scale=True` 下先 `set_zoom(250)` 再切到没看过的图，结果同样落在适应窗口
+  值上（不是 250）。
+- **per-file 记忆的处理语义**：`zoom_values` 是 `{filename: (zoom_mode, value)}`、
+  `scroll_values` 是 `{方向: {filename: value}}`，上游 `load_file` 会按当前文件名把记忆
+  **恢复**回视图。本功能在包装层做「pre 弹条目备份 →（成功则复位）→ post 再弹一次 → 失败
+  路径写回备份」，所以「视图已是默认」= 该文件在记忆里**没有条目**。只改值不改结构挡不住
+  上游的恢复分支（失败方向是「旧视图闪一下又回来」）。
+- **never-raise**：`install_reset_view_on_switch` 与 `reset_view_on_switch` 每一步都
+  `getattr` + `callable` 判定，任何异常都被吞成 `LOGGER.warning`，一次成功的加载绝不会
+  因为复位失败而变成错误。widget 缺 `adjust_scale` / `set_scroll` / `scroll_bars` /
+  两个动作时只降级（少复位一项）并写 warning，不抛。
+- **异常透传**：上游 `load_file` 抛异常时包装器先把备份写回记忆再原样 `raise`（`BaseException`
+  一并捕获），错误类型与栈不因包装而改变。
+- **不在上游文件新增函数体**：上游 diff 只有挂载点 1（1 行 import）与挂载点 2（1 行调用），
+  其余全部在包内。
+
+### 测试
+
+`QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/reset_view_on_switch -v`
+（需 PyQt6）。目录里实际落地 14 个用例：`test_rvs_wrapper.py` 11 个（假 widget）与
+`test_rvs_real_widget.py` 3 个（真离屏 `LabelingWidget`，覆盖挂载点两行）。假 widget 用例是：① `test_first_load_leaves_fit_state`（默认状态逐项等于首图初始态）、
+② `test_switch_resets_manual_zoom`（切到另一张图复位，旧文件记忆保留）、
+③ `test_switch_back_does_not_restore_old_zoom`（切回看过的文件也复位）、
+④ `test_same_file_reload_keeps_view`（同文件重载：视图与缩放/滚动记忆逐项不变）、
+⑤ `test_failed_load_keeps_entries_and_view`（返回 False：记忆原样恢复、不再补删）、
+⑥ `test_failed_load_is_reported_without_error`（抛异常：记忆恢复且异常原样透传）、
+⑦ `test_keep_prev_scale_true_is_overridden`（假上游改为尊重 `keep_prev_scale` 后仍复位）、
+⑧ `test_missing_helpers_degrade_without_error`（缺 `adjust_scale`/`set_scroll`/动作时降级
+且逐条 warning）、⑨ `test_install_is_idempotent_and_needs_callable`（不套两层包装、
+`load_file` 不可调用时不装）。settings 分支（`_resolved_target` 的 settings 回退）由
+`test_filename_none_resolves_the_target_through_settings`（settings 给出文件名 → 预删生效）与
+`test_filename_none_without_a_target_keeps_the_view`（settings 为空 → 不删不复位）覆盖；
+2 个真窗口用例覆盖首图（`queue_event` 那次）与切图/切回，另有导航器同步用例。
+
+### 已知坑
+
+- 离屏（offscreen）下布局未定型，`zoom_widget` 的绝对值与真实 GUI 不同：断言必须用实时
+  `int(100 * widget.scale_fit_window())` 比较，不要写死数字。
+- `import anylabeling.custom.reset_view_on_switch` 会经既有包依赖链间接拉入
+  `anylabeling.views.*`（不是本模块 import，也不导入 `label_widget`），所以不能写
+  「导入后无任何上游模块」这类断言。
+- 首图加载**不经过本包装**：构造函数的 `queue_event`（挂载点 2 之前）捕获的是 ensure
+  包装，所以新会话首图的默认态由上游决定；本包装只处理后续的换图。
+- 包装层序依赖「新包装追加在挂载点 2 之后」：把本功能的调用行挪到
+  `install_ensure_label_file(self)` 之前会让它成为内层包装，复位与失败恢复都会被
+  ensure 包装挡住（不会崩，只是视图不复位）。
 
 ## 变更台账
 

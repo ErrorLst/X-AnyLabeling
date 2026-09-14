@@ -34,10 +34,11 @@
                      class RemoteServer（HTTP 到 X-AnyLabeling-Server）
 
 自研功能的挂载点绝大多数落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
-与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有四处：模型验证的菜单动作与
+与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有五处：模型验证的菜单动作与
 方法定义、重命名工具的 Tool 菜单动作追加、标签过滤的 Tool 菜单运行时追加
 （`menus.tool.addAction`）与 `LabelingWidget.import_image_folder` 的实例级包装，
-以及崩溃日志的第四处——`anylabeling/app.py` **模块顶层**挂载（1 行 import + 1 行调用，
+换图复位视图的 `load_file` 实例级包装，
+以及崩溃日志的第五处——`anylabeling/app.py` **模块顶层**挂载（1 行 import + 1 行调用，
 发生在 `LabelingWidget` 之前，是整个进程里最早安装的自研功能）。
 逐条清单见 `docs/custom/contract.json` 的 `features.<id>.mounts`。
 
@@ -47,6 +48,7 @@
 -> `anylabeling/views/labeling/label_file.py` 的 `LabelFile` 读 json
 -> 形状进 `label_list` / `canvas.shapes` -> 用户编辑 -> `save_labels` 写回 json。
 自研的 `ensure_label_file` 就挂在这个链条的两端：包装 `load_file`，缺文件时复用 `save_labels` 落盘。
+同一链条上还挂着 `reset_view_on_switch`（包装 `load_file`，换图复位视图）。
 
 **② 自动标注**：`AutoLabelingWidget` 面板 -> `ModelManager.load_model`
 -> `Model.predict_shapes`（本地）或 `RemoteServer`（远端）-> 结果作为 marks 回到 `canvas`。
@@ -74,8 +76,8 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   （`chatbot`、`classifier`、`ppocr`、`settings`、`utils`、`video_classifier`、`vqa`、`widgets`）。
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
-- `anylabeling/custom/`：67 个 .py / 36899 行（目录内全部 .py；FEATURES.md 登记其中
-  7 个自研功能，另有未登记的 `remote_training`）。
+- `anylabeling/custom/`：69 个 .py / 37449 行（目录内全部 .py；FEATURES.md 登记其中
+  8 个自研功能，另有未登记的 `remote_training`）。
 - `anylabeling/custom/model_validation/`：24 个 .py / 12543 行（关键文件：`ui/` 下的
   `dialog.py` 1188、`results_page.py` 2008、`image_view.py` 1280，以及
   `main_window_bridge.py` 689、`async_scan.py` 189、`multilabel.py` 360）；本轮新增
@@ -91,6 +93,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 |---|---|
 | 新增自研功能 | `anylabeling/custom/` + `docs/custom/contract.json` 的 features 一节（步骤见 `.dsh/skills/xal-add-custom-feature/SKILL.md`） |
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
+| 切换图片时画布缩放/滚动回到默认 | `anylabeling/custom/reset_view_on_switch/`（实例级包装 `load_file`，换图复位成首图初始态、同文件重载不复位、有意压过 `keep_prev_scale`；软挂载见 contract.json） |
 | 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
 | 按标签分类过滤文件列表 | `anylabeling/custom/label_filter/`（Tool 菜单「标签过滤」运行时追加，实例级包装 `import_image_folder` 做二道过滤） |
 | 崩溃 / 运行日志（无控制台取证） | `anylabeling/custom/crash_log/`（挂载 `anylabeling/app.py:23-24`；日志 `~/.xanylabeling/logs/xany-YYYYMMDD.log`，保留 14 份；`XANY_LOG_DIR` 改目录、`XANY_LOG_DISABLE=1` 关闭） |
