@@ -1214,8 +1214,10 @@ def test_results_page_receives_the_augmented_rows(dialog, tmp_path):
 
     dialog.on_worker_finished()
 
-    # the page opens on NG and this test looks at the whole list
+    # the page opens on NG and this test looks at the whole list; the
+    # switch only asks for the rebuild, so the events are driven once
     dialog.results_page.filter_combo.setCurrentIndex(0)
+    QtWidgets.QApplication.processEvents()
     kinds = [record.kind for record in dialog.records]
     assert records_module.KIND_AUGMENTED in kinds
     assert kinds.count(records_module.KIND_AUGMENTED) == 1

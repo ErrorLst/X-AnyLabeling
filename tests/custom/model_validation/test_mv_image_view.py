@@ -306,8 +306,10 @@ def show_record(dialog, staging: str, records) -> None:
     dialog.records = list(records)
     page.set_context(list(CLASSES), staging)
     page.set_records(dialog.records)
-    # the page opens on NG and this test looks at the whole list
+    # the page opens on NG and this test looks at the whole list; the
+    # switch only asks for the rebuild, so the events are driven once
     page.filter_combo.setCurrentIndex(0)
+    QtWidgets.QApplication.processEvents()
     page.table.selectRow(0)
     page.gt_canvas.resize(*WIDGET_SIZE)
     page.pred_canvas.resize(*WIDGET_SIZE)

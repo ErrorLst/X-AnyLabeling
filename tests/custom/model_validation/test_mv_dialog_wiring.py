@@ -147,6 +147,11 @@ class StubMainWindow(QtWidgets.QWidget):
         super().__init__()
         self.loaded = []
         self.output_dir = ""
+        # the ordinary state of this tool: the user edits in the main
+        # window, which stays dirty until it is saved
+        self.dirty = False
+        # the modal gate of the old revision, kept as a counter: a
+        # follow never asks it (see the no-modal tests below)
         self.requests = 0
         # every call that would lift the main window or take the
         # keyboard: a follow may not make any of them
@@ -218,6 +223,21 @@ def show_dialog(dialog) -> None:
 
     dialog.show()
     QtWidgets.QApplication.processEvents()
+
+
+def count_questions(monkeypatch) -> list:
+    "Record every message box a follow would open, and answer No."
+
+    asked = []
+
+    def question(*args, **kwargs):
+        asked.append(args)
+        return QtWidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "question", staticmethod(question)
+    )
+    return asked
 
 
 def follow_spy(dialog, monkeypatch) -> list:
@@ -326,7 +346,8 @@ def test_a_finished_run_opens_the_record_in_the_main_window(qt_app, tmp_path):
         assert dialog.results_page.displayed_record() is record
         assert wait_for(lambda: window.loaded == [record.staging_image_path])
         assert window.loaded == [record.staging_image_path]
-        assert window.requests == 1
+        # the jump is a follow: it never asks the user anything
+        assert window.requests == 0
     finally:
         dialog.close()
         window.close()
@@ -386,6 +407,178 @@ def test_a_standalone_start_says_once_that_it_cannot_follow(
 
         assert dialog.config_page.status_label.text() == "安静"
         assert dialog.results_page.status_label.text() == "安静"
+    finally:
+        dialog.close()
+        keep_alive(dialog)
+
+
+# ---------------------------------------------------- filter switch
+def test_a_filter_switch_opens_no_message_box(
+    qt_app, tmp_path, monkeypatch
+):
+    "A switch of the filter follows a record and asks the user nothing."
+
+    root = staging_root(str(tmp_path))
+    records = [
+        staged_record(root, "a.png", records_module.NG),
+        staged_record(root, "b.png", records_module.OK),
+    ]
+    window = StubMainWindow()
+    asked = count_questions(monkeypatch)
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        finish_run(dialog, root, records)
+        assert wait_for(
+            lambda: window.loaded == [records[0].staging_image_path]
+        )
+
+        # the filter switch lands on another record, so the follow opens
+        # it: the bug was the modal box (and the frozen window) this
+        # switch used to trigger
+        page = dialog.results_page
+        page.filter_combo.setCurrentIndex(
+            page.filter_combo.findData(records_module.OK)
+        )
+        QtWidgets.QApplication.processEvents()
+
+        assert wait_for(
+            lambda: window.loaded[-1] == records[1].staging_image_path
+        )
+        assert asked == []
+        assert window.requests == 0
+        # the follow moves the current file alone: no raise, no focus
+        assert window.activation == []
+        assert "打开" in dialog.results_page.status_label.text()
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_a_dirty_main_window_skips_the_follow_with_a_status_line(
+    qt_app, tmp_path, monkeypatch
+):
+    "Unsaved annotations skip the jump instead of opening a box."
+
+    root = staging_root(str(tmp_path))
+    records = [
+        staged_record(root, "a.png", records_module.NG),
+        staged_record(root, "b.png", records_module.OK),
+    ]
+    window = StubMainWindow()
+    window.dirty = True
+    asked = count_questions(monkeypatch)
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        finish_run(dialog, root, records)
+        page = dialog.results_page
+        page.filter_combo.setCurrentIndex(
+            page.filter_combo.findData(records_module.OK)
+        )
+        QtWidgets.QApplication.processEvents()
+        QtTest.QTest.qWait(400)
+
+        # nothing was asked, nothing was loaded and the annotation the
+        # user has not saved is still sitting in the main window
+        assert asked == []
+        assert window.requests == 0
+        assert window.loaded == []
+        assert "未保存" in dialog.results_page.status_label.text()
+        assert (
+            dialog.results_page.status_label.text()
+            == dialog.config_page.status_label.text()
+        )
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_an_output_dir_skips_the_follow_with_a_status_line(
+    qt_app, tmp_path, monkeypatch
+):
+    "An output_dir skips the jump instead of opening a box."
+
+    root = staging_root(str(tmp_path))
+    records = [
+        staged_record(root, "a.png", records_module.NG),
+        staged_record(root, "b.png", records_module.OK),
+    ]
+    window = StubMainWindow()
+    window.output_dir = osp.join(str(tmp_path), "out")
+    asked = count_questions(monkeypatch)
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        finish_run(dialog, root, records)
+        page = dialog.results_page
+        page.filter_combo.setCurrentIndex(
+            page.filter_combo.findData(records_module.OK)
+        )
+        QtWidgets.QApplication.processEvents()
+        QtTest.QTest.qWait(400)
+
+        assert asked == []
+        assert window.loaded == []
+        assert "输出目录" in dialog.results_page.status_label.text()
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_a_burst_of_filter_switches_rebuilds_the_table_once(
+    qt_app, tmp_path, monkeypatch
+):
+    "A row of filter switches costs one rebuild, on the last filter."
+
+    root = staging_root(str(tmp_path))
+    records = [
+        staged_record(root, "a.png", records_module.NG),
+        staged_record(root, "b.png", records_module.OK),
+        staged_record(root, "c.png", records_module.OK),
+    ]
+    dialog = ModelValidationDialog()
+    try:
+        dialog.results_page.set_context(list(CLASSES), root)
+        dialog.results_page.set_records(records)
+        page = dialog.results_page
+        rebuilds = []
+        real_refresh = page.refresh
+        monkeypatch.setattr(
+            page,
+            "refresh",
+            lambda: rebuilds.append(True) or real_refresh(),
+        )
+        combo = page.filter_combo
+
+        combo.setCurrentIndex(combo.findData(records_module.OK))
+        combo.setCurrentIndex(0)
+        combo.setCurrentIndex(combo.findData(records_module.OK))
+        # the switch itself rebuilds nothing: the popup of the list is
+        # still closing, which is what used to freeze the window
+        assert rebuilds == []
+
+        QtWidgets.QApplication.processEvents()
+        # one rebuild for the whole burst, and it is the one of the
+        # filter the list was left on
+        assert rebuilds == [True]
+        assert [
+            page.record_at(row).record_id
+            for row in range(page.table.rowCount())
+        ] == [records[1].record_id, records[2].record_id]
+
+        # a new list rebuilds right away and cancels the switch that was
+        # still pending: one rebuild again, never two
+        rebuilds.clear()
+        combo.setCurrentIndex(0)
+        page.set_records(records)
+        assert rebuilds == [True]
+        QtWidgets.QApplication.processEvents()
+        assert rebuilds == [True]
+        assert page.table.rowCount() == 3
     finally:
         dialog.close()
         keep_alive(dialog)
@@ -483,8 +676,9 @@ def test_the_same_record_is_never_opened_twice(qt_app, tmp_path, monkeypatch):
         QtTest.QTest.qWait(300)
 
         assert opened == [record]
-        # one jump, therefore one question about the unsaved annotations
-        assert window.requests == 1
+        # one jump, therefore no question at all about the unsaved
+        # annotations: the record that was already opened costs nothing
+        assert window.requests == 0
     finally:
         dialog.close()
         window.close()

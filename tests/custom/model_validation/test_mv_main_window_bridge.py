@@ -46,15 +46,19 @@ class StubMainWindow(QtWidgets.QWidget):
 
     def __init__(
         self,
-        output_dir: str = "",
-        may_continue: bool = True,
+        dirty: bool = False,
         minimized: bool = False,
     ):
         super().__init__()
-        self.output_dir = output_dir
-        self.continue_answer = may_continue
+        self.output_dir = ""
+        # the ordinary state of this tool: the edit happens in the main
+        # window, which stays dirty until the user saves it
+        self.dirty = dirty
         self.minimized = minimized
         self.loaded = []
+        # the modal gate of the previous revision: kept as a counter so
+        # that a jump which asks it again is caught (see the may_continue
+        # tests below - the answer of a follow is never asked for)
         self.asked_may_continue = 0
         # every call that would lift the window or take the keyboard:
         # a jump may not make any of them (see the activation tests)
@@ -66,7 +70,7 @@ class StubMainWindow(QtWidgets.QWidget):
 
     def may_continue(self):
         self.asked_may_continue += 1
-        return self.continue_answer
+        return True
 
     def isMinimized(self) -> bool:  # noqa: N802
         return bool(self.minimized)
@@ -87,6 +91,7 @@ class PlainStub:
 
     def __init__(self):
         self.output_dir = ""
+        self.dirty = False
         self.loaded = []
 
     def load_file(self, filename):
@@ -192,14 +197,19 @@ def hard_links_supported(directory):
     return True
 
 
-def answer_question(monkeypatch, answer):
-    "Make QMessageBox.question answer a fixed button."
+def count_questions(monkeypatch) -> list:
+    "Record every QMessageBox.question a jump asks, and answer No."
+
+    asked = []
+
+    def question(*args, **kwargs):
+        asked.append(args)
+        return QtWidgets.QMessageBox.StandardButton.No
 
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "question",
-        staticmethod(lambda *args, **kwargs: answer),
+        QtWidgets.QMessageBox, "question", staticmethod(question)
     )
+    return asked
 
 
 def wait_for(predicate, timeout_ms=4000):
@@ -381,51 +391,95 @@ def test_open_record_refuses_an_unusable_label(
     assert len(spy) == 1
 
 
-def test_output_dir_warning_can_stop_the_jump(
+def test_an_output_dir_skips_the_jump_without_a_question(
     bridge, window, tmp_path, monkeypatch
 ):
-    "A refusing answer to the output_dir warning stops the jump."
+    "A main window with an output_dir is skipped, never asked about."
 
     window.output_dir = osp.join(str(tmp_path), "out")
     record = make_record(tmp_path)
-    answer_question(monkeypatch, QtWidgets.QMessageBox.StandardButton.No)
+    asked = count_questions(monkeypatch)
     spy = QSignalSpy(bridge.status_message)
     assert bridge.open_record(record) is False
+    # the follow is automatic: no box, and no file either
+    assert asked == []
     assert window.loaded == []
     assert not osp.exists(sibling_label_path(record.staging_image_path))
     assert len(spy) == 1
+    assert "输出目录" in spy[0][0]
 
 
-def test_output_dir_warning_can_let_the_jump_through(
-    bridge, window, tmp_path, monkeypatch
+def test_unsaved_annotations_skip_the_jump_without_a_question(
+    qt_app, tmp_path, monkeypatch
 ):
-    "A confirming answer keeps the jump, as the plan requires."
+    "A dirty main window is skipped: nothing asked, saved or dropped."
 
-    window.output_dir = osp.join(str(tmp_path), "out")
-    record = make_record(tmp_path)
-    answer_question(monkeypatch, QtWidgets.QMessageBox.StandardButton.Yes)
-    assert bridge.open_record(record) is True
-    assert window.loaded == [record.staging_image_path]
-
-
-def test_unsaved_annotations_stop_the_jump(qt_app, tmp_path):
-    "The gate of may_continue stands before the sibling is written."
-
-    widget = StubMainWindow(may_continue=False)
+    widget = StubMainWindow(dirty=True)
     item = MainWindowBridge(widget)
     record = make_record(tmp_path)
+    asked = count_questions(monkeypatch)
     spy = QSignalSpy(item.status_message)
     try:
         assert item.open_record(record) is False
+        # neither the modal gate of the old revision nor any other box
+        # is opened - and the dirty state of the main window, the
+        # ordinary state while the user edits, is left exactly as it is
+        assert asked == []
+        assert widget.asked_may_continue == 0
+        assert widget.dirty is True
         assert widget.loaded == []
         assert not osp.exists(
             sibling_label_path(record.staging_image_path)
         )
         assert len(spy) == 1
+        assert "未保存" in spy[0][0]
     finally:
         item.detach()
         widget.close()
         widget.deleteLater()
+
+
+def test_a_reason_is_said_once_until_a_jump_goes_through(
+    bridge, window, tmp_path
+):
+    "The switch of the record does not rewrite the same refusal."
+
+    record = make_record(tmp_path)
+    spy = QSignalSpy(bridge.status_message)
+    window.dirty = True
+    for _ in range(3):
+        assert bridge.open_record(record) is False
+    assert len(spy) == 1
+    assert "未保存" in spy[0][0]
+
+    # the user saved: the jump goes through and clears the reason
+    window.dirty = False
+    assert bridge.open_record(record) is True
+    assert len(spy) == 2
+    assert "打开" in spy[1][0]
+
+    # dirty again: the very same reason is news again
+    window.dirty = True
+    assert bridge.open_record(record) is False
+    assert len(spy) == 3
+    assert "未保存" in spy[2][0]
+
+
+def test_a_changed_reason_is_said_right_away(bridge, window, tmp_path):
+    "Another refusal is another line, even while the first one is quiet."
+
+    record = make_record(tmp_path)
+    spy = QSignalSpy(bridge.status_message)
+    window.dirty = True
+    assert bridge.open_record(record) is False
+    assert bridge.open_record(record) is False
+    assert len(spy) == 1
+
+    window.dirty = False
+    window.output_dir = osp.join(str(tmp_path), "out")
+    assert bridge.open_record(record) is False
+    assert len(spy) == 2
+    assert "输出目录" in spy[1][0]
 
 
 def test_open_record_loads_the_image_without_lifting_the_window(
@@ -443,7 +497,10 @@ def test_open_record_loads_the_image_without_lifting_the_window(
     # validation window
     assert window.activation == []
     assert window.minimized is False
-    assert window.asked_may_continue == 1
+    # a follow asks nothing: the modal gate of the old revision is never
+    # reached, and a main window without a dirty attribute (this stub
+    # carries one, the real LabelingWidget too) counts as saved
+    assert window.asked_may_continue == 0
     assert len(spy) == 1
     assert "打开" in spy[0][0]
 

@@ -156,6 +156,18 @@ def build_records(staging: str):
     return records
 
 
+def show_all(page) -> None:
+    """Show every verdict again (the page opens on NG).
+
+    A filter switch only asks for a rebuild: the table is rebuilt on
+    the next turn of the event loop, so the events have to be driven
+    once before the rows of the new filter exist.
+    """
+
+    page.filter_combo.setCurrentIndex(0)
+    QtWidgets.QApplication.processEvents()
+
+
 def row_of(page, record_id: str) -> int:
     "Return the table row showing one record."
 
@@ -229,7 +241,7 @@ def test_both_kinds_start_unmarked_and_the_flags_are_untouched(
     dialog.results_page.set_context(list(CLASSES), staging)
     dialog.results_page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    dialog.results_page.filter_combo.setCurrentIndex(0)
+    show_all(dialog.results_page)
 
     assert dialog.results_page.table.rowCount() == len(records) == 9
     for record in records:
@@ -253,7 +265,7 @@ def test_the_original_box_emits_the_delete_mark(dialog, tmp_path):
     dialog.records = records
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
     seen = []
     page.toggle_deleted.connect(lambda ids, flag: seen.append((ids, flag)))
     page.toggle_export.connect(lambda ids, flag: seen.append((ids, flag)))
@@ -275,7 +287,7 @@ def test_the_augmented_box_emits_the_selection_mark(dialog, tmp_path):
     dialog.records = records
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
     seen = []
     page.toggle_deleted.connect(lambda ids, flag: seen.append((ids, flag)))
     page.toggle_export.connect(lambda ids, flag: seen.append((ids, flag)))
@@ -306,7 +318,7 @@ def test_the_export_list_follows_the_three_paths(dialog, tmp_path):
     page.set_context(list(CLASSES), staging)
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     # 1) initial: every original is exported, no augmented copy is
     summary = summary_of(dialog.records)
@@ -362,7 +374,7 @@ def test_the_selection_only_lists_what_the_marks_ask_for(dialog, tmp_path):
     dialog.records = records
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     original_a = find_record(records, records_module.KIND_ORIGINAL + "::a.jpg")
     child_b = find_record(
@@ -389,7 +401,7 @@ def test_the_export_zip_holds_exactly_the_marked_records(dialog, tmp_path):
     page.set_context(list(CLASSES), staging)
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     original_a = find_record(records, records_module.KIND_ORIGINAL + "::a.jpg")
     child_b = find_record(
@@ -448,7 +460,7 @@ def test_the_export_line_names_the_zip_and_both_counters(dialog, tmp_path):
     page.set_context(list(CLASSES), staging)
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     original_a = find_record(records, records_module.KIND_ORIGINAL + "::a.jpg")
     child_b = find_record(
@@ -534,7 +546,7 @@ def test_the_export_line_names_a_cancelled_export_in_chinese(
     page.set_context(list(CLASSES), staging)
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     child_b = find_record(
         records, records_module.KIND_AUGMENTED + "::b_aug1.png"
@@ -580,7 +592,7 @@ def test_the_export_line_keeps_the_raw_diagnostic_of_a_failure(
     page.set_context(list(CLASSES), staging)
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     child_b = find_record(
         records, records_module.KIND_AUGMENTED + "::b_aug1.png"
@@ -670,7 +682,7 @@ def test_the_batch_commands_live_on_the_context_menu(
     dialog.records = records
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     # the three batch buttons of the previous revision are gone and the
     # export is the only push button the page owns
@@ -728,7 +740,7 @@ def test_the_mark_column_survives_the_verdict_filter(dialog, tmp_path):
     dialog.records = records
     page.set_records(records)
     # the results page opens on NG: this test looks at the whole list
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
 
     original = find_record(records, records_module.KIND_ORIGINAL + "::a.jpg")
     mark_box(page, original.record_id).setChecked(True)
@@ -736,8 +748,9 @@ def test_the_mark_column_survives_the_verdict_filter(dialog, tmp_path):
     page.filter_combo.setCurrentIndex(
         page.filter_combo.findData(records_module.OK)
     )
+    QtWidgets.QApplication.processEvents()
     assert original.deleted is True
-    page.filter_combo.setCurrentIndex(0)
+    show_all(page)
     assert original.deleted is True
     assert mark_box(page, original.record_id).isChecked() is True
     assert summary_of(dialog.records)["excluded_deleted_originals"] == 1

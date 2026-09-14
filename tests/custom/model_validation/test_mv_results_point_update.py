@@ -265,6 +265,94 @@ def test_a_point_update_touches_no_other_row(page):
         assert widget.table.cellWidget(index, COLUMN_MARK) is widgets[index]
 
 
+# --------------------------------------------------- the visible rebuild
+def test_a_visible_rebuild_keeps_the_table_hidden(page, monkeypatch):
+    """Every row is created while the table is off screen.
+
+    A row added to a tree that is on screen is laid out and painted,
+    which costs about a hundred times more than the same row added to a
+    hidden one (minutes against milliseconds on this very list). Pinned
+    here is the behaviour - not a timing - so the regression is caught
+    on any machine: the page is on screen before and after, and not one
+    of the 1500 rows is created while it is.
+    """
+
+    widget, records = page
+    table = widget.table
+    assert table.isVisible() is True
+    seen = []
+    real_fill = widget._fill_row
+
+    def fill_row(row, record, parent_deleted=None):
+        seen.append(table.isVisible())
+        return real_fill(row, record, parent_deleted=parent_deleted)
+
+    monkeypatch.setattr(widget, "_fill_row", fill_row)
+    widget.refresh()
+
+    assert len(seen) == len(records) == ORIGINALS * (COPIES + 1)
+    assert set(seen) == {False}
+    assert table.isVisible() is True
+
+
+def test_a_visible_rebuild_is_cheap(page):
+    """1500 records: a rebuild of a page on screen stays cheap.
+
+    The bound is deliberately loose - it is a freeze detector, not a
+    benchmark: rebuilding the same list row by row with the table on
+    screen took minutes here (the fixture of this file alone spent
+    minutes in the first processEvents()), while the rebuild that hides
+    the table takes a fraction of a second.
+    """
+
+    widget, _records = page
+    assert widget.table.isVisible() is True
+    elapsed = milliseconds(widget.refresh, repeats=1)
+    assert elapsed < 2000.0, elapsed
+    assert widget.table.rowCount() == ORIGINALS * (COPIES + 1)
+
+
+def test_a_visible_rebuild_keeps_the_place_and_the_keyboard(page):
+    "The hidden rebuild gives the selection, the scroll and the focus back."
+
+    widget, records = page
+    table = widget.table
+    bar = table.verticalScrollBar()
+    target = 700
+    table.setCurrentItem(table.topLevelItem(target))
+    table.scrollToItem(table.topLevelItem(target))
+    table.setFocus()
+    QtWidgets.QApplication.processEvents()
+    before = bar.value()
+    assert before > 0, "the list has to be scrolled for this assertion"
+    assert table.hasFocus() is True
+    selected = widget.record_at(target).record_id
+
+    widget.refresh()
+
+    # the place of the user and the keyboard of the A / D navigation
+    # survive the rebuild the filter switch asks for
+    assert bar.value() == before
+    assert table.currentRow() == target
+    assert widget.record_at(table.currentRow()).record_id == selected
+    assert table.hasFocus() is True
+    assert table.isVisible() is True
+
+
+def test_a_rebuild_of_a_hidden_page_shows_nothing(page):
+    "A page that is not on screen is rebuilt without being shown."
+
+    widget, records = page
+    widget.hide()
+    QtWidgets.QApplication.processEvents()
+    assert widget.table.isVisible() is False
+
+    widget.refresh()
+
+    assert widget.table.isVisible() is False
+    assert widget.table.rowCount() == len(records)
+
+
 # --------------------------------------------------------- the user gesture
 def test_the_scroll_position_survives_a_tick_in_the_middle(dialog):
     "The click of the user leaves the view where it was."

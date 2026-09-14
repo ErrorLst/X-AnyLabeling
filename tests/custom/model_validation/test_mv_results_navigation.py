@@ -507,8 +507,10 @@ def test_a_hidden_page_never_swallows_a_key(qt_app):
     ]
     page.resize(1024, 640)
     page.set_records(records)
-    # the page opens on NG and this test looks at the whole list
+    # the page opens on NG and this test looks at the whole list; the
+    # switch only asks for the rebuild, so the events are driven once
     page.filter_combo.setCurrentIndex(0)
+    QtWidgets.QApplication.processEvents()
     try:
         assert page.table.currentRow() == 0
         page.hide()

@@ -185,8 +185,10 @@ def loaded_dialog(dialog, tmp_path, records=3):
     dialog.worker = worker
     dialog.results_page.set_context(list(CLASSES), staging)
     dialog.results_page.set_records(staged)
-    # the page opens on NG and this test looks at the whole list
+    # the page opens on NG and this test looks at the whole list; the
+    # switch only asks for the rebuild, so the events are driven once
     dialog.results_page.filter_combo.setCurrentIndex(0)
+    QtWidgets.QApplication.processEvents()
     dialog.refresh_export_summary()
     # the live preview of a run in progress counts the staged records
     dialog._refresh_preview()

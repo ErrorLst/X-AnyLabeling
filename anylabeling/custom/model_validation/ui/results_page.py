@@ -912,6 +912,9 @@ class ResultsPage(QtWidgets.QWidget):
         self.model_info: Dict[str, Any] = {}
         self._loading = False
         self._syncing_view = False
+        # True while the rebuild a filter switch asked for is waiting for
+        # the next turn of the event loop (see _schedule_refresh)
+        self._refresh_scheduled = False
         # the rows the table currently shows: row -> record id for the
         # point update of a mark, record id -> row to find them back
         self._row_ids: List[str] = []
@@ -957,7 +960,10 @@ class ResultsPage(QtWidgets.QWidget):
                 "标记与导出规则不受影响。"
             )
         )
-        self.filter_combo.currentIndexChanged.connect(self.refresh)
+        # the switch only asks for a rebuild: the heavy part of it runs
+        # one turn later, never in the stack that is still closing the
+        # popup of the list (see _schedule_refresh)
+        self.filter_combo.currentIndexChanged.connect(self._schedule_refresh)
         toolbar.addWidget(QtWidgets.QLabel(self.tr("过滤")))
         toolbar.addWidget(self.filter_combo)
         # the toolbar holds the filter alone: the two batch commands of
@@ -1246,6 +1252,36 @@ class ResultsPage(QtWidgets.QWidget):
 
         return {r.record_id for r in self.records if r.deleted}
 
+    def _schedule_refresh(self) -> None:
+        """Ask for the rebuild a filter switch needs, once per turn.
+
+        The rebuild of the table is the heavy part of a filter switch -
+        every row of a list of up to 19000 records is created again - and
+        the combo raises its signal while the popup of the list is still
+        closing and a held arrow key still moves through the entries.
+        The work is therefore moved out of that synchronous stack: the
+        flag keeps a burst of switches down to a single rebuild, and the
+        rebuild reads the combo again, so the state the list is left in
+        is the one that is built (see refresh).
+        """
+
+        if self._refresh_scheduled:
+            return
+        self._refresh_scheduled = True
+        QtCore.QTimer.singleShot(0, self._run_scheduled_refresh)
+
+    def _run_scheduled_refresh(self) -> None:
+        """Run the rebuild a filter switch asked for, if it is still due.
+
+        An entry that rebuilds synchronously - set_records, or a refresh
+        the asker ran itself - already cleared the flag, so the rebuild
+        of a switch that is over costs nothing here.
+        """
+
+        if not self._refresh_scheduled:
+            return
+        self.refresh()
+
     def refresh(self) -> None:
         """Rebuild the table from the record list.
 
@@ -1255,9 +1291,47 @@ class ResultsPage(QtWidgets.QWidget):
         shown is not part of the list any more. A mark toggle never comes
         here: it refreshes its own rows alone (see refresh_rows), so the
         scroll position and the selection of a long list survive a click.
+
+        The filter switch reaches this method through
+        _schedule_refresh, one turn after the combo moved, and a
+        synchronous caller cancels the rebuild such a switch left
+        pending by rebuilding right away.
+
+        A rebuild of a list that is on screen costs about a hundred
+        times more than the very same rebuild of a hidden one: every row
+        that is added is laid out and painted, and the cost grows with
+        the length of the list (five seconds for the 1500 records of a
+        real run - the freeze a filter switch used to cause). The rows
+        are therefore created with the table hidden and shown again
+        right after; a page that is not on screen pays none of that, so
+        nothing is hidden for it.
         """
 
+        self._refresh_scheduled = False
         current = self.current_record()
+        was_visible = self.table.isVisible()
+        had_focus = self.table.hasFocus()
+        if was_visible:
+            self.table.hide()
+        try:
+            self._rebuild_rows(current)
+        finally:
+            if was_visible:
+                self.table.show()
+                if had_focus:
+                    # hide() takes the keyboard away from the list, and
+                    # the A / D navigation of the page is used from that
+                    # focus: only a list that had it gets it back, so a
+                    # focus that was somewhere else stays there.
+                    self.table.setFocus()
+
+    def _rebuild_rows(self, current: Optional[ValidationRecord]) -> None:
+        """Create every row of the table for the current filter.
+
+        Called by refresh() alone, which owns hiding the table around
+        this pass (see there).
+        """
+
         self._loading = True
         records = sorted(self.visible_records(), key=record_sort_key)
         deleted_parents = self.deleted_parent_ids()

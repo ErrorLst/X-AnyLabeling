@@ -33,7 +33,7 @@ import os
 import os.path as osp
 import shutil
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore
 
 from . import dataset
 
@@ -449,6 +449,10 @@ class MainWindowBridge(QtCore.QObject):
         super().__init__(parent)
         self._main_window = main_window
         self._sync = StagingSync(self)
+        # the last refusal line this bridge wrote: the follow runs on
+        # every switch of the record, so one reason must not be said on
+        # every one of them (see _refuse)
+        self._refusal_message = ""
         # one connection for the whole life of the bridge: attach and
         # detach only move the watcher, they never rewire a signal
         self._sync.record_changed.connect(self.record_changed)
@@ -491,6 +495,12 @@ class MainWindowBridge(QtCore.QObject):
         the main window reads. True means the record is on screen in
         the main window.
 
+        The two gates that look at the state of the main window refuse
+        instead of asking: the follow is automatic, so it writes one
+        line of status and leaves the current file of the main window
+        where it is (see _refuse). The user answers nothing, and no
+        annotation is ever dropped for a jump.
+
         The jump only switches the current file of the main window: it
         never lifts the main window and never takes the keyboard focus,
         because the user is the one who decides where the focus goes.
@@ -503,9 +513,9 @@ class MainWindowBridge(QtCore.QObject):
         handed to the main window, and a save the debounce has not
         carried back yet is flushed first: refreshing the mirror before
         the last edit of the user reached the canonical label would
-        throw that edit away. The may_continue gate stands before the
-        flush on purpose, because the save it can trigger is such an
-        edit.
+        throw that edit away. The refusals of the main window state
+        stand before the flush on purpose: a jump that is skipped must
+        not have written anything.
         """
 
         window = self._main_window
@@ -552,17 +562,25 @@ class MainWindowBridge(QtCore.QObject):
             )
             return False
         if getattr(window, "output_dir", ""):
-            if not self._confirm_output_dir():
-                self.status_message.emit(
-                    "已取消：标注会写入 output_dir 而非暂存目录"
-                )
-                return False
-        may_continue = getattr(window, "may_continue", None)
-        if callable(may_continue) and not may_continue():
-            self.status_message.emit(
-                "已取消：主窗口还有未保存的标注"
+            # A follow is an automatic move: it never opens a box the
+            # user has to answer, least of all while the user is working
+            # in this window and would not even see it. An output_dir
+            # would take the edits of the jump away from the staging
+            # folder the export reads, so the jump is skipped and
+            # explained instead of asked about.
+            return self._refuse(
+                "主窗口已设置输出目录，自动打开会绕过暂存目录"
+                "（编辑不进导出），已跳过"
             )
-            return False
+        if getattr(window, "dirty", False):
+            # may_continue() would raise a Save / Discard / Cancel box on
+            # a dirty main window, which is the same unusable prompt one
+            # window further out. Nothing is saved and nothing is thrown
+            # away here: the jump simply leaves the current file of the
+            # main window alone until the user saved it.
+            return self._refuse(
+                "主窗口有未保存的标注，已跳过自动打开（保存后再切换）"
+            )
         if self._sync.attached:
             self._sync.flush_pending()
         if not self._prepare_sibling(record, label_path):
@@ -572,29 +590,29 @@ class MainWindowBridge(QtCore.QObject):
             return False
         self._sync.note_sibling(record)
         window.load_file(image_path)
+        # the jump went through: the next refusal is news again, even
+        # when it carries the reason of an earlier one
+        self._refusal_message = ""
         self.status_message.emit(
             "已在主窗口中打开：%s" % osp.basename(image_path)
         )
         return True
 
-    def _confirm_output_dir(self) -> bool:
-        """Ask the user before a jump the main window would misplace.
+    def _refuse(self, message: str) -> bool:
+        """Refuse one jump, saying why once per stretch of refusals.
 
-        The message box is parented to the validation window on
-        purpose: only that window steps aside, the main window is not
-        hidden behind a modal dialog of a window that is still closed.
+        The follow runs on every switch of the record, so a reason
+        written on every one of them would flood the two status lines
+        the window mirrors. A reason is written when it appears, kept
+        quiet while it stays the same, and a jump that goes through
+        clears it, so the same reason is said again after a successful
+        open. Always answers False: the caller returns it unchanged.
         """
 
-        answer = QtWidgets.QMessageBox.question(
-            self.parent(),
-            "主窗口已设置输出目录",
-            "标注将读写 output_dir 而非暂存目录，"
-            "编辑不会进入导出。仍要继续吗？",
-            QtWidgets.QMessageBox.StandardButton.Yes
-            | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
-        )
-        return answer == QtWidgets.QMessageBox.StandardButton.Yes
+        if self._refusal_message != message:
+            self._refusal_message = message
+            self.status_message.emit(message)
+        return False
 
     @staticmethod
     def _read_label(path: str):

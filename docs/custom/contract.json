@@ -84,7 +84,7 @@
         {"target": "widget._model_validation_dialog", "wrapped_by": "launch_model_validation", "install_site": "anylabeling/custom/model_validation/launcher.py:20"}
       ],
       "upstream": {
-        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["error_message", "menus", "load_file", "may_continue", "output_dir"],
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["error_message", "menus", "load_file", "dirty", "output_dir"],
         "anylabeling/config.py:@module": ["current_config_file", "get_work_directory"],
         "anylabeling/views/labeling/utils/opencv.py:@module": ["qt_img_to_rgb_cv_img"],
         "anylabeling/services/auto_labeling/engines/__init__.py:@module": ["OnnxBaseModel"],

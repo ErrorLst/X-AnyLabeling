@@ -624,8 +624,10 @@ def test_the_page_switches_reach_both_canvases_and_keep_the_view(
     page.resize(900, 600)
     page.set_context(["a0_dian"], staging)
     page.set_records([record])
-    # the page opens on NG and this test looks at the whole list
+    # the page opens on NG and this test looks at the whole list; the
+    # switch only asks for the rebuild, so the events are driven once
     page.filter_combo.setCurrentIndex(0)
+    QtWidgets.QApplication.processEvents()
     page.table.selectRow(0)
     gt, pred = page.gt_canvas, page.pred_canvas
     gt.resize(*WIDGET_SIZE)

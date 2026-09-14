@@ -170,16 +170,20 @@
 
 ### 代码与体量
 
-`anylabeling/custom/model_validation/`（24 个文件 12451 行，含 `ui/` 子包）；
-测试 `tests/custom/model_validation/`（45 个文件 20563 行）。（口径：目录内全部 `*.py`、
+`anylabeling/custom/model_validation/`（24 个文件 12543 行，含 `ui/` 子包）；
+测试 `tests/custom/model_validation/`（45 个文件 20925 行）。（口径：目录内全部 `*.py`、
 排除 `__pycache__`，行数取 `wc -l`。）「编辑搬到主窗口」那一轮新增
-`main_window_bridge.py`（671 行：跳主窗口 + 保存回写）与 `async_scan.py`（189 行：
+`main_window_bridge.py`（跳主窗口 + 保存回写）与 `async_scan.py`（189 行：
 异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`（内置标签弹窗整个文件移除）；
 「固定 0.25 + 多标签 + 低分 NG」那一轮只改既有文件，新增测试
 `test_mv_multilabel.py`（27 例）与 `test_mv_low_score.py`（10 例）；本轮（整图类无关
 NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图 NMS 的合并、每类一行
 的展开与 IoU）与 `test_mv_whole_image_nms.py`（19 例），`inference.py`（508 行）只做
-接线，`ui/` 下的 `results_page.py` 涨到 1934 行。
+接线，`ui/` 下的 `results_page.py` 涨到 1934 行；本轮（「切换过滤卡 UI」修复）
+`anylabeling/custom/model_validation/ui/results_page.py` 2008 行、
+`anylabeling/custom/model_validation` 下的 `main_window_bridge.py` 689 行，
+`dialog.py` 仍是 1188 行（在 `ui/` 子包里；跟随闸门改非模态 + 合并式延迟重建 +
+重建改在隐藏状态下完成，见下节「行为级契约」）。
 
 ### 入口符号
 
@@ -211,8 +215,9 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
 | `LabelingWidget.menus` | direct | 菜单动作挂载点 |
 | `LabelingWidget.error_message` | direct | 启动失败时的统一报错 |
 | `LabelingWidget.load_file` | direct | 在主窗口打开一条记录的暂存图片（跳转的唯一入口） |
-| `LabelingWidget.may_continue` | direct | 跳转前确认主窗口没有未保存的标注 |
-| `LabelingWidget.output_dir` | direct | 非空时警告「编辑不会进入导出」并请用户确认 |
+| `LabelingWidget.may_continue` | direct | **本轮起不再调用**：它在 dirty 时会弹 Save/Discard/Cancel；改读下面的普通属性 `dirty` |
+| `LabelingWidget.dirty` | direct | 为真时跳过本次自动打开（只写状态行说明，不弹框、不保存、不丢标注） |
+| `LabelingWidget.output_dir` | direct | 非空时跳过本次自动打开并写状态行说明（不再弹确认框） |
 | `LabelingWidget.filename` | transitive | 不直接读该属性：`load_file` 装载的当前图片；跳转依赖其兄弟 json 约定 |
 | `LabelingWidget.window()` | direct | `dialog._activate_target()` 取顶层窗口，装「主窗口被激活 → 抬升验证窗口」的过滤器；基类 API 按约定不进 contract.json |
 | `anylabeling.config.current_config_file` | direct | 推理前确保全局 rc 路径可用 |
@@ -248,14 +253,45 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   （`isVisible()`）且结果页是当前页（`stack.currentWidget() is results_page`）时才跟随；
   检查发生在防抖计时器触发时，因此「推理结束 → 切到结果页」也在 200ms 之后照常跟随。
   `_followed_record_id` 记住上一次自动打开的记录 id，同一条记录重复触发不再调用
-  `open_record`（过滤器切回同一条、同步刷新都不会重开，也不会多问一次 `may_continue`），
+  `open_record`（过滤器切回同一条、同步刷新都不会重开，也不会再问用户一次），
   被闸门拒绝的记录同样不重试；`start_validation` 开新一轮时清空跟随状态，本轮的第一条
   记录照常打开。`__main__` 独立启动（无主窗口）时静默不跟随，只在第一次写一行提示，
   之后切换不再刷状态行。
+- **自动跟随永不弹模态**：跟随是自动动作，主窗口状态的两道门只「拒绝 + 一行状态说明」，
+  不弹任何需要用户回答的框。旧版在 `output_dir` 非空时弹 `QMessageBox.question`、在
+  `may_continue()` 里弹 Save/Discard/Cancel，而模态框的 parent 是主窗口、用户却在验证
+  窗口上（Wayland/WSLg 下模态框还常常不自己置顶），于是「切一次过滤器 → 自动跟随」就能
+  把验证窗口的输入挡死、框又看不见——用户看到的就是「UI 卡住、程序像卡死」。
+  现在 `MainWindowBridge.open_record()` 的这两道门改读普通属性：
+  `getattr(window, "output_dir", "")` 非空 → 跳过本次跟随并提示「主窗口已设置输出目录，
+  自动打开会绕过暂存目录（编辑不进导出），已跳过」；`getattr(window, "dirty", False)`
+  为真 → 跳过并提示「主窗口有未保存的标注，已跳过自动打开（保存后再切换）」（没有
+  `dirty` 属性的主窗口视为未修改）。两道门都**不保存、不丢弃、不切换主窗口的当前文件**，
+  数据安全与旧行为一致；`_confirm_output_dir()` 连同本文件不再使用的 `QtWidgets`
+  import 一并删除，`load_file` 成功后的「已在主窗口中打开：…」保持不变。
+- **拒绝原因只提示一次**：`_refusal_message` 记住上一条拒绝文案——同一原因连续出现只写
+  一次（连续切过滤器不刷屏），一次成功打开后清除、原因变化时立刻重写；两个状态行仍由
+  `_show_status_message` 同步。
+- **过滤切换的表格重建被合并**：`filter_combo.currentIndexChanged` 只连到
+  `ResultsPage._schedule_refresh()`——置 `_refresh_scheduled` 标志后
+  `QtCore.QTimer.singleShot(0, self._run_scheduled_refresh)`，重建被搬到下一个事件循环
+  轮次，不再发生在「下拉弹窗还在关闭」的同步栈里（一万多行的表在那里重建，正是「一换
+  过滤器就卡」的体感来源）。一个轮次内连续切换只重建一次：`refresh()` 自己读
+  `filter_combo.currentData()`，所以按最终过滤键建表。`set_records()` 等入口仍同步
+  `refresh()`（同步入口顺带清掉待处理标志，同一状态不会建两次），表格内容、
+  `visible_records()`、`record_at()` 与「当前记录还在过滤结果里就不换行」的语义都不变，
+  只是重建时机推迟到下一个事件循环轮次（引用这些入口的测试要 `processEvents()` 一次）。
+- **重建在隐藏状态下完成**：`refresh()` 在页面可见时先 `table.hide()`，把逐行创建交给
+  `_rebuild_rows()`，`finally` 里再 `show()`，并把原来在列表上的键盘焦点 `setFocus()`
+  还回去。可见的树每加一行都要布局 + 重绘：1500 条记录实测「可见重建 ~156 s / 隐藏重建
+  ~0.14 s」（同一台机器、同一份列表），这才是「切过滤器卡死」的主因；页面本来就不可见时
+  跳过 hide/show（没有可省的成本，`was_visible` 为假，隐藏的页面也不会被这一步弄成可见）。
+  选择、滚动位置（隐藏期间不改布局，滚动条 value 不被夹回 0）与焦点在重建前后都保住；
+  `_loading`、延迟重建标志与信号语义不变。
 - **跳转前的安全闸门**：无主窗口 / 无记录 / 暂存图片缺失 / 该记录没有标签 /
-  标签读不了或缺 `shapes`、`imagePath` / 主窗口 `output_dir` 非空（弹确认）/
-  `may_continue` 为假 / sibling json 写不出来。任一道不过只写一行状态说明，
-  绝不抛异常、绝不跳转。
+  标签读不了或缺 `shapes`、`imagePath` / 主窗口 `output_dir` 非空 / 主窗口 `dirty`
+  为真 / sibling json 写不出来。任一道不过只写一行状态说明，绝不抛异常、绝不跳转，
+  **也绝不弹任何模态框**（闸门顺序与其余逻辑不变）。
 - **跟随不抢焦点**：跳转只切换主窗口的当前文件。`MainWindowBridge.open_record()`
   既不抬升也不激活主窗口：原来的 `_activate` 方法连同它的调用已删除，
   `main_window_bridge.py` 全文对 `window()` / `raise_` / `activateWindow` /
@@ -270,7 +306,7 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   + `self.results_page.focus_results()`，焦点落到结果页的记录列表（`A` / `D` 仍
   只在结果页作用域生效）；整段 `RuntimeError` 兜底，窗口已销毁时静默。
 - **桥接状态双写**：桥接的每一条状态/拒绝信息（跟随被拒、没有主窗口、暂存图片缺失、
-  无标签项、`may_continue` 为假等）由 `_show_status_message` 同时写进配置页状态行与
+  无标签项、`dirty` 为真 / `output_dir` 非空等）由 `_show_status_message` 同时写进配置页状态行与
   结果页汇总行。跟随只可能发生在结果页可见时，只写配置页会让用户以为「没反应」；
   结果页那一行会在下一次导出时交还给导出汇总。
 - **兄弟 json 适配**：主窗口按「图片同名 json」找标注，而暂存把标签放在 `labels/`；
@@ -393,8 +429,8 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
 tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里的 `.venv`）。
 本轮删掉 5 个编辑用例（`test_mv_edit_mode.py`、`test_mv_edit_drag.py`、
 `test_mv_edit_persist.py`、`test_mv_edit_exit_on_switch.py`、`test_mv_label_dialog.py`），
-新增 `test_mv_main_window_bridge.py`（22 例）、`test_mv_staging_sync.py`（14 例）、
-`test_mv_async_scan.py`（6 例）、`test_mv_dialog_wiring.py`（21 例）、
+新增 `test_mv_main_window_bridge.py`（本轮起 23 例）、`test_mv_staging_sync.py`（14 例）、
+`test_mv_async_scan.py`（6 例）、`test_mv_dialog_wiring.py`（本轮起 25 例）、
 `test_mv_export_nonmodal.py`（6 例）、`test_mv_raise_on_activate.py`（12 例）；
 固定 0.25 + 多标签 + 低分 NG 这一轮又新增 `test_mv_multilabel.py`（27 例）与
 `test_mv_low_score.py`（10 例），并改写 `test_mv_records_labelme.py`、
@@ -415,8 +451,10 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 - `__preferred_device__` 是 `anylabeling/app_info.py` 里 `__getattr__` 动态提供的名字，
   普通 IDE 跳转看不到定义。
 - 会话只换线程预算，不改 provider 选择逻辑；GPU 仍由上游配置决定。
-- 跳转依赖上游 `load_file` 的「图片同名 json」约定，以及 `may_continue` / `output_dir`
-  这两个属性名：改名不会报错（`getattr` 兜底），但会静默降级成「不检查」；
+- 跳转依赖上游 `load_file` 的「图片同名 json」约定，以及 `dirty` / `output_dir`
+  这两个属性名：改名不会报错（`getattr` 兜底 + `dirty` 缺失视为未修改），但会静默降级成
+  「不检查」；`may_continue` 已不再被本模块调用，`contract.json` 的 upstream 登记
+  也已由它换成 `dirty`；
   `window()` 是 `QWidget` 基类 API，按契约约定不进 contract.json。
 - 结果页的 `edited` 标记来自 `records.edited`（主窗口保存回写时置位），
   不再由验证窗口自己的编辑动作产生。
