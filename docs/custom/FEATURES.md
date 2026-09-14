@@ -170,13 +170,16 @@
 
 ### 代码与体量
 
-`anylabeling/custom/model_validation/`（23 个文件 11961 行，含 `ui/` 子包）；
-测试 `tests/custom/model_validation/`（44 个文件 19215 行）。（口径：目录内全部 `*.py`、
+`anylabeling/custom/model_validation/`（24 个文件 12451 行，含 `ui/` 子包）；
+测试 `tests/custom/model_validation/`（45 个文件 20563 行）。（口径：目录内全部 `*.py`、
 排除 `__pycache__`，行数取 `wc -l`。）「编辑搬到主窗口」那一轮新增
 `main_window_bridge.py`（671 行：跳主窗口 + 保存回写）与 `async_scan.py`（189 行：
 异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`（内置标签弹窗整个文件移除）；
-本轮（固定 0.25 + 多标签 + 低分 NG）只改既有文件，新增测试
-`test_mv_multilabel.py`（27 例）与 `test_mv_low_score.py`（10 例）。
+「固定 0.25 + 多标签 + 低分 NG」那一轮只改既有文件，新增测试
+`test_mv_multilabel.py`（27 例）与 `test_mv_low_score.py`（10 例）；本轮（整图类无关
+NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图 NMS 的合并、每类一行
+的展开与 IoU）与 `test_mv_whole_image_nms.py`（19 例），`inference.py`（508 行）只做
+接线，`ui/` 下的 `results_page.py` 涨到 1934 行。
 
 ### 入口符号
 
@@ -281,7 +284,7 @@
   不从信号里再触发跳转（当前记录没变就不发 `current_record_changed`，因此也不会重开）；
   `attach(staging_root, records)` 在 `on_worker_finished` 装上，
   `start_validation` 与 `closeEvent` 时 `detach`。
-- **内置编辑能力已拆除**：`image_view.py`（2200→1127 行）画布只读，不再有任何编辑
+- **内置编辑能力已拆除**：`image_view.py`（2200→1127 行，现 1280 行）画布只读，不再有任何编辑
   信号/方法/常量（`set_edit_mode`、`editable_shapes`、`box_handles`、`hit_test`、
   `resize_points`、`_draw_edit_overlay` 等全删）；结果页删除编辑模式、编辑提示条与
   标签弹窗调用（`EDIT_*` 符号与 `__all__` 条目一并删）；`records.py` 删除
@@ -314,20 +317,52 @@
   `ValidationConfig.to_dict()` 记录 `inference_conf_threshold`（=0.25）与
   `inference_conf_threshold_fixed`（=True）。配置页那个分数阈值**不再是推理过滤阈值**，
   它只作 NG 判定规则（见下一条）。改这两个字段名或让页面值重新喂进推理，都是行为回归。
-- **多标签：一个框多行标签**：上游按 multi-label NMS 为同一个框返回多条**共享坐标**的
-  记录，`inference.merge_multilabel_predictions` 按
-  `(shape_type, 坐标四舍五入到 1e-6)` 分组后合并：整组里最高分那条留作主
-  `label`/`score`，**仅当行数 > 1** 时挂上平行的、按分数降序的 `labels`/`scores`
-  （单标签 payload 与改动前**逐键相等**）。只对 **detect/segment** 开（`obb`/`pose`
-  保持单标签，理由：本工具定位检测类框验证）；GT 侧保持单标签。画布
-  `shape_label_rows` / `_stacked_glyphs` 逐行绘制整块标签，行距 =
+- **整图类无关 NMS（一框多标签的来源）**：推理后 `ModelRunner.predict()` 把整张图的
+  所有预测行放在一起，跑一次**不分类别**的贪心 NMS（实现在
+  `multilabel.merge_overlapping_predictions`，`inference.py` 只做接线）：按分数降序
+  走，每个新行与已保留的簇逐一算 IoU，**严格 > 阈值**才并入第一个命中的簇（相等不并，
+  与引擎 NMS 的规则一致），簇的几何取簇内**最高分行**。阈值就是配置页既有的
+  「NMS IoU iou」，即 `ValidationConfig.iou_threshold`（默认 0.45），**与引擎的逐类
+  NMS 共用同一个数**，不新增配置项（配置页 tooltip 已改成整图合并阈值的说法）。
+  **只对 detect / segment 启用**；`obb` / `pose` 传 `None`，走遗留的
+  `merge_multilabel_predictions` 路径（`shape_type` + 坐标四舍五入到 1e-6 完全相同才
+  合并），理由：本工具定位检测类框验证。GT 侧保持单标签。
+- **显示：一个簇 = 一个框，每类一行标签**：簇内**每类去重保最高分**（同一类的两个
+  锚点只留最高分那条，否则一个框会被算成两个同类对象），标签块每类一行、按
+  `(-score, label)` 排序（分数降序、同分按标签升序）；画布 `shape_label_rows` /
+  `_stacked_glyphs` 逐行绘制整块标签，行距 =
   标签字体行高 × `LABEL_LINE_SPACING`（默认 1.0，8pt/96dpi 下 14.5px，随
   DPI 与字号自适应；整块夹取与丢弃，**不逐行截半**）。
+- **判定与明细按每类一行**：pipeline 判定前用 `multilabel.expand_multilabel_rows` 把
+  每个显示框展开成「每类一行」再交给 `judge_record`（judge 本身未改），因此判定的
+  `matched` 里的 `pred_index` 与 `false_positives` / `low_score` 里的 `index`（三者都是
+  **valid_pred 即「可匹配行」内下标**，不等于画布行位置：`detect` / `segment` / `obb` 的
+  产出都属于可匹配类型，故恰好与行下标重合；`pose` 还会产出不参与匹配的 `point` 行，
+  此时必须按下一个条目的 `valid[index]` 换回行位置），`predicted_labels` /
+  `predicted_types` 也按行，`pred_total` / `pred_valid` 是**行数**：次类低于 NG 分数
+  阈值会判 `LOW_SCORE`，多类框对上单类 GT 会判 `COUNT_MISMATCH`（有意的语义变更）。
+  `detail["predictions"]` **仍是框级**（每框一条，带平行的 `labels`/`scores`，
+  schema 不变）；**新增加性键** `detail["pred_row_boxes"]`（`List[int]`，行 → payload
+  框下标）。**单类记录**的 payload 与 verdict 与改动前**逐键相等**。
+- **结果页框色 = 该框各行状态的最高优先级**：`PRED_STATE_PRIORITY` 的顺序是
+  `(FALSE_POSITIVE, CLASS_MISMATCH, LOW_SCORE, IOU_BELOW)`，一个框取它各行里最靠前的
+  状态。judge 的 `pred_index` 是 **valid_pred（可匹配行）内下标**，实现按
+  `valid[index]` 换回行位置，再经 `pred_row_boxes` 落到框上。没有 `pred_row_boxes`
+  的旧 detail 走**冻结的 legacy 路径**（着色与改动前逐键相等）；map 本身读不出来
+  （不是列表、长度与 `pred_total` 不符、下标越界）或按显示 payload 重建出来的行与它
+  不相等时，同样回落到这条 legacy 路径。只有**可匹配行数与 `pred_valid` 不符**这一道
+  护栏在重建之后触发**整单本色**（不半着色、不抛异常）。
+- **风险：高 IoU 的跨类框会被并成一框多行**。骑行者这类 person + bicycle 同时出现、
+  IoU 超过阈值的框现在合成一个两行的框；若 `classes.txt` 的标注惯例只标一个类
+  （如 rider），这两行就会对上单类 GT 而必然 NG。缓解 = 调高「NMS IoU iou」或让标注
+  惯例与该合并规则对齐，**不做代码特判**。
 - **低分判 NG**：`judge.LOW_SCORE`，原因优先级
   `CLASS_MISMATCH → LOW_SCORE → IOU_BELOW → MISS_FP`；`judge_record(..., ng_score_threshold=None)`
   是可选**尾参**，不传 = 规则关闭（与旧行为逐键相等）。detail 记 `ng_score_threshold`、
   `low_score`（每项 `{index, label, score}`，`index` 与 `false_positives` /
-  matched pair 的 `pred_index` 同坐标系）与每个 matched pair 的 `low_score` 布尔。
+  matched pair 的 `pred_index` 同坐标系，都是 **valid_pred（可匹配行）内下标**：
+  `detect` / `segment` / `obb` 下与画布行位置重合；`pose` 需按上文「结果页框色」
+  一条的 `valid[index]` 换算）与每个 matched pair 的 `low_score` 布尔。
   画布上匹配对里低分的框为**青绿** `LOW_SCORE_COLOR`：`matched_pair_state` 的判定
   顺序是 `mismatch → low_score → iou_below → OK_PAIR`，**低分不论 IoU 是否达标都算**；
   未匹配的低分框仍是品红误报。图例第六项「低分」；配置页标题为「**NG 分数 score**」
@@ -348,6 +383,10 @@
 保持 `multi_label=False` 不动。本工具经 `TASK_FAMILY_MAP` 只会走 v8 分支，
 因此这条改动只影响本工具传入的 config。
 
+本轮（整图类无关 NMS + 一框多标签 + 每类一行判定 + 框色聚合）**0 行上游改动**：合并、
+展开、判定与着色全部落在 `anylabeling/custom/model_validation/` 内，上面这个唯一挂载点
+（`yolo.py` 的 `multi_label` 一行）不变。
+
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider
@@ -359,8 +398,14 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 `test_mv_export_nonmodal.py`（6 例）、`test_mv_raise_on_activate.py`（12 例）；
 固定 0.25 + 多标签 + 低分 NG 这一轮又新增 `test_mv_multilabel.py`（27 例）与
 `test_mv_low_score.py`（10 例），并改写 `test_mv_records_labelme.py`、
-`test_mv_image_view.py`（22 例）、`test_mv_ui_dialog.py`、`test_mv_cancel.py`、
-`test_mv_status_colors.py`、`test_mv_inference_runner.py`、`test_mv_infer_workers.py`。
+`test_mv_image_view.py`（23 例）、`test_mv_ui_dialog.py`、`test_mv_cancel.py`、
+`test_mv_status_colors.py`（26 例，含框色聚合与旧 detail 两节）、
+`test_mv_inference_runner.py`（17 例）、`test_mv_infer_workers.py`（18 例）。
+本轮（整图类无关 NMS + 一框多标签 + 框色聚合）新增
+`test_mv_whole_image_nms.py`（19 例：`predict()` 的整图 NMS、`multilabel` 的合并与
+展开、pipeline 交给 judge 的每类一行、`pred_row_boxes` 的写出），并在
+`test_mv_status_colors.py` 里补上「一个框多行 → 框色取最高优先级状态」与「旧 detail
+走冻结 legacy 路径」两组像素用例。
 每条例数都用 `--collect-only -q` 逐个文件核实过（口径见上）。
 
 ### 已知坑

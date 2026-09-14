@@ -74,14 +74,16 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   （`chatbot`、`classifier`、`ppocr`、`settings`、`utils`、`video_classifier`、`vqa`、`widgets`）。
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
-- `anylabeling/custom/`：66 个 .py / 36317 行（目录内全部 .py；FEATURES.md 登记其中
+- `anylabeling/custom/`：67 个 .py / 36807 行（目录内全部 .py；FEATURES.md 登记其中
   7 个自研功能，另有未登记的 `remote_training`）。
-- `anylabeling/custom/model_validation/`：23 个 .py / 11961 行（关键文件：`ui/` 下的
-  `dialog.py` 1188、`results_page.py` 1763、`image_view.py` 1266，以及
-  `main_window_bridge.py` 671、`async_scan.py` 189）；本轮新增
+- `anylabeling/custom/model_validation/`：24 个 .py / 12451 行（关键文件：`ui/` 下的
+  `dialog.py` 1188、`results_page.py` 1934、`image_view.py` 1280，以及
+  `main_window_bridge.py` 671、`async_scan.py` 189、`multilabel.py` 360）；本轮新增
+  `multilabel.py`（360 行：整图类无关 NMS 的合并、每类一行的展开与 IoU），
+  `inference.py`（508 行）只做接线；「编辑搬到主窗口」那一轮新增
   `main_window_bridge.py`（671 行，跳主窗口 + 保存回写）与 `async_scan.py`（189 行，
   异步目录扫描），删除 `label_dialog.py`（内置标签弹窗）。
-- `tests/custom/`：84 个 .py / 39369 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
+- `tests/custom/`：85 个 .py / 40706 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
 
 ## 想改 X 该看哪里
 
