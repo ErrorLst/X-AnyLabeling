@@ -3,8 +3,8 @@
 The entries added to the window are driven here through the very slots
 their signals reach:
 
-* the E key / open_in_main_requested jump to the labeling window, with
-  a stub main window in place of the real one - no test starts the
+* the automatic follow of the record the results page shows, with a
+  stub main window in place of the real one - no test starts the
   application;
 * the record_changed answer of the staging watcher, which may only
   repaint a row and never jump again;
@@ -198,6 +198,26 @@ def finish_run(dialog, root: str, records: list) -> None:
     dialog.on_worker_finished()
 
 
+def show_dialog(dialog) -> None:
+    "Show a window offscreen: the follow only runs on a visible page."
+
+    dialog.show()
+    QtWidgets.QApplication.processEvents()
+
+
+def follow_spy(dialog, monkeypatch) -> list:
+    "Collect every record the follow hands to the bridge."
+
+    opened = []
+    real = dialog.bridge.open_record
+    monkeypatch.setattr(
+        dialog.bridge,
+        "open_record",
+        lambda item: opened.append(item) or real(item),
+    )
+    return opened
+
+
 def silence_scheduler(dialog, monkeypatch) -> list:
     "Replace the debounced schedule() of the window with a recorder."
 
@@ -239,7 +259,7 @@ def test_a_status_note_reaches_the_results_page(qt_app, tmp_path):
         assert dialog.stack.currentWidget() is dialog.results_page
         assert dialog.bridge.main_window is None
 
-        # the E key of the results page asks for a jump the window
+        # the follow of the results page asks for a jump the window
         # refuses: the line has to land where the user is looking
         dialog._open_current_in_main_window()
 
@@ -251,7 +271,7 @@ def test_a_status_note_reaches_the_results_page(qt_app, tmp_path):
         keep_alive(dialog)
 
 
-# ------------------------------------------------------- automatic jump
+# ------------------------------------------------------- automatic follow
 def test_a_finished_run_opens_the_record_in_the_main_window(qt_app, tmp_path):
     "The record on screen is loaded in the main window after a run."
 
@@ -259,6 +279,7 @@ def test_a_finished_run_opens_the_record_in_the_main_window(qt_app, tmp_path):
     record = staged_record(root, "a.png")
     window = StubMainWindow()
     dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
     try:
         finish_run(dialog, root, [record])
         assert dialog.results_page.displayed_record() is record
@@ -282,8 +303,9 @@ def test_without_a_main_window_the_run_schedules_no_jump(qt_app, tmp_path):
         before = dialog.config_page.status_label.text()
         finish_run(dialog, root, [record])
         QtTest.QTest.qWait(50)
-        # nothing was scheduled: the status line still carries the
-        # deferred warning of the first screen
+        # the window is hidden and there is no window to follow: the
+        # status line still carries the deferred warning of the first
+        # screen, no follow has said anything
         assert dialog.config_page.status_label.text() == before
         # asked by hand, the refusal is explained instead of raised
         dialog._open_current_in_main_window()
@@ -293,29 +315,177 @@ def test_without_a_main_window_the_run_schedules_no_jump(qt_app, tmp_path):
         keep_alive(dialog)
 
 
-# ------------------------------------------------------------ E shortcat
-def test_the_open_request_opens_the_displayed_record(
+def test_a_standalone_start_says_once_that_it_cannot_follow(
+    qt_app, tmp_path
+):
+    "Without a main window the follow writes one line, not one per switch."
+
+    root = staging_root(str(tmp_path))
+    records = [staged_record(root, "a.png"), staged_record(root, "b.png")]
+    dialog = ModelValidationDialog()
+    show_dialog(dialog)
+    try:
+        finish_run(dialog, root, records)
+        assert wait_for(
+            lambda: "主窗口" in dialog.config_page.status_label.text()
+        )
+        # the line of the follow is written on both status lines
+        assert (
+            dialog.results_page.status_label.text()
+            == dialog.config_page.status_label.text()
+        )
+
+        # and the next switch keeps quiet instead of saying it again
+        dialog.config_page.set_status("安静")
+        dialog.results_page.set_summary("安静")
+        page = dialog.results_page
+        page.table.setCurrentItem(page.table.topLevelItem(1))
+        QtWidgets.QApplication.processEvents()
+        QtTest.QTest.qWait(300)
+
+        assert dialog.config_page.status_label.text() == "安静"
+        assert dialog.results_page.status_label.text() == "安静"
+    finally:
+        dialog.close()
+        keep_alive(dialog)
+
+
+# -------------------------------------------------- follow the record
+def test_a_switch_of_the_record_follows_it_after_the_debounce(
     qt_app, tmp_path, monkeypatch
 ):
-    "open_in_main_requested reaches the very entry of the jump."
+    "The record the page moved to is opened once, after the debounce."
+
+    root = staging_root(str(tmp_path))
+    records = [staged_record(root, "a.png"), staged_record(root, "b.png")]
+    window = StubMainWindow()
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        opened = follow_spy(dialog, monkeypatch)
+        finish_run(dialog, root, records)
+        assert wait_for(lambda: opened == [records[0]])
+        assert window.loaded == [records[0].staging_image_path]
+
+        # a click on the other row is a switch of the record, and it is
+        # what the follow opens
+        page = dialog.results_page
+        page.table.setCurrentItem(page.table.topLevelItem(1))
+        QtWidgets.QApplication.processEvents()
+
+        assert wait_for(lambda: len(opened) == 2)
+        assert opened == records
+        assert window.loaded == [
+            records[0].staging_image_path,
+            records[1].staging_image_path,
+        ]
+        # the follow is over: the record that settled is not opened again
+        QtTest.QTest.qWait(300)
+        assert opened == records
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_a_burst_of_switches_opens_only_the_last_record(
+    qt_app, tmp_path, monkeypatch
+):
+    "A / D held down or a quick series of clicks costs one jump."
+
+    root = staging_root(str(tmp_path))
+    records = [
+        staged_record(root, name) for name in ("a.png", "b.png", "c.png")
+    ]
+    window = StubMainWindow()
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        opened = follow_spy(dialog, monkeypatch)
+        finish_run(dialog, root, records)
+
+        # three switches inside one debounce window: the first one of the
+        # run, then two more rows without waiting for the timer
+        page = dialog.results_page
+        for row in (1, 2):
+            page.table.setCurrentItem(page.table.topLevelItem(row))
+        QtWidgets.QApplication.processEvents()
+
+        assert wait_for(lambda: len(opened) == 1)
+        assert opened == [records[2]]
+        QtTest.QTest.qWait(300)
+        assert opened == [records[2]]
+        assert window.loaded == [records[2].staging_image_path]
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_the_same_record_is_never_opened_twice(qt_app, tmp_path, monkeypatch):
+    "A repeated announcement of the record on screen costs no second jump."
 
     root = staging_root(str(tmp_path))
     record = staged_record(root, "a.png")
     window = StubMainWindow()
     dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
     try:
+        opened = follow_spy(dialog, monkeypatch)
         finish_run(dialog, root, [record])
-        assert wait_for(lambda: window.loaded == [record.staging_image_path])
-        opened = []
-        real = dialog.bridge.open_record
-        monkeypatch.setattr(
-            dialog.bridge,
-            "open_record",
-            lambda item: opened.append(item) or real(item),
-        )
-        dialog.results_page.open_in_main_requested.emit()
+        assert wait_for(lambda: opened == [record])
+
+        # the very same record is announced again: the rebuild of a list,
+        # a filter that shows it once more, the save of the main window
+        for _ in range(3):
+            dialog.results_page.current_record_changed.emit(record.record_id)
+        QtTest.QTest.qWait(300)
+
         assert opened == [record]
-        assert window.loaded[-1] == record.staging_image_path
+        # one jump, therefore one question about the unsaved annotations
+        assert window.requests == 1
+    finally:
+        dialog.close()
+        window.close()
+        keep_alive(dialog, window)
+
+
+def test_the_follow_only_runs_while_the_results_page_is_shown(
+    qt_app, tmp_path, monkeypatch
+):
+    "The configuration page on screen follows nothing."
+
+    root = staging_root(str(tmp_path))
+    records = [staged_record(root, "a.png"), staged_record(root, "b.png")]
+    window = StubMainWindow()
+    dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
+    try:
+        opened = follow_spy(dialog, monkeypatch)
+        dialog.staging_root = root
+        dialog.classes = list(CLASSES)
+        dialog.records = list(records)
+        dialog.results_page.set_context(dialog.classes, root)
+        dialog.stack.setCurrentWidget(dialog.config_page)
+        dialog.results_page.set_records(records)
+
+        QtTest.QTest.qWait(300)
+
+        assert dialog.stack.currentWidget() is dialog.config_page
+        assert opened == []
+        assert window.loaded == []
+
+        # the results page is on screen again: there the switch follows
+        dialog.stack.setCurrentWidget(dialog.results_page)
+        page = dialog.results_page
+        page.table.setCurrentItem(page.table.topLevelItem(1))
+        QtWidgets.QApplication.processEvents()
+
+        assert wait_for(
+            lambda: [item.record_id for item in opened]
+            == [records[1].record_id]
+        )
+        assert window.loaded[-1] == records[1].staging_image_path
     finally:
         dialog.close()
         window.close()
@@ -332,6 +502,7 @@ def test_a_record_change_repaints_without_a_second_jump(
     record = staged_record(root, "a.png")
     window = StubMainWindow()
     dialog = ModelValidationDialog(window)
+    show_dialog(dialog)
     try:
         finish_run(dialog, root, [record])
         assert wait_for(lambda: window.loaded == [record.staging_image_path])

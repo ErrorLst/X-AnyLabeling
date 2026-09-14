@@ -12,6 +12,11 @@ Three behaviours of the results page are pinned here.
   a10), the kind only decides which block comes first: every original,
   then the augmented copies. The verdict is no longer part of the order -
   the filter combo is what groups by verdict.
+* Every switch of the record on screen is announced on
+  current_record_changed - a click on a row, the A / D keys and a filter
+  that leaves another row selected - while a selection event that landed
+  on the record already on screen announces nothing. That signal is what
+  the window of the tool follows in the main labeling window.
 """
 
 import os
@@ -164,6 +169,32 @@ def press(page, key, target=None):
     "Send one key to the list of the page and let Qt deliver it."
 
     QTest.keyClick(target if target is not None else page.table, key)
+    QtWidgets.QApplication.processEvents()
+
+
+def record_changes(page) -> list:
+    "Collect the record ids the page announces as its current record."
+
+    seen = []
+    page.current_record_changed.connect(seen.append)
+    return seen
+
+
+def click_row(page, row: int) -> None:
+    "Click one row of the list the way a user selects a record."
+
+    tree = page.table
+    rect = tree.visualItemRect(tree.topLevelItem(row))
+    point = QtCore.QPoint(
+        min(rect.center().x(), tree.viewport().width() - 2),
+        max(rect.center().y(), 1),
+    )
+    QTest.mouseClick(
+        tree.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        point,
+    )
     QtWidgets.QApplication.processEvents()
 
 
@@ -360,6 +391,106 @@ def test_the_shortcuts_belong_to_the_page_and_its_children(qt_app):
         assert page.shortcut_hint.text() == SHORTCUT_HINT
         assert "A" in page.table.toolTip() and "D" in page.table.toolTip()
         assert page.shortcut_hint.toolTip()
+        # the handover of the record needs no key any more: the E shortcut
+        # and its request signal are gone, and both hints describe the
+        # automatic follow instead
+        assert not hasattr(page, "open_in_main_shortcut")
+        assert not hasattr(page, "open_in_main_requested")
+        assert "E" not in page.shortcut_hint.text()
+        assert "自动打开" in page.shortcut_hint.text()
+        assert "自动打开" in page.shortcut_hint.toolTip()
+    finally:
+        page.close()
+
+
+# ------------------------------------------------- announced record switch
+def test_a_click_on_another_row_announces_the_current_record(
+    qt_app, tmp_path
+):
+    "The record the page shows changed on a click, and it says which."
+
+    staging = staging_layout(str(tmp_path), "nav_signal_click")
+    records = [
+        staged_original(staging, "a.png"),
+        staged_original(staging, "b.png"),
+    ]
+    page = show_page(staging, records)
+    try:
+        seen = record_changes(page)
+        click_row(page, 1)
+
+        assert page.current_record() is records[1]
+        assert seen == [records[1].record_id]
+
+        # the row already on screen is no switch: a rebuild of the list
+        # leaves the announcement alone
+        page.refresh()
+        QtWidgets.QApplication.processEvents()
+        assert page.current_record() is records[1]
+        assert seen == [records[1].record_id]
+    finally:
+        page.close()
+
+
+def test_the_a_and_d_keys_announce_the_current_record(qt_app, tmp_path):
+    "Every step of the walk reports the record the page moved to."
+
+    staging = staging_layout(str(tmp_path), "nav_signal_keys")
+    records = [
+        staged_original(staging, "a.png"),
+        staged_original(staging, "b.png"),
+        staged_original(staging, "c.png"),
+    ]
+    page = show_page(staging, records)
+    try:
+        seen = record_changes(page)
+
+        press(page, QtCore.Qt.Key.Key_D)
+        assert seen == [records[1].record_id]
+        press(page, QtCore.Qt.Key.Key_D)
+        assert seen == [records[1].record_id, records[2].record_id]
+        # the last row is the end of the list: the key stops on the row
+        # already on screen and nothing is announced
+        press(page, QtCore.Qt.Key.Key_D)
+        assert len(seen) == 2
+        press(page, QtCore.Qt.Key.Key_A)
+        assert seen == [
+            records[1].record_id,
+            records[2].record_id,
+            records[1].record_id,
+        ]
+    finally:
+        page.close()
+
+
+def test_a_filter_that_shows_another_record_announces_it(qt_app, tmp_path):
+    "The row a filter leaves on screen is reported like a click."
+
+    staging = staging_layout(str(tmp_path), "nav_signal_filter")
+    records = [
+        staged_original(staging, "a.png"),
+        staged_original(staging, "b.png"),
+    ]
+    records[0].verdict = records_module.NG
+    records[1].verdict = records_module.OK
+    page = show_page(staging, records)
+    try:
+        assert page.current_record() is records[0]
+        seen = record_changes(page)
+
+        page.filter_combo.setCurrentIndex(
+            page.filter_combo.findData(records_module.OK)
+        )
+        QtWidgets.QApplication.processEvents()
+        assert relpaths(page) == ["b.png"]
+        assert page.current_record() is records[1]
+        assert seen == [records[1].record_id]
+
+        # the filter that keeps the record on screen announces nothing
+        page.filter_combo.setCurrentIndex(0)
+        QtWidgets.QApplication.processEvents()
+        assert page.current_record() is records[1]
+        assert seen == [records[1].record_id]
     finally:
         page.close()
 

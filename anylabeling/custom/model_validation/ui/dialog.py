@@ -64,6 +64,11 @@ EXPORT_GUARD_STATUS = "导出进行中，请稍候再关闭"
 # keystroke.
 SCAN_DEBOUNCE_MS = 400
 
+# The debounce of the automatic follow: the results page announces every
+# record it moves to, and a run of A / D presses or a quick series of
+# clicks has to cost one jump - the last one - instead of one per step.
+FOLLOW_DEBOUNCE_MS = 200
+
 # What the preview line says while the scheduler walks the source
 # directory: the pair count of that folder is not known yet.
 SCAN_PENDING_TEXT = "扫描中…"
@@ -177,8 +182,11 @@ class ModelValidationDialog(QtWidgets.QDialog):
         self.results_page.toggle_deleted.connect(self.on_toggle_deleted)
         self.results_page.toggle_export.connect(self.on_toggle_export)
         self.results_page.export_requested.connect(self.export_zip_dialog)
-        self.results_page.open_in_main_requested.connect(
-            self._open_current_in_main_window
+        # the follow of the record on screen: the results page says which
+        # record it shows, this window opens it in the main labeling
+        # window once the switching stopped (see _follow_current_record)
+        self.results_page.current_record_changed.connect(
+            self._on_current_record_changed
         )
 
         # the enumeration of the source folder runs behind a worker
@@ -194,6 +202,18 @@ class ModelValidationDialog(QtWidgets.QDialog):
         self.bridge = MainWindowBridge(self._main_window(), parent=self)
         self.bridge.status_message.connect(self._show_status_message)
         self.bridge.record_changed.connect(self._on_record_changed)
+
+        # the record the results page settled on is opened 200 ms after
+        # the last switch: the id waiting for that timer, the id that was
+        # opened last (never opened twice) and the one line a standalone
+        # start is allowed to say about a follow it cannot do
+        self._pending_record_id = ""
+        self._followed_record_id = ""
+        self._follow_refusal_shown = False
+        self.follow_timer = QtCore.QTimer(self)
+        self.follow_timer.setSingleShot(True)
+        self.follow_timer.setInterval(FOLLOW_DEBOUNCE_MS)
+        self.follow_timer.timeout.connect(self._follow_current_record)
 
         self._show_deferred_warnings()
 
@@ -231,10 +251,11 @@ class ModelValidationDialog(QtWidgets.QDialog):
 
         Every note of the bridge is written twice: the form and the
         results page each carry a status line, and the note can arrive
-        while either page is the visible one. The refusals of the E key
-        and of the jump that follows a run are the loud case, they can
-        only happen while the results page is on screen - written on the
-        hidden form alone they would look like a key that does nothing.
+        while either page is the visible one. The refusals of the
+        automatic follow and of the jump that follows a run are the loud
+        case, they can only happen while the results page is on screen -
+        written on the hidden form alone they would look like a follow
+        that does nothing.
         No third status display is created for them: the two existing
         lines are mirrored, and the results line hands its room back to
         the summary on the next export (see set_summary).
@@ -247,10 +268,10 @@ class ModelValidationDialog(QtWidgets.QDialog):
     def _open_current_in_main_window(self) -> None:
         """Hand the record on screen to the main labeling window.
 
-        This is the one entry of the E shortcut and of the jump that
-        follows a finished run. Every refusal is the business of the
-        bridge, which explains it on status_message: nothing here opens a
-        message box, and nothing here touches the validation result.
+        This is the one entry of the automatic follow. Every refusal is
+        the business of the bridge, which explains it on status_message:
+        nothing here opens a message box, and nothing here touches the
+        validation result.
         """
 
         record = self.results_page.displayed_record()
@@ -258,6 +279,56 @@ class ModelValidationDialog(QtWidgets.QDialog):
             self._show_status_message(self.tr("没有可打开的记录"))
             return
         self.bridge.open_record(record)
+
+    def _on_current_record_changed(self, record_id: str) -> None:
+        """Restart the debounce that follows the record on screen.
+
+        A held A / D key and a quick series of clicks move the page
+        through several records within a moment: every switch restarts
+        the timer, so only the record the user settled on is opened.
+        """
+
+        self._pending_record_id = str(record_id or "")
+        self.follow_timer.start()
+
+    def _follow_current_record(self) -> None:
+        """Open the record the results page settled on in the main window.
+
+        This is what the E key used to be, without the key: the record
+        the page shows is carried over as soon as the switching stopped.
+        Two conditions guard the follow - there has to be a main window
+        to follow into, and the results page has to be the page on
+        screen (a hidden window and a run that is still on its setup or
+        progress page follow nothing), and one record is opened once:
+        the very record that was opened last is never opened again, so a
+        filter that shows it once more and a save the watcher carried
+        back cost no second jump and no second may_continue question.
+        """
+
+        record_id = self._pending_record_id
+        if not record_id or not self._follows_now():
+            return
+        if self.bridge.main_window is None:
+            # a start of its own has no window to follow: the refusal is
+            # said once, never again on every switch of the record
+            if not self._follow_refusal_shown:
+                self._follow_refusal_shown = True
+                self._show_status_message(
+                    self.tr("未连接主窗口，当前记录不会自动打开")
+                )
+            return
+        if record_id == self._followed_record_id:
+            return
+        self._followed_record_id = record_id
+        self._open_current_in_main_window()
+
+    def _follows_now(self) -> bool:
+        """Return True while the results page is the page on screen."""
+
+        return bool(
+            self.isVisible()
+            and self.stack.currentWidget() is self.results_page
+        )
 
     def _on_record_changed(self, record_id: str) -> None:
         """Repaint one record after the main window saved its label.
@@ -453,6 +524,12 @@ class ModelValidationDialog(QtWidgets.QDialog):
         # must stop carrying an edit of the old staging folder into the
         # new list (see on_worker_finished for the attach)
         self.bridge.detach()
+        # and it starts its follow from scratch: the first record of the
+        # run is opened again even when it carries the record id the
+        # previous run was left on (the same dataset validated twice)
+        self.follow_timer.stop()
+        self._pending_record_id = ""
+        self._followed_record_id = ""
 
         if self.staging_root:
             self.previous_staging_roots.append(self.staging_root)
@@ -625,10 +702,9 @@ class ModelValidationDialog(QtWidgets.QDialog):
         # watcher of this folder: it has to watch the records of this very
         # run
         self.bridge.attach(self.staging_root, self.records)
-        if self.bridge.main_window is not None:
-            # deferred by one turn: loading a file inside this slot would
-            # rebuild the very page the signal just filled
-            QtCore.QTimer.singleShot(0, self._open_current_in_main_window)
+        # the jump to the first record of the run is the debounced follow
+        # of the results page itself (see _follow_current_record): one
+        # path, not a second call that would jump twice
 
     # --------------------------------------------------------------- results
     def on_toggle_deleted(self, record_ids: list, deleted: bool) -> None:
@@ -920,6 +996,8 @@ class ModelValidationDialog(QtWidgets.QDialog):
             event.ignore()
             return
         self.bridge.detach()
+        # a follow that is still waiting must not reach into the close
+        self.follow_timer.stop()
         self.scan_scheduler.shutdown(1000)
         for worker in self._running_workers():
             worker.cancel()
@@ -932,6 +1010,7 @@ __all__ = [
     "CANCELLED_STATUS",
     "EXPORT_GUARD_STATUS",
     "EXPORT_PROGRESS_STYLE",
+    "FOLLOW_DEBOUNCE_MS",
     "MINIMUM_HEIGHT",
     "MINIMUM_WIDTH",
     "ModelValidationDialog",

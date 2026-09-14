@@ -57,10 +57,13 @@ memory and never runs inference again.
 
 The page itself never edits a record: a correction is made in the main
 window of the tool, which owns the annotation editor, and the results
-page only shows the staging json the editor wrote. The E key of the
-page is the way over there: it carries the current record to the main
-window (open_in_main_requested) and leaves the staging copy, the list
-and the selection of this page exactly where the user left them.
+page only shows the staging json the editor wrote. No key carries the
+record over any more: every switch of the record on screen - a click on
+another row, A / D, a filter that shows another record, the first fill
+of a finished run - is announced on current_record_changed, and the
+window that holds this page follows it in the main window on its own
+(see dialog). The staging copy, the list and the selection of this page
+stay exactly where the user left them.
 """
 
 from __future__ import annotations
@@ -125,14 +128,17 @@ KIND_SORT_ORDER = {
 GREY_TEXT_COLOR = QtGui.QColor(140, 140, 140)
 
 # The keyboard navigation of the list: one letter per direction, so the
-# two hands never leave the mouse row.
+# two hands never leave the mouse row. The follow of the current record
+# in the main window costs no letter at all, so the hint only says that
+# it happens by itself.
 SHORTCUT_HINT = (
     "快捷键：A 上一张 / D 下一张（到首尾停住，选中行自动滚动到可见）；"
-    "E = 在主窗口编辑当前记录。"
+    "主窗口跟随当前记录自动打开。"
 )
 SHORTCUT_TOOLTIP = (
-    "结果页快捷键：A = 上一张，D = 下一张，E = 在主窗口编辑当前记录；"
-    "焦点在本页（含列表内）时生效，到首尾即停，不循环。"
+    "结果页快捷键：A = 上一张，D = 下一张；"
+    "焦点在本页（含列表内）时生效，到首尾即停，不循环；"
+    "当前记录一变，主窗口自动打开该记录，无需按键。"
 )
 
 # The legend of the judgement colours, on its own line under the display
@@ -678,11 +684,16 @@ class ResultsPage(QtWidgets.QWidget):
     toggle_deleted = QtCore.pyqtSignal(list, bool)
     toggle_export = QtCore.pyqtSignal(list, bool)
     export_requested = QtCore.pyqtSignal()
-    # The E key of the page asks the window that holds this page to open
-    # the current record in the main window, where the annotation editor
-    # lives. The request carries no argument: the receiver reads the
-    # current record from this page itself.
-    open_in_main_requested = QtCore.pyqtSignal()
+    # The record the page shows changed. The window that holds this page
+    # is what follows it: the signal carries the record id of the new
+    # current row, and "" once the page is left with nothing to show,
+    # which is what a filter or a selection that drops the record on
+    # screen produces. A new list is not one of those switches: the
+    # announced record is reset together with the list (see set_records),
+    # so a list that arrives empty never turns the move into a "". It is
+    # raised once per change, never for a selection event that landed on
+    # the row already on screen.
+    current_record_changed = QtCore.pyqtSignal(str)
     selection_changed = QtCore.pyqtSignal(str)
 
     def __init__(self, parent: Optional[Any] = None) -> None:
@@ -697,6 +708,9 @@ class ResultsPage(QtWidgets.QWidget):
         self._row_ids: List[str] = []
         self._rows: Dict[str, int] = {}
         self._records_by_id: Dict[str, ValidationRecord] = {}
+        # the record id the page announced last: the follow in the main
+        # window is only asked for when the record on screen moved on
+        self._shown_record_id = ""
         # the picture of the current row is decoded once: a display
         # toggle must repaint the overlays, never reload the file and
         # therefore never refit a view the user zoomed by hand
@@ -886,13 +900,13 @@ class ResultsPage(QtWidgets.QWidget):
         self._install_shortcuts()
 
     def _install_shortcuts(self) -> None:
-        """Install the A / D navigation and the E handover of the list.
+        """Install the A / D navigation of the list.
 
-        The three shortcuts belong to this page *and to its children*, so
-        they fire while the list (or any other control of the page) holds
-        the focus and they never fire while the user works in another
-        window. A single letter is no shortcut of the tree itself, so the
-        list never swallows the key.
+        Both shortcuts belong to this page *and to its children*, so they
+        fire while the list (or any other control of the page) holds the
+        focus and they never fire while the user works in another window.
+        A single letter is no shortcut of the tree itself, so the list
+        never swallows the key.
         """
 
         self.previous_shortcut = QtGui.QShortcut(
@@ -909,18 +923,6 @@ class ResultsPage(QtWidgets.QWidget):
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self.next_shortcut.activated.connect(self.select_next_record)
-        # E asks the window that holds this page to edit the current
-        # record in the main window: the page itself never writes an
-        # annotation, it only carries the request over
-        self.open_in_main_shortcut = QtGui.QShortcut(
-            QtGui.QKeySequence(QtCore.Qt.Key.Key_E), self
-        )
-        self.open_in_main_shortcut.setContext(
-            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
-        )
-        self.open_in_main_shortcut.activated.connect(
-            self.open_in_main_requested.emit
-        )
 
     # ---------------------------------------------------------- navigation
     def select_relative_row(self, step: int) -> bool:
@@ -986,10 +988,18 @@ class ResultsPage(QtWidgets.QWidget):
         self.set_model_note()
 
     def set_records(self, records: Sequence[ValidationRecord]) -> None:
-        """Replace the displayed records."""
+        """Replace the displayed records.
+
+        A new list is a new state of the page: the record it opens on is
+        announced again even when it carries the id of the record the
+        previous list was left on (the same dataset validated twice), so
+        the follow in the main window opens the picture of the new run
+        instead of keeping the one of the old staging folder.
+        """
 
         self.records = list(records)
         self._records_by_id = records_module.record_lookup(self.records)
+        self._shown_record_id = ""
         self.refresh()
 
     def visible_records(self) -> List[ValidationRecord]:
@@ -1509,7 +1519,10 @@ class ResultsPage(QtWidgets.QWidget):
         canvases are read from the staging file again, with the very
         cheap path a mark toggle already takes (see refresh_rows). The
         list itself is never rebuilt, so the scroll position and the
-        selection stay where the user left them.
+        selection stay where the user left them. The record on screen is
+        announced again at the end: a refresh that really moved the page
+        on to another record is a switch like any other, while a reload
+        of the record already on screen is silently a no op.
         """
 
         record = self._records_by_id.get(str(record_id))
@@ -1517,6 +1530,8 @@ class ResultsPage(QtWidgets.QWidget):
             return False
         self.refresh_rows([record.record_id])
         self._refresh_canvases()
+        current = self.current_record()
+        self._note_shown_record(current.record_id if current else "")
         return True
 
     # -------------------------------------------------------------- viewers
@@ -1544,7 +1559,29 @@ class ResultsPage(QtWidgets.QWidget):
         record = self.current_record()
         record_id = record.record_id if record else ""
         self.selection_changed.emit(record_id)
+        self._note_shown_record(record_id)
         self._refresh_canvases()
+
+    def _note_shown_record(self, record_id: str) -> None:
+        """Announce the record the page shows, once per change.
+
+        Every path that can put another record on screen ends here: a
+        click on a row, A / D, a filter that selects another row, the
+        first fill of a run and the reload a save of the main window
+        asks for. The signal is only raised when the id really moved on,
+        so a selection event that reselected the row already on screen -
+        a mark toggle, a save the watcher carried back - never asks the
+        window for a second jump. The empty id is a switch like any
+        other, but only away from a record the page really had on
+        screen: replacing the list resets the announced record with
+        it (see set_records), so a list that arrives empty is silent.
+        """
+
+        record_id = str(record_id or "")
+        if record_id == self._shown_record_id:
+            return
+        self._shown_record_id = record_id
+        self.current_record_changed.emit(record_id)
 
     def _refresh_canvases(self) -> None:
         """Repaint both canvases from the staging files.
