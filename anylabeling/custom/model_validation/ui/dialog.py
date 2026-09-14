@@ -24,7 +24,9 @@ from ..app_config import (
     plan_aug_counts,
     validate_augment_params,
 )
+from ..async_scan import DirectoryScanScheduler
 from ..exporter import CANCELLED_MESSAGE, ExportCancelled, export_zip
+from ..main_window_bridge import MainWindowBridge
 from ..pipeline import STAGE_STAGING, ValidationWorker
 from ..report import build_report
 from .config_page import ConfigPage
@@ -50,6 +52,21 @@ EXPORT_PROGRESS_STYLE = "QProgressDialog { min-width: 360px; }"
 # The line the configuration page shows after a cancel: the run is gone,
 # nothing of it was saved and the next one starts from scratch.
 CANCELLED_STATUS = "已取消，未保存任何结果"
+
+# What the window answers a close click that arrives while an export
+# runs: the archive is written in this thread and pumps the event loop
+# (see export_zip), so closing right now would delete the very widgets
+# the export is still writing to.
+EXPORT_GUARD_STATUS = "导出进行中，请稍候再关闭"
+
+# The debounce of the source directory scan: a path typed by hand asks
+# for one walk of the folder once the typing paused, never one per
+# keystroke.
+SCAN_DEBOUNCE_MS = 400
+
+# What the preview line says while the scheduler walks the source
+# directory: the pair count of that folder is not known yet.
+SCAN_PENDING_TEXT = "扫描中…"
 
 
 def stack_minimum_size(stack: QtWidgets.QStackedWidget) -> QtCore.QSize:
@@ -113,6 +130,13 @@ class ModelValidationDialog(QtWidgets.QDialog):
         # it is closed
         self._detached_workers: List[ValidationWorker] = []
         self.last_export_path: str = ""
+        # the token of the newest scan request, and whether its answer is
+        # still waited for (see _on_dataset_changed)
+        self._scan_token: int = 0
+        self._scan_pending: bool = False
+        # True while export_zip runs: the progress dialog is not modal
+        # any more, so this flag is what refuses a second export
+        self._exporting: bool = False
 
         self.stack = QtWidgets.QStackedWidget()
         self.config_page = ConfigPage()
@@ -153,8 +177,23 @@ class ModelValidationDialog(QtWidgets.QDialog):
         self.results_page.toggle_deleted.connect(self.on_toggle_deleted)
         self.results_page.toggle_export.connect(self.on_toggle_export)
         self.results_page.export_requested.connect(self.export_zip_dialog)
-        self.results_page.edit_requested.connect(self.on_edit_shape)
-        self.results_page.shape_moved.connect(self.on_shape_moved)
+        self.results_page.open_in_main_requested.connect(
+            self._open_current_in_main_window
+        )
+
+        # the enumeration of the source folder runs behind a worker
+        # thread and a debounce: the slot that watches the path line edit
+        # only ever reads a cache (see _on_dataset_changed)
+        self.scan_scheduler = DirectoryScanScheduler(self)
+        self.scan_scheduler.scan_ready.connect(self._on_scan_ready)
+        self.scan_scheduler.scan_failed.connect(self._on_scan_failed)
+
+        # the bridge owns every jump to the main window: the window this
+        # tool was opened from is the parent, and a standalone start
+        # passes None, which degrades every jump to a line of status
+        self.bridge = MainWindowBridge(self._main_window(), parent=self)
+        self.bridge.status_message.connect(self._show_status_message)
+        self.bridge.record_changed.connect(self._on_record_changed)
 
         self._show_deferred_warnings()
 
@@ -167,6 +206,73 @@ class ModelValidationDialog(QtWidgets.QDialog):
         self.config_page.set_status(
             self.tr("多图增强不实现：") + ", ".join(MULTI_IMAGE_AUGMENTATIONS),
         )
+
+    # --------------------------------------------------------- main window
+    def _main_window(self) -> Optional[Any]:
+        """Return the main labeling window this tool was opened from.
+
+        The launcher hands the labeling window in as the parent of this
+        one; a start of its own (python -m ...) passes None, and every
+        jump then degrades to a line of status instead of an exception. A
+        parent that cannot load a file is not a labeling window either and
+        is treated the same way, so the bridge never calls into an
+        unrelated widget.
+        """
+
+        parent = self.parent()
+        if parent is None or not callable(
+            getattr(parent, "load_file", None)
+        ):
+            return None
+        return parent
+
+    def _show_status_message(self, message: str) -> None:
+        """Write one runtime note on both status lines of the window.
+
+        Every note of the bridge is written twice: the form and the
+        results page each carry a status line, and the note can arrive
+        while either page is the visible one. The refusals of the E key
+        and of the jump that follows a run are the loud case, they can
+        only happen while the results page is on screen - written on the
+        hidden form alone they would look like a key that does nothing.
+        No third status display is created for them: the two existing
+        lines are mirrored, and the results line hands its room back to
+        the summary on the next export (see set_summary).
+        """
+
+        text = str(message)
+        self.config_page.set_status(text)
+        self.results_page.set_summary(text)
+
+    def _open_current_in_main_window(self) -> None:
+        """Hand the record on screen to the main labeling window.
+
+        This is the one entry of the E shortcut and of the jump that
+        follows a finished run. Every refusal is the business of the
+        bridge, which explains it on status_message: nothing here opens a
+        message box, and nothing here touches the validation result.
+        """
+
+        record = self.results_page.displayed_record()
+        if record is None:
+            self._show_status_message(self.tr("没有可打开的记录"))
+            return
+        self.bridge.open_record(record)
+
+    def _on_record_changed(self, record_id: str) -> None:
+        """Repaint one record after the main window saved its label.
+
+        StagingSync has already written the sibling json back into the
+        canonical label, so this slot only reads it again: the row and the
+        two canvases are refreshed in place, the list is never rebuilt and
+        no jump is started from here - that would reenter the bridge the
+        signal just came from.
+        """
+
+        if not record_id:
+            return
+        self.results_page.reload_record(str(record_id))
+        self.refresh_export_summary()
 
     # ------------------------------------------------------------ validation
     def validate_config(self, config: ValidationConfig) -> List[str]:
@@ -194,31 +300,72 @@ class ModelValidationDialog(QtWidgets.QDialog):
 
     # --------------------------------------------------------------- preview
     def _count_source_pairs(self, directory: str) -> int:
-        """Return the pair count of the source dataset directory.
+        """Return the cached pair count of the source dataset directory.
 
-        The source directory is enumerated at most once per selection:
-        the result is cached until another directory is chosen.
+        The enumeration itself belongs to the scan scheduler (see
+        _on_dataset_changed): the slot that watches the path line edit
+        only reads the cache, so a large dataset never freezes the window
+        and typing a path does not walk the folder once per keystroke. A
+        directory whose scan has not answered yet counts 0.
         """
 
         if directory != self.source_dataset_dir:
-            self.source_dataset_dir = directory
-            self.source_pair_count = 0
-            if directory and osp.isdir(directory):
-                try:
-                    scan = dataset.collect_pairs(directory)
-                except Exception:  # noqa: BLE001 - a preview count
-                    # A directory that cannot be enumerated counts 0: this
-                    # runs inside a Qt slot and an uncaught exception there
-                    # aborts the whole application instead of the preview.
-                    scan = None
-                if scan is not None:
-                    self.source_pair_count = len(scan.pairs)
+            return 0
         return self.source_pair_count
 
     def _on_dataset_changed(self, *_args: Any) -> None:
-        """Cache the pair count of the newly selected source directory."""
+        """Ask the scheduler for a debounced scan of the new directory.
 
-        self._count_source_pairs(self.config_page.dataset_edit.text().strip())
+        The pending flag is set before the request leaves this slot: a
+        path that is not a folder is answered inside schedule() itself
+        (see DirectoryScanScheduler), and that synchronous answer has to
+        find - and clear - the pending state already in place.
+        """
+
+        self._scan_token += 1
+        directory = self.config_page.dataset_edit.text().strip()
+        self._scan_pending = True
+        self._refresh_preview()
+        self.scan_scheduler.schedule(
+            directory, self._scan_token, SCAN_DEBOUNCE_MS
+        )
+
+    def _on_scan_ready(self, token: int, directory: str, count: int) -> None:
+        """Cache the pair count of a finished scan of the source folder.
+
+        A scan the window no longer waits for - a newer keystroke moved
+        the token on, or the path of the form is another one - is dropped:
+        its count describes a directory the user already left.
+        """
+
+        if int(token) != self._scan_token:
+            return
+        if directory != self.config_page.dataset_edit.text().strip():
+            return
+        self.source_dataset_dir = directory
+        self.source_pair_count = int(count)
+        self._scan_pending = False
+        self._refresh_preview()
+
+    def _on_scan_failed(
+        self, token: int, directory: str, message: str
+    ) -> None:
+        """Report a scan the scheduler could not finish.
+
+        The directory counts 0 - the preview is an estimate, not a result
+        - and the reason goes to the status line: a scan runs behind the
+        form the user is still filling in, and an exception escaping its
+        slot would abort the whole application.
+        """
+
+        if int(token) != self._scan_token:
+            return
+        if directory != self.config_page.dataset_edit.text().strip():
+            return
+        self.source_dataset_dir = directory
+        self.source_pair_count = 0
+        self._scan_pending = False
+        self._show_status_message(str(message))
         self._refresh_preview()
 
     def preview_counts(
@@ -269,6 +416,11 @@ class ModelValidationDialog(QtWidgets.QDialog):
             ]
         )
         if not self.records:
+            if self._scan_pending:
+                # the folder is still being walked: the line says so
+                # instead of showing a zero nobody has counted yet
+                self.config_page.set_preview(self.tr(SCAN_PENDING_TEXT))
+                return
             sample_count = self._count_source_pairs(config.dataset_dir)
         counts = self.preview_counts(sample_count, config)
         self.config_page.set_preview(
@@ -296,6 +448,11 @@ class ModelValidationDialog(QtWidgets.QDialog):
             # the page already reports why the file could not be loaded
             return
         self.classes = classes
+
+        # a new run replaces the records of the previous one: the watcher
+        # must stop carrying an edit of the old staging folder into the
+        # new list (see on_worker_finished for the attach)
+        self.bridge.detach()
 
         if self.staging_root:
             self.previous_staging_roots.append(self.staging_root)
@@ -464,6 +621,14 @@ class ModelValidationDialog(QtWidgets.QDialog):
         self.results_page.set_records(self.records)
         self.refresh_export_summary()
         self.stack.setCurrentWidget(self.results_page)
+        # the edits made in the main window travel back through the
+        # watcher of this folder: it has to watch the records of this very
+        # run
+        self.bridge.attach(self.staging_root, self.records)
+        if self.bridge.main_window is not None:
+            # deferred by one turn: loading a file inside this slot would
+            # rebuild the very page the signal just filled
+            QtCore.QTimer.singleShot(0, self._open_current_in_main_window)
 
     # --------------------------------------------------------------- results
     def on_toggle_deleted(self, record_ids: list, deleted: bool) -> None:
@@ -497,46 +662,6 @@ class ModelValidationDialog(QtWidgets.QDialog):
             [record.record_id for record in changed]
         )
         self.refresh_export_summary()
-
-    def on_edit_shape(
-        self, record_id: str, index: int, label: Any, shape_type: Any
-    ) -> None:
-        """Write an edited label back into the staging json (no re judging).
-
-        A rename only rewrites the one row of the record: the whole list
-        is never rebuilt, so the scroll position, the selection and every
-        other row stay exactly where the user left them - the very
-        contract of the mark toggles (see on_toggle_deleted). The verdict
-        of the record is deliberately left alone: a corrected label does
-        not re-run the matching of the run.
-
-        The display is refreshed as well (see ResultsPage.reload_record):
-        the two canvases paint the shapes the page loaded, so rewriting
-        the row alone would leave the old label on the box until another
-        record is visited - the very defect the point drag never had,
-        because apply_edit_result repaints the canvases after its write.
-        """
-
-        lookup = records_module.record_lookup(self.records)
-        record = lookup.get(str(record_id))
-        if record is None:
-            return
-        if records_module.update_shape(
-            record, int(index), labels=label, shape_type=shape_type
-        ):
-            self.results_page.reload_record(record.record_id)
-
-    def on_shape_moved(self, record_id: str, index: int, points: Any) -> None:
-        """Store the point set a drag produced and refresh the row.
-
-        The whole write is owned by the records layer and by the page
-        (see ResultsPage.apply_edit_result); this slot is the one place
-        of the window that knows both, exactly like on_edit_shape. The
-        judgement of the record is not recomputed: a corrected box does
-        not re-run inference, the run keeps the verdict it produced.
-        """
-
-        self.results_page.apply_edit_result(str(record_id), int(index), points)
 
     def refresh_export_summary(self) -> None:
         """Update the export formula counters of the results page.
@@ -611,6 +736,21 @@ class ModelValidationDialog(QtWidgets.QDialog):
             path += ".zip"
         self.export_zip(path)
 
+    def _write_export_result(self, text: str) -> None:
+        """Report the outcome of an export on the results page.
+
+        The export runs with the event loop pumping (see export_zip), so
+        the page may be gone by the time the line is written: a widget a
+        closing window already destroyed is dropped instead of raised,
+        because a report that can no longer be shown must never abort the
+        application.
+        """
+
+        try:
+            self.results_page.set_summary(text)
+        except RuntimeError:
+            pass
+
     def export_zip(self, path: str) -> Dict[str, Any]:
         """Run the export and report the result on the results page.
 
@@ -620,20 +760,45 @@ class ModelValidationDialog(QtWidgets.QDialog):
         none is written into the staging folder - the report of a run is
         what its own reader asks for (see build_report_document), while
         an export stays a read only pass over the staging folder.
+
+        The progress dialog is not modal: the main window stays usable
+        while the archive is written. The export itself is refused twice
+        over, by a disabled button and by the _exporting flag, and both
+        are restored on every path, including a failure.
         """
+
+        if self._exporting:
+            return {}
+        self._exporting = True
+        export_button = self.results_page.export_button
+        export_was_enabled = True
+        try:
+            export_was_enabled = export_button.isEnabled()
+            export_button.setEnabled(False)
+        except RuntimeError:
+            # the page is already gone: the archive is still what the
+            # user asked for, and there is no button left to disable
+            pass
 
         progress = QtWidgets.QProgressDialog(
             self.tr("正在导出…"), self.tr("取消"), 0, 100, self
         )
-        progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        progress.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         progress.setAutoClose(False)
         progress.setStyleSheet(EXPORT_PROGRESS_STYLE)
         progress.show()
 
         def on_progress(done: int, total: int, message: str) -> None:
-            progress.setMaximum(max(int(total), 1))
-            progress.setValue(int(done))
-            progress.setLabelText(message)
+            # every write lands in a try: processEvents() below is what
+            # delivers the close click of the user, and a widget deleted
+            # on the way would otherwise raise out of the export and
+            # abort the whole application
+            try:
+                progress.setMaximum(max(int(total), 1))
+                progress.setValue(int(done))
+                progress.setLabelText(message)
+            except RuntimeError:
+                return
             QtWidgets.QApplication.processEvents()
 
         summary: Dict[str, Any] = {}
@@ -648,7 +813,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
                 is_cancelled=progress.wasCanceled,
             )
             self.last_export_path = path
-            self.results_page.set_summary(
+            self._write_export_result(
                 self.tr(
                     "导出完成：{path}（原图 {originals} 张，增强 {augmented} 张）"
                 ).format(
@@ -668,9 +833,21 @@ class ModelValidationDialog(QtWidgets.QDialog):
                 # diagnostic often comes from a library and is never
                 # translated away.
                 detail = f" ({error})"
-            self.results_page.set_summary(message + path + detail)
+            self._write_export_result(message + path + detail)
         finally:
-            progress.close()
+            # the teardown of the export touches the widgets the closing
+            # window may already have destroyed: a report that cannot be
+            # written any more is dropped, and the export flag is always
+            # cleared so the window stays usable
+            try:
+                progress.close()
+            except RuntimeError:
+                pass
+            try:
+                export_button.setEnabled(export_was_enabled)
+            except RuntimeError:
+                pass
+            self._exporting = False
         return summary
 
     # ----------------------------------------------------------------- pages
@@ -728,8 +905,22 @@ class ModelValidationDialog(QtWidgets.QDialog):
         return workers
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
-        """Stop every worker before closing the window."""
+        """Stop every worker and watcher before closing the window.
 
+        An export owns this thread while it runs and pumps the event loop
+        (see export_zip), so the very click that arrives here is delivered
+        inside the export: letting the close through would destroy the
+        widgets the export is still writing to. The click is refused with
+        a line of status instead, and the window stays open until the
+        archive is written.
+        """
+
+        if self._exporting:
+            self._show_status_message(self.tr(EXPORT_GUARD_STATUS))
+            event.ignore()
+            return
+        self.bridge.detach()
+        self.scan_scheduler.shutdown(1000)
         for worker in self._running_workers():
             worker.cancel()
         for worker in self._running_workers():
@@ -739,6 +930,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
 
 __all__ = [
     "CANCELLED_STATUS",
+    "EXPORT_GUARD_STATUS",
     "EXPORT_PROGRESS_STYLE",
     "MINIMUM_HEIGHT",
     "MINIMUM_WIDTH",

@@ -42,16 +42,11 @@ sides. A record without a judgement - an augmented copy that was never
 judged, a skipped record - carries no state at all and keeps the plain
 GT / Pred colour of every box.
 
-The canvas is still a viewer, but it owns one *edit* state as well (see
-set_editable_shapes): switched on by the middle button it selects, moves
-and resizes the region shapes it was handed, and it hands the new point
-set back as a signal instead of writing it anywhere. The records layer is
-what stores the drag (results_page.apply_edit_result ->
-records.update_shape_points), so a canvas that is not part of the results
-page never edits anything. Every unrecognised shape type stays grey and
-dashed while the edit state is on and is never picked, and the whole
-overlay is skipped unless the state is on: the plain viewer of the
-previous revision is exactly what an inactive canvas keeps painting.
+The canvas is a viewer and nothing else: it owns no edit state, no
+selection and no handle, and it never writes an annotation. A box is
+picked, moved and renamed in the main window, never here, so every
+gesture of this widget - the wheel, the left button drag and the double
+click - only changes the view and the way the two overlays are painted.
 """
 
 from __future__ import annotations
@@ -154,51 +149,6 @@ WHEEL_ZOOM_STEP = 1.2
 ZOOM_ANIM_INTERVAL_MS = 16
 ZOOM_ANIM_FRACTION = 0.35
 ZOOM_ANIM_EPSILON = 1e-3
-
-
-# The ROI edit mode. A user enters it with the middle button, picks a
-# region shape with the left button and drags either the box itself (it
-# moves) or one of its eight handles (it resizes). The handles are
-# measured in *image* pixels and divided by the view scale before they
-# are painted, so they keep one screen size at every zoom exactly like
-# the point markers do, and the hit tolerance is divided the very same
-# way. A shape type this tool cannot edit is drawn grey and dashed and
-# is never hit tested.
-EDIT_MODE_TITLE_SUFFIX = " · 编辑模式"
-# The cursor of the edit state: a cross hair says "the left button draws
-# here" before a shape or a handle is even under the pointer, which is
-# the one hint a user gets that the canvas left its viewer state. It is
-# the *fall back* of the state and never beats a more precise answer:
-# a handle keeps its resize cursor and a box under the pointer keeps the
-# open hand (see _update_hover_cursor).
-EDIT_CURSOR = QtCore.Qt.CursorShape.CrossCursor
-HANDLE_SIZE = 4.0
-HANDLE_COLOR = QtGui.QColor(0, 188, 212)
-HANDLE_FILL_COLOR = QtGui.QColor(255, 255, 255)
-SELECTED_PEN_WIDTH = 3.0
-UNEDITABLE_PEN_WIDTH = 2.0
-UNEDITABLE_COLOR = QtGui.QColor(150, 150, 150)
-HIT_TOLERANCE = 6.0
-# A box never shrinks below one image pixel: a resize that would collapse
-# a side is stopped at this width / height instead of producing a
-# degenerate box the judge could not match any more.
-MIN_BOX_SIZE = 1.0
-# The eight handles of a box, in the order box_handles() returns them.
-# The name says where the handle sits, and the resize reads it as the two
-# edges it drags: "l"/"r" the horizontal ones, "t"/"b" the vertical ones.
-HANDLE_NAMES = ("lt", "t", "rt", "r", "rb", "b", "lb", "l")
-# One cursor per handle, so the picture answers what a drag would do
-# before the button is even pressed.
-HANDLE_CURSORS: Dict[str, QtCore.Qt.CursorShape] = {
-    "lt": QtCore.Qt.CursorShape.SizeFDiagCursor,
-    "rt": QtCore.Qt.CursorShape.SizeBDiagCursor,
-    "lb": QtCore.Qt.CursorShape.SizeBDiagCursor,
-    "rb": QtCore.Qt.CursorShape.SizeFDiagCursor,
-    "l": QtCore.Qt.CursorShape.SizeHorCursor,
-    "r": QtCore.Qt.CursorShape.SizeHorCursor,
-    "t": QtCore.Qt.CursorShape.SizeVerCursor,
-    "b": QtCore.Qt.CursorShape.SizeVerCursor,
-}
 
 
 def load_pixmap(path: str) -> Optional[QtGui.QPixmap]:
@@ -322,454 +272,6 @@ def shape_colors(
     return colors
 
 
-def _point_box(points: Sequence[Tuple[float, float]]):
-    """Return the (left, top, right, bottom) box of a point set.
-
-    None is answered for an empty point set: a shape without points has
-    no handle, no hit area and nothing to resize.
-    """
-
-    if not points:
-        return None
-    xs = [float(point[0]) for point in points]
-    ys = [float(point[1]) for point in points]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def _widest_span(points: Sequence[Tuple[float, float]]) -> float:
-    """Return the longer side of the box of a point set, 0.0 without one."""
-
-    box = _point_box(points)
-    if box is None:
-        return 0.0
-    return max(float(box[2] - box[0]), float(box[3] - box[1]))
-
-
-def box_handles(points: Sequence[Tuple[float, float]]):
-    """Return the eight handles of the bounding box of a point set.
-
-    Four corners and the four midpoints of the edges, in the order of
-    HANDLE_NAMES: this is the one layout every box of the edit mode is
-    driven by, whatever its shape type is.
-    """
-
-    box = _point_box(points)
-    if box is None:
-        return []
-    left, top, right, bottom = box
-    middle_x = (left + right) / 2.0
-    middle_y = (top + bottom) / 2.0
-    return [
-        (left, top),
-        (middle_x, top),
-        (right, top),
-        (right, middle_y),
-        (right, bottom),
-        (middle_x, bottom),
-        (left, bottom),
-        (left, middle_y),
-    ]
-
-
-def handle_cursor(handle: Any) -> Optional[QtCore.Qt.CursorShape]:
-    """Return the cursor of one handle, None for a plain box drag."""
-
-    return HANDLE_CURSORS.get(str(handle or ""))
-
-
-def contains_point(
-    points: Sequence[Tuple[float, float]], point: Sequence[float]
-) -> bool:
-    """Return True when a point sits inside the bounding box of a shape."""
-
-    box = _point_box(points)
-    if box is None:
-        return False
-    return bool(box[0] <= point[0] <= box[2] and box[1] <= point[1] <= box[3])
-
-
-def hit_test(editable, point, scale: float = 1.0):
-    """Return (index, handle) of the shape a point picks, (-1, "") else.
-
-    A handle wins over a box, so a corner sitting on the border of
-    another box stays grabbable, and the tolerance of both tests is
-    divided by the view scale first: HIT_TOLERANCE and the handles are
-    screen sizes, so a hit stays as easy after zooming in as it was on
-    the fitted picture (the same division the point markers use).
-
-    The boxes are examined from the last one to the first, which is the
-    paint order backwards: the box the user sees on top is the box the
-    click picks when two of them overlap, and the smallest one is picked
-    when one sits completely inside another.
-
-    Every entry of the editable list is (shape, can_edit) and a shape
-    the caller refused - an unrecognised type - is skipped entirely: it
-    is drawn grey and dashed and can neither be selected nor moved.
-    """
-
-    entries = list(editable or [])
-    tolerance = HIT_TOLERANCE / max(float(scale), 1e-9)
-    for index in range(len(entries) - 1, -1, -1):
-        shape, can_edit = entries[index]
-        if not can_edit:
-            continue
-        handles = box_handles(shape_points(shape))
-        for name, handle in zip(HANDLE_NAMES, handles):
-            if (
-                abs(float(point[0]) - handle[0]) <= tolerance
-                and abs(float(point[1]) - handle[1]) <= tolerance
-            ):
-                return index, name
-    best_index = -1
-    best_span = 0.0
-    for index in range(len(entries) - 1, -1, -1):
-        shape, can_edit = entries[index]
-        if not can_edit:
-            continue
-        points = shape_points(shape)
-        if contains_point(points, point):
-            span = _widest_span(points)
-            if best_index < 0 or span <= best_span:
-                best_index, best_span = index, span
-    return best_index, ""
-
-
-def nearest_point(
-    points: Sequence[Tuple[float, float]], target: Sequence[float]
-) -> int:
-    """Return the index of the vertex closest to a target position.
-
-    A polygon has no handles of its own - its eight handles are the ones
-    of its bounding box - so a resize of one moves the vertex the handle
-    sits on: the one nearest to the point the drag started from.
-    """
-
-    best_index = 0
-    best_distance = None
-    for index, point in enumerate(points):
-        distance = (float(point[0]) - float(target[0])) ** 2 + (
-            float(point[1]) - float(target[1])
-        ) ** 2
-        if best_distance is None or distance < best_distance:
-            best_index, best_distance = index, distance
-    return best_index
-
-
-# The two corners the anchor of a ring resize holds, per handle, in the
-# index order of HANDLE_NAMES. The anchor is the corner opposite the
-# dragged one - corner 2 for "lt", 3 for "rt", 0 for "rb", 1 for "lb" -
-# and the two numbers are the indices of its neighbours, which are the
-# two sides the whole ring is scaled along. A ring resize is read off
-# these three corners alone, never off the axis aligned box of the
-# screen.
-RING_CORNERS = {
-    "lt": (1, 3),
-    "rt": (0, 2),
-    "rb": (1, 3),
-    "lb": (0, 2),
-}
-# The corner opposite every handle of a ring: the one that holds still
-# whatever the pointer does.
-RING_ANCHORS = {"lt": 2, "rt": 3, "rb": 0, "lb": 1}
-# An edge handle keeps the opposite *edge* still, which is the same
-# thing: the corner that edge starts from, and the two corners it ends
-# on, of which the first one is the side the handle names. The corner
-# of an edge handle is the diagonal opposite one, the corner no drag of
-# that edge touches.
-EDGE_ANCHORS = {
-    "l": (1, 0, 2),
-    "r": (0, 1, 3),
-    "t": (3, 0, 2),
-    "b": (0, 3, 1),
-}
-
-
-def _ring_anchors(points, name: str):
-    """Return the (anchor, neighbours) a ring resize is read from.
-
-    A ring of four free corners has no axis aligned box to rewrite: the
-    handle names still say which corner the user grabbed and which one
-    is therefore nailed - the corner opposite the handle, the one every
-    drag of a box editor leaves in place. The two neighbours of that
-    anchor are the two corners its own sides end on, and their
-    directions are the two axes the shape is scaled along, so the
-    rotation of the shape is read off the shape itself and never
-    assumed to be the one of the screen.
-    """
-
-    if len(points) != 4:
-        return None
-    key = str(name or "")
-    corners = RING_CORNERS.get(key)
-    anchor_index = RING_ANCHORS.get(key)
-    if corners is None or anchor_index is None:
-        edge = EDGE_ANCHORS.get(key)
-        if edge is None:
-            return None
-        # An edge handle of the bounding box of a rotated shape: it
-        # names one side of the two the diagonal opposite corner holds,
-        # and that one is handed over first, so _ring_factors scales it
-        # and leaves the other one alone.
-        anchor_index, first, second = edge
-        if key in ("t", "b"):
-            # the side "t" and "b" name is the second one of that
-            # corner: the two are swapped to keep the order of the
-            # handle names - "l" / "r" scale the first, "t" / "b" the
-            # second
-            first, second = second, first
-    else:
-        first, second = corners
-    return points[anchor_index], (points[first], points[second])
-
-
-def _ring_factors(points, name: str, delta) -> Optional[Tuple[float, float]]:
-    """Return the two signed scale factors of one ring resize step.
-
-    The pointer displacement is written in the basis of the two sides
-    the anchor holds - the axes of the shape itself, never the ones of
-    the screen - and every coordinate it gets there is read as the
-    ratio it is: a displacement of a whole side doubles that side, a
-    displacement of half a side shrinks it to a half, and a
-    displacement *against* the side shrinks it instead of growing it.
-    That sign is the whole point: the previous revision took the
-    amplitude of the delta, so its factor could never be smaller than
-    one and a shape could only ever grow.
-
-    Writing the displacement in that basis is what makes the dragged
-    corner follow the pointer: the corner sits at the sum of the two
-    sides, so scaling each side by one plus its own share of the
-    displacement is exactly what moves that corner onto the pointer,
-    and a square whose sides are perpendicular keeps its angle (both
-    factors follow the pointer by the same amount). A ratio below one
-    is a shrink, a ratio of exactly zero is a side of no length at all,
-    which is where MIN_BOX_SIZE takes over (see _rewrite_ring).
-
-    Only the axes the handle names are scaled, which is what keeps an
-    edge handle a one sided resize while a corner scales both.
-    """
-
-    anchors = _ring_anchors(points, name)
-    if anchors is None:
-        return None
-    anchor, (first, second) = anchors
-    u = (
-        float(first[0]) - float(anchor[0]),
-        float(first[1]) - float(anchor[1]),
-    )
-    v = (
-        float(second[0]) - float(anchor[0]),
-        float(second[1]) - float(anchor[1]),
-    )
-    length_u = math.hypot(u[0], u[1])
-    length_v = math.hypot(v[0], v[1])
-    if length_u <= 0.0 or length_v <= 0.0:
-        return None
-    step_x, step_y = float(delta[0]), float(delta[1])
-    factors = [1.0, 1.0]
-    horizontal = "l" in str(name) or "r" in str(name)
-    vertical = "t" in str(name) or "b" in str(name)
-    if horizontal and vertical:
-        # Both axes move: the displacement is written in the basis of
-        # the two sides, and the number it gets there is already the
-        # length the side gains - a whole side of it doubles that side,
-        # a negative one shortens it - so the factor is one plus that
-        # length over the length of the side.
-        determinant = u[0] * v[1] - u[1] * v[0]
-        if abs(determinant) <= 1e-9:
-            # the four corners are on one line: there is no ring to scale
-            return None
-        weight_u = (step_x * v[1] - step_y * v[0]) / determinant
-        weight_v = (u[0] * step_y - u[1] * step_x) / determinant
-        # The two weights are the ratios themselves: a displacement
-        # that lands on a side with a weight of one is a displacement
-        # of a whole side, and the ratio of the side is therefore one
-        # plus that weight. Expanded in the basis of the sides, the map
-        # sends the dragged corner exactly onto the pointer - the
-        # anchor plus the displacement - which is why the corner of a
-        # box follows the hand and not an amplitude of it.
-        factors[0] = 1.0 + weight_u
-        factors[1] = 1.0 + weight_v
-        return factors[0], factors[1]
-    if horizontal:
-        # One axis alone: the side the handle names follows the pointer
-        # and the opposite one holds still, which is the plain "move
-        # this edge, keep the other one" rule of every box editor - a
-        # drag of ten pixels on a side of a hundred moves that side by
-        # ten. The sign of the ratio is the sign of the drag, so an
-        # edge pulled towards its anchor shortens the box instead of
-        # growing it.
-        factors[0] = 1.0 + (step_x * u[0] + step_y * u[1]) / (
-            length_u * length_u
-        )
-    elif vertical:
-        factors[1] = 1.0 + (step_x * v[0] + step_y * v[1]) / (
-            length_v * length_v
-        )
-    return factors[0], factors[1]
-
-
-def _rewrite_ring(points, name: str, delta):
-    """Scale a point ring about the corner opposite the dragged handle.
-
-    A rotation box and a quadrilateral are four free corners: moving one
-    of them with the pointer instead of re-deriving an axis aligned box
-    keeps the rotation of the shape, which an axis aligned rewrite would
-    silently destroy. The corner the handle is *not* dragging stays
-    nailed; the whole ring is scaled along the two sides that anchor
-    holds (see _ring_factors) - in the basis of those sides, never along
-    the axes of the screen - so a rotated box keeps its angle, both
-    inner angles of the ring are preserved and a drag *towards* the
-    anchor shrinks the shape instead of growing it. A square whose
-    sides are perpendicular and whose factors came out equal is scaled
-    by one single number: its own angle survives the resize to the last
-    decimal.
-
-    The point the pointer holds is the corner opposite the anchor, and
-    the scaling above is built to land that corner exactly on it: a
-    displacement written in the basis of the two sides scales each side
-    by its own share of it, which is the very definition of the scaling
-    being applied (see the round trip note of results_page tests).
-
-    A side never collapses: a scale that would shorten a side below
-    MIN_BOX_SIZE is stopped there, the very guard the axis aligned
-    branch of resize_points applies to its own two sides.
-    """
-
-    anchor_points = _ring_anchors(points, name)
-    if anchor_points is None:
-        return list(points)
-    fixed, (first, second) = anchor_points
-    factors = _ring_factors(points, name, delta)
-    if factors is None:
-        return list(points)
-    sides = _ring_sides(fixed, first, second)
-    limits = tuple(
-        _ring_factor_limit(factors[axis], sides[axis]) for axis in (0, 1)
-    )
-    u = (
-        float(first[0]) - float(fixed[0]),
-        float(first[1]) - float(fixed[1]),
-    )
-    v = (
-        float(second[0]) - float(fixed[0]),
-        float(second[1]) - float(fixed[1]),
-    )
-    determinant = u[0] * v[1] - u[1] * v[0]
-    if abs(determinant) <= 1e-9:
-        return list(points)
-    result = []
-    for point in points:
-        offset = (
-            float(point[0]) - float(fixed[0]),
-            float(point[1]) - float(fixed[1]),
-        )
-        weight_u = (offset[0] * v[1] - offset[1] * v[0]) / determinant
-        weight_v = (u[0] * offset[1] - u[1] * offset[0]) / determinant
-        result.append(
-            (
-                float(fixed[0])
-                + weight_u * limits[0] * u[0]
-                + weight_v * limits[1] * v[0],
-                float(fixed[1])
-                + weight_u * limits[0] * u[1]
-                + weight_v * limits[1] * v[1],
-            )
-        )
-    return result
-
-
-def _ring_sides(fixed, first, second) -> Tuple[float, float]:
-    """Return the two side lengths the anchor of a ring holds."""
-
-    return (
-        math.hypot(
-            float(first[0]) - float(fixed[0]),
-            float(first[1]) - float(fixed[1]),
-        ),
-        math.hypot(
-            float(second[0]) - float(fixed[0]),
-            float(second[1]) - float(fixed[1]),
-        ),
-    )
-
-
-def _ring_factor_limit(factor: float, side: float) -> float:
-    """Stop a signed scale factor where its own side reaches the minimum."""
-
-    if side <= 0.0:
-        return 1.0
-    return max(float(factor), MIN_BOX_SIZE / side)
-
-
-def resize_points(
-    shape_type: str,
-    points: Sequence[Tuple[float, float]],
-    handle: str,
-    delta: Sequence[float],
-    origin: Optional[Sequence[float]] = None,
-) -> List[Tuple[float, float]]:
-    """Return the point set of one resize step of a shape.
-
-    The box of the shape is re-derived from the edges the handle
-    carries ("l" / "r" the horizontal ones, "t" / "b" the vertical
-    ones) and the result is written back in the shape convention of the
-    repository: a rectangle becomes the four point axis aligned box in
-    the (left, top) order, a rotation box and a quadrilateral are
-    scaled about the corner opposite the dragged handle, along the two
-    axes the shape itself holds (see _rewrite_ring) - a drag towards
-    the anchor shrinks it, an edge handle keeps the opposite edge still
-    and a corner handle keeps the opposite corner still. A polygon only
-    moves the single
-    vertex the handle grabbed - the one nearest to `origin`, the image
-    point the drag started from - so every other vertex of a hand drawn
-    outline stays exactly where the user drew it.
-
-    The two sides never collapse: a resize that would push an edge past
-    the opposite one is stopped at MIN_BOX_SIZE, one image pixel, which
-    keeps every box matchable by the judge instead of degenerate.
-
-    A shape the branch of its own type cannot serve is answered with
-    its very own points: a polygon of fewer than three vertices and a
-    rotation box or a quadrilateral that does not carry four corners
-    are handed back untouched instead of being silently rewritten as an
-    axis aligned rectangle, which would change both the number of the
-    points and the meaning of the annotation. The caller sees a point
-    set that did not change and publishes nothing.
-    """
-
-    box = _point_box(points)
-    if box is None:
-        return list(points)
-    name = str(handle or "")
-    step_x, step_y = float(delta[0]), float(delta[1])
-    if shape_type == "polygon":
-        if len(points) < 3:
-            return [(float(x), float(y)) for x, y in points]
-        result = [(float(x), float(y)) for x, y in points]
-        index = nearest_point(points, origin or _point_box(points)[:2])
-        result[index] = (result[index][0] + step_x, result[index][1] + step_y)
-        return result
-    if shape_type in ("rotation", "quadrilateral"):
-        if len(points) != 4:
-            return [(float(x), float(y)) for x, y in points]
-        return _rewrite_ring(points, name, (step_x, step_y))
-    left, top, right, bottom = box
-    if "l" in name:
-        left = min(left + step_x, right - MIN_BOX_SIZE)
-    if "r" in name:
-        right = max(right + step_x, left + MIN_BOX_SIZE)
-    if "t" in name:
-        top = min(top + step_y, bottom - MIN_BOX_SIZE)
-    if "b" in name:
-        bottom = max(bottom + step_y, top + MIN_BOX_SIZE)
-    return [
-        (left, top),
-        (right, top),
-        (right, bottom),
-        (left, bottom),
-    ]
-
-
 def clamp_zoom(value: float) -> float:
     """Clamp a zoom factor into the supported [MIN_ZOOM, MAX_ZOOM] range."""
 
@@ -781,13 +283,6 @@ class ImageCanvas(QtWidgets.QWidget):
 
     # (view scale, image x at the widget centre, image y at the centre)
     view_changed = QtCore.pyqtSignal(float, float, float)
-    # The four signals of the edit state. A canvas never writes a file:
-    # it publishes the gesture and the point set it produced, and the
-    # page decides what is stored (see results_page.apply_edit_result).
-    edit_mode_toggled = QtCore.pyqtSignal(bool)
-    shape_selected = QtCore.pyqtSignal(str, int)
-    shape_move_finished = QtCore.pyqtSignal(str, int, object)
-    shape_rename_requested = QtCore.pyqtSignal(str, int)
 
     def __init__(self, title: str = "", parent: Optional[Any] = None) -> None:
         super().__init__(parent)
@@ -800,9 +295,9 @@ class ImageCanvas(QtWidgets.QWidget):
         # its own index points at
         self._gt_statuses: List[Any] = []
         self._pred_statuses: List[Any] = []
-        # the colours of the last ground truth pass; the edit overlay
-        # re-strokes a selection in its own colour instead of computing
-        # the whole colour list a second time (see paintEvent)
+        # the colours of the last ground truth pass, built by the one
+        # builder of set_shapes and reused by the repaint instead of
+        # walking the list twice (see paintEvent)
         self._gt_colors: List[QtGui.QColor] = []
         self.matches: List[Dict[str, Any]] = []
         self.show_ground_truth = True
@@ -823,16 +318,6 @@ class ImageCanvas(QtWidgets.QWidget):
         self._user_adjusted = False
         self._panning = False
         self._pan_origin = QtCore.QPointF(0.0, 0.0)
-        # the edit state: off until the user asks for it, and it only
-        # ever holds shapes set_editable_shapes handed over - the canvas
-        # looked at every other picture exactly the way it always did
-        self.editable = False
-        self._edit_record_id = ""
-        self._edit_shapes: List[Tuple[Any, bool]] = []
-        self._selected = -1
-        self._active_handle: Optional[str] = None
-        self._drag_anchor: Optional[Tuple[float, float]] = None
-        self._drag_start_points: List[Tuple[float, float]] = []
         self._zoom_timer = QtCore.QTimer(self)
         self._zoom_timer.setInterval(ZOOM_ANIM_INTERVAL_MS)
         self._zoom_timer.timeout.connect(self.advance_zoom_animation)
@@ -869,10 +354,9 @@ class ImageCanvas(QtWidgets.QWidget):
         are kept, never the record that produced them.
 
         The colours of the ground truth pass are derived here and not
-        only in paintEvent: the edit overlay re-strokes the selected box
-        with the colour of its own state, and a canvas that was handed
-        the shapes of another record must never keep the colours of the
-        previous one (see _gt_outline_colors).
+        only in paintEvent, so a canvas that was handed the shapes of
+        another record never keeps a colour of the previous one (see
+        _gt_outline_colors).
         """
 
         self._ground_truth = list(ground_truth)
@@ -885,12 +369,11 @@ class ImageCanvas(QtWidgets.QWidget):
     def _gt_outline_colors(self) -> List[QtGui.QColor]:
         """Return the outline colour of every ground truth box.
 
-        The list and the shapes it belongs to are built together, so the
-        edit overlay of a selected box can never read a colour that was
-        left behind by another record: a canvas showing no ground truth
-        (the checkbox is off, the record has no shape) answers the
-        empty list and the overlay falls back to the plain ground truth
-        colour.
+        The list and the shapes it belongs to are built together, so a
+        colour can never be left behind by another record: a canvas
+        showing no ground truth (the checkbox is off, the record has no
+        shape) answers the empty list and every box keeps the plain
+        ground truth colour.
         """
 
         if not (self.show_overlay and self.show_ground_truth):
@@ -913,429 +396,8 @@ class ImageCanvas(QtWidgets.QWidget):
         self._target_zoom = 1.0
         self._center = QtCore.QPointF(0.0, 0.0)
         self._user_adjusted = False
-        # an emptied canvas has no shape left to select or to drag
-        self._edit_record_id = ""
-        self._edit_shapes = []
-        self._selected = -1
-        self._active_handle = None
         self._stop_zoom_animation()
         self.update()
-
-    # ------------------------------------------------------------ edit ROI
-    def set_edit_mode(self, enabled: bool) -> None:
-        """Switch the ROI edit state of this canvas on or off.
-
-        Switching off forgets the selection and every finished drag
-        state: the canvas is the plain viewer of the previous revision
-        again and paints nothing of the edit overlay. Switching on
-        re-reads the shapes the page already handed over, so a mode that
-        is toggled does not wait for the next picture.
-        """
-
-        wanted = bool(enabled)
-        if self.editable == wanted:
-            return
-        self.editable = wanted
-        if not wanted:
-            self._selected = -1
-            self._active_handle = None
-            self._drag_anchor = None
-            self._drag_start_points = []
-        # the pointer is told about the state right away, and it is told
-        # again by every path that ends a gesture (see _restore_edit_cursor)
-        self._restore_edit_cursor()
-        self.update()
-        self.edit_mode_toggled.emit(wanted)
-
-    def set_editable_shapes(
-        self,
-        record_id: str,
-        shapes: Sequence[Any],
-        editable_flags: Sequence[bool],
-    ) -> None:
-        """Set the editable shapes of one record (record id + shapes).
-
-        The canvas keeps its own copy of the pairs (shape, can_edit) and
-        never reads the record again: the page hands the very shapes it
-        paints, so a drag moves the picture the user is looking at. The
-        selection survives a refresh of the *same* record - the page
-        repaints the canvases after every drag - and is dropped when
-        another record arrives or the index it pointed at is gone.
-        """
-
-        self._edit_record_id = str(record_id or "")
-        if not str(record_id or ""):
-            # no record on screen is no record to edit: a page that
-            # previews another picture hands an empty record id over,
-            # and the overlay of this canvas has to follow the shapes
-            # the two overlays show instead of decorating the previous
-            # record with them (see results_page._refresh_canvases)
-            self._edit_shapes = []
-            self._selected = -1
-            self.update()
-            return
-        entries = list(zip(shapes, editable_flags))
-        self._edit_shapes = [(shape, bool(flag)) for shape, flag in entries]
-        if not 0 <= self._selected < len(self._edit_shapes):
-            self._selected = -1
-        self.update()
-
-    def editable_shapes(self) -> List[Any]:
-        """Return the shapes the edit overlay is driven by."""
-
-        return [shape for shape, _flag in self._edit_shapes]
-
-    def editable_flags(self) -> List[bool]:
-        """Return the can_edit flag that belongs to each editable shape."""
-
-        return [bool(flag) for _shape, flag in self._edit_shapes]
-
-    def edit_record_id(self) -> str:
-        """Return the record id the editable shapes belong to."""
-
-        return str(self._edit_record_id)
-
-    def selected_index(self) -> int:
-        """Return the selected shape index, -1 when nothing is selected."""
-
-        return int(self._selected)
-
-    def select_shape(self, index: int) -> bool:
-        """Select one shape by index; -1 clears the selection."""
-
-        position = int(index)
-        if position < 0 or position >= len(self._edit_shapes):
-            position = -1
-        if position == self._selected:
-            return False
-        self._selected = position
-        self.update()
-        if position >= 0:
-            self.shape_selected.emit(self._edit_record_id, position)
-        return True
-
-    def clear_selection(self) -> None:
-        """Drop the selection and the handle a drag would start from."""
-
-        self._active_handle = None
-        self.select_shape(-1)
-        self._restore_edit_cursor()
-
-    def _restore_edit_cursor(self) -> None:
-        """Write the cursor the edit state owns, or give the default back.
-
-        This is the one place the cursor of a *finished* gesture is read
-        from: the cross hair of the state while the canvas still edits,
-        the cursor of the application otherwise. It is deliberately not
-        the answer of a hover - a move of the pointer over a handle or a
-        box is what _update_hover_cursor answers - but the way back to
-        the state after a press, a drag or a dropped selection, so a
-        canvas never keeps the closed hand of a pan it never started.
-        """
-
-        if self.editable:
-            self.setCursor(EDIT_CURSOR)
-        else:
-            self.unsetCursor()
-
-    def _edit_shape(self, index: int) -> Optional[Any]:
-        """Return one editable shape by index, None when there is none."""
-
-        if not 0 <= int(index) < len(self._edit_shapes):
-            return None
-        return self._edit_shapes[int(index)][0]
-
-    def _can_edit(self, index: int) -> bool:
-        """Return True when the shape at an index may be edited."""
-
-        if not 0 <= int(index) < len(self._edit_shapes):
-            return False
-        return bool(self._edit_shapes[int(index)][1])
-
-    def _inside_image(self, widget_point: QtCore.QPointF) -> bool:
-        """Return True when a widget position sits on the picture itself.
-
-        The letterbox around a fitted picture is no place to start an
-        edit: a middle click there is swallowed instead of switching the
-        mode, so a stray click in the black border never arms the ROI
-        editing of the record on screen.
-        """
-
-        if self._pixmap is None or self._pixmap.isNull():
-            return False
-        return bool(self._target_rect().contains(widget_point))
-
-    def _edit_at(self, widget_point: QtCore.QPointF):
-        """Return the (index, handle) a widget position picks."""
-
-        if not self._inside_image(widget_point):
-            return -1, ""
-        point = self.widget_to_image(widget_point)
-        index, handle = hit_test(
-            self._edit_shapes, (point.x(), point.y()), self.view_scale()
-        )
-        if index < 0 or not self._can_edit(index):
-            return -1, ""
-        return index, handle
-
-    def _update_hover_cursor(self, position: QtCore.QPointF) -> None:
-        """Answer a hover with the cursor of what a click would do.
-
-        The order is the precision of the answer: a handle names the
-        resize it would start, a box under the pointer names the move it
-        would start, and the cross hair of the state is what is left -
-        the empty picture *and* every position this canvas still edits.
-        A canvas that does not edit keeps the cursor of the application.
-        """
-
-        if not self.editable:
-            self.unsetCursor()
-            return
-        index, handle = self._edit_at(position)
-        if handle:
-            self.setCursor(handle_cursor(handle))
-        elif index >= 0:
-            self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
-        else:
-            self.setCursor(EDIT_CURSOR)
-
-    def _begin_drag(self, widget_point: QtCore.QPointF) -> bool:
-        """Arm a move or a resize for the shape under a position."""
-
-        index, handle = self._edit_at(widget_point)
-        if index < 0:
-            return False
-        point = self.widget_to_image(widget_point)
-        self._selected = index
-        self._active_handle = str(handle) if handle else None
-        self._drag_anchor = (float(point.x()), float(point.y()))
-        self._drag_start_points = list(
-            shape_points(self._edit_shapes[index][0])
-        )
-        self.update()
-        self.shape_selected.emit(self._edit_record_id, index)
-        return True
-
-    def _update_drag(self, widget_point: QtCore.QPointF) -> bool:
-        """Apply one step of a running drag and repaint the result.
-
-        The displacement a step applies is always read from the *press*
-        point (see _begin_drag) and never from the position of the
-        previous move: a real drag is a whole series of mouse moves and
-        the shape has to follow the pointer, not the last step of it,
-        which would leave a box of a long drag almost where it started.
-        A pointer that comes back onto the press point therefore answers
-        the geometry of the start instead of a stale offset.
-        """
-
-        anchor = self._drag_anchor
-        if anchor is None:
-            return False
-        index = self._selected
-        if index < 0 or index >= len(self._edit_shapes):
-            return False
-        point = self.widget_to_image(widget_point)
-        delta = (
-            float(point.x()) - float(anchor[0]),
-            float(point.y()) - float(anchor[1]),
-        )
-        shape = self._edit_shapes[index][0]
-        if self._active_handle is None:
-            # A move translates the whole box: the translation itself is
-            # clamped (see _clamped_delta) so the box slides along the
-            # border of the picture instead of being folded onto it.
-            delta = self._clamped_delta(self._drag_start_points, delta)
-        points = self._dragged_points(shape, delta)
-        if points == shape_points(shape):
-            return False
-        self.apply_edit_points(index, self._clamped_points(points))
-        return True
-
-    def _dragged_points(self, shape: Any, delta):
-        """Return the point set of one drag step of a shape.
-
-        A shape without a handle is moved as a whole; a shape with one is
-        resized. The point set is derived from the points the drag
-        started with and from the displacement between the press point
-        and the pointer, never from the previous step: a drag that runs
-        into the border of the picture and is pulled back returns to the
-        geometry of the start instead of accumulating error, and the
-        anchor of a resize stays the point the button went down on.
-        """
-
-        if self._active_handle is None:
-            return [
-                (x + delta[0], y + delta[1])
-                for x, y in self._drag_start_points
-            ]
-        return resize_points(
-            shape_type_of(shape),
-            self._drag_start_points,
-            str(self._active_handle),
-            delta,
-            self._drag_anchor,
-        )
-
-    def _clamped_delta(self, start_points, delta):
-        """Return the translation that keeps a whole box in the picture.
-
-        A move is clamped as one *translation*, never coordinate by
-        coordinate: the delta is shortened until the bounding box of the
-        translated points sits in [0, width] x [0, height] again, so a
-        box dragged far over the border slides along it and keeps its
-        width, its height and its area. Clamping the points one by one
-        would fold every point that left the picture onto the border
-        instead - a box of 40x30 pulled to the upper left corner would
-        come out as four points on (0, 0), an annotation of no area at
-        all, which is exactly the degenerate shape a resize is protected
-        from by MIN_BOX_SIZE.
-
-        The clamp of the *points* still runs afterwards (see
-        _clamped_points, the very rule records.update_shape_points writes
-        with), and it is the clamp that keeps the live picture and the
-        stored json in agreement: this one only makes sure the picture it
-        is applied to is still a box.
-
-        An axis the drag does not move is answered with exactly 0.0: the
-        coordinates of that axis stay bit for bit the ones of the press
-        point, so a purely horizontal drag can never nudge a y of the
-        shape (and the same holds the other way round), and a drag that
-        comes home lands on the geometry it started from to the last
-        decimal.
-
-        A box the picture cannot hold at all - one wider or taller than
-        the image itself, which the drag of a ring over the border can
-        produce - is answered with no translation: it is stopped where it
-        is instead of being pushed around by a clamp that has no room to
-        hand out.
-
-        An axis whose picture size is unknown is answered the very same
-        way: a canvas without a picture reports two sizes of 0.0 (see
-        image_size), so no border of that axis can be clamped against
-        and no translation can be judged for it.
-        """
-
-        step_x, step_y = float(delta[0]), float(delta[1])
-        if step_x == 0.0 and step_y == 0.0:
-            return (step_x, step_y)
-        box = _point_box(start_points)
-        if box is None:
-            return (step_x, step_y)
-        left, top, right, bottom = box
-        size = self.image_size()
-        limits = (
-            (0.0, size.width()) if size.width() > 0.0 else None,
-            (0.0, size.height()) if size.height() > 0.0 else None,
-        )
-        sides = (
-            (float(left), float(right) - float(left)),
-            (float(top), float(bottom) - float(top)),
-        )
-        moved = (step_x, step_y)
-        result = []
-        for axis in (0, 1):
-            if limits[axis] is None:
-                # the picture has no size on this axis: there is no
-                # border to clamp against, so the axis is answered with
-                # the 0.0 of a drag that does not move it instead of
-                # unpacking a limit that is None
-                result.append(0.0)
-                continue
-            low, high = limits[axis]
-            start, span = sides[axis]
-            if moved[axis] == 0.0:
-                result.append(0.0)
-                continue
-            if span > high - low:
-                # the picture cannot hold this box on that axis: it is
-                # left where it is instead of being pushed around by a
-                # clamp with no room to hand out
-                result.append(0.0)
-                continue
-            result.append(
-                min(max(moved[axis], low - start), high - start - span)
-            )
-        return (result[0], result[1])
-
-    def apply_edit_points(self, index: int, points) -> bool:
-        """Replace the points of one editable shape and repaint it.
-
-        The canvas owns no file: this is the live picture of a drag. The
-        page stores what the drag produced when the button comes up (see
-        shape_move_finished), so a drag that is still moving never
-        touches the staging json.
-        """
-
-        shape = self._edit_shape(index)
-        if shape is None:
-            return False
-        folder = [[float(x), float(y)] for x, y in points]
-        if isinstance(shape, dict):
-            shape["points"] = folder
-        else:
-            shape.points = folder
-        self.update()
-        return True
-
-    def _clamped_points(self, points):
-        """Clamp a point set into the picture, rounded to 2 decimals.
-
-        The clamp is the very same rule records.update_shape_points
-        writes with, so the live picture of a drag and the json stored on
-        release agree to the last decimal: the box never jumps when the
-        button comes up.
-        """
-
-        size = self.image_size()
-        width = size.width() if size.width() > 0 else None
-        height = size.height() if size.height() > 0 else None
-        result = []
-        for x, y in points:
-            value_x = float(x)
-            value_y = float(y)
-            if width is not None:
-                value_x = min(max(value_x, 0.0), width)
-            if height is not None:
-                value_y = min(max(value_y, 0.0), height)
-            result.append((round(value_x, 2), round(value_y, 2)))
-        return result
-
-    def _finish_drag(self) -> bool:
-        """End a drag and publish the new point set when it moved.
-
-        A plain click only selects, and so does a click that happens to
-        land on one of the eight handles, a drag that was pulled back
-        onto the press point, and a resize that ran into its own
-        MIN_BOX_SIZE stop: the point set is compared with the one the
-        gesture started from - both of them read through the very clamp
-        the writer applies - and a geometry that did not change is never
-        published, so no click of the user writes a file or marks a
-        record edited. The comparison also covers the shape type whose
-        resize branch has nothing to resize (see resize_points), which
-        hands its own points back.
-        """
-
-        self._active_handle = None
-        self._drag_anchor = None
-        if self._selected < 0:
-            self._drag_start_points = []
-            self._restore_edit_cursor()
-            return False
-        start = self._drag_start_points
-        self._drag_start_points = []
-        shape = self._edit_shape(self._selected)
-        if shape is None:
-            self._restore_edit_cursor()
-            return False
-        points = shape_points(shape)
-        if self._clamped_points(points) == self._clamped_points(start):
-            self._restore_edit_cursor()
-            return False
-        self._restore_edit_cursor()
-        self.shape_move_finished.emit(
-            self._edit_record_id, self._selected, points
-        )
-        return True
 
     # ---------------------------------------------------------- view state
     def image_size(self) -> QtCore.QSizeF:
@@ -1615,36 +677,16 @@ class ImageCanvas(QtWidgets.QWidget):
             event.ignore()
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        """Start a pan with the left button, or an edit with the middle one.
+        """Grab the picture with the left button.
 
-        The middle button is the switch of the edit state: it is only
-        honoured while the canvas really edits something - a canvas that
-        was handed no editable shape keeps its previous behaviour and
-        ignores the button - and it is only honoured on the picture
-        itself, so a click in the letterbox around a fitted image starts
-        nothing. With the edit state on, the left button selects and
-        drags a shape instead of panning: the two gestures would fight
-        over the same button, and the wheel is right there for the view.
+        The left button starts the pan and nothing else: this canvas owns
+        one gesture. Every other button - the middle one of the previous
+        revision, the right one the page previews with - is handed over
+        to Qt untouched.
         """
 
-        button = event.button()
-        if button == QtCore.Qt.MouseButton.MiddleButton:
-            if (self.editable or self._edit_shapes) and self._inside_image(
-                QtCore.QPointF(event.position())
-            ):
-                self.set_edit_mode(not self.editable)
-                event.accept()
-                return
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
-            return
-        if button != QtCore.Qt.MouseButton.LeftButton:
-            super().mousePressEvent(event)
-            return
-        if self.editable:
-            position = QtCore.QPointF(event.position())
-            if not self._begin_drag(position):
-                self.clear_selection()
-            event.accept()
             return
         self._panning = True
         self._pan_origin = QtCore.QPointF(event.position())
@@ -1652,21 +694,13 @@ class ImageCanvas(QtWidgets.QWidget):
         event.accept()
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        """Drag a shape in the edit state, pan the picture otherwise."""
+        """Pan the picture while the left button is held."""
 
         left_held = bool(event.buttons() & QtCore.Qt.MouseButton.LeftButton)
-        position = QtCore.QPointF(event.position())
-        if self.editable and left_held and self._drag_anchor is not None:
-            self._update_drag(position)
-            event.accept()
-            return
-        if self.editable:
-            self._update_hover_cursor(position)
-            super().mouseMoveEvent(event)
-            return
         if not self._panning or not left_held:
             super().mouseMoveEvent(event)
             return
+        position = QtCore.QPointF(event.position())
         delta = position - self._pan_origin
         self._pan_origin = position
         self.pan_by(delta)
@@ -1675,18 +709,14 @@ class ImageCanvas(QtWidgets.QWidget):
     def mouseReleaseEvent(  # noqa: N802
         self, event: QtGui.QMouseEvent
     ) -> None:
-        """End the pan, or publish the shape a drag just produced."""
+        """End the pan and give the idle cursor back."""
 
         if event.button() != QtCore.Qt.MouseButton.LeftButton:
             super().mouseReleaseEvent(event)
             return
-        if self.editable and self._drag_anchor is not None:
-            self._finish_drag()
-            event.accept()
-            return
         if self._panning:
             self._panning = False
-            self._restore_edit_cursor()
+            self.unsetCursor()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1694,26 +724,13 @@ class ImageCanvas(QtWidgets.QWidget):
     def mouseDoubleClickEvent(  # noqa: N802
         self, event: QtGui.QMouseEvent
     ) -> None:
-        """Rename a box in the edit state, fit the image otherwise.
+        """Fit the whole picture again on a left double click.
 
-        A double click inside a box asks for the label dialog; a double
-        click on empty space keeps the gesture of the previous revision
-        and fits the whole picture again, so the way back to the first
-        screen is never lost - not even in the edit state.
+        The way back to the first screen stays one double click, wherever
+        the pointer sits.
         """
 
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            if self.editable:
-                index, _handle = self._edit_at(
-                    QtCore.QPointF(event.position())
-                )
-                if index >= 0:
-                    self.select_shape(index)
-                    self.shape_rename_requested.emit(
-                        self._edit_record_id, index
-                    )
-                    event.accept()
-                    return
             self.fit_view()
             event.accept()
             return
@@ -1751,11 +768,10 @@ class ImageCanvas(QtWidgets.QWidget):
             )
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             if self.show_overlay and self.show_ground_truth:
-                # the edit overlay needs the colour of every box it
-                # re-strokes, so the ground truth pass hands its own
-                # list over instead of letting it be computed twice;
-                # the very same builder runs in set_shapes, so the
-                # overlay never reads a colour of another record
+                # the colour of every box is built once and handed to
+                # the pass below; the very same builder runs in
+                # set_shapes, so no colour of another record survives a
+                # repaint
                 self._gt_colors = self._gt_outline_colors()
                 self._draw_shapes(
                     painter,
@@ -1773,7 +789,6 @@ class ImageCanvas(QtWidgets.QWidget):
                     draw_labels=True,
                     statuses=self._pred_statuses,
                 )
-            self._draw_edit_overlay(painter)
             painter.restore()
         painter.end()
         if self.title:
@@ -1811,8 +826,8 @@ class ImageCanvas(QtWidgets.QWidget):
 
         The colours may be handed over by the caller; they are a pure
         function of the shapes and of their states, so the ground truth
-        pass of the edit mode computes them once and shares them with the
-        overlay instead of walking both lists twice per repaint.
+        pass computes them once instead of walking the same list a
+        second time in one repaint.
         """
 
         if colors is None:
@@ -1866,78 +881,6 @@ class ImageCanvas(QtWidgets.QWidget):
                     painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
         if labels:
             self._draw_labels(painter, labels)
-
-    def _draw_edit_overlay(self, painter: QtGui.QPainter) -> None:
-        """Stroke the selected box and its eight handles.
-
-        The pass runs under the image transform of the caller, exactly
-        like the shapes it decorates, and it paints three things: the
-        outline of every shape the edit mode refuses, in grey and
-        dashed, so the user sees at a glance what may be picked; the
-        outline of the selected box again, wider and in the handle
-        colour; and the eight handles themselves, one small white
-        square with a coloured border per corner and per edge midpoint.
-
-        A box is still never filled - the picture under it stays visible
-        - while a handle is a solid little square: it is a widget the
-        user aims at, not a region of the annotation. Nothing at all is
-        painted while the edit state is off, which is what keeps the
-        plain viewer of the previous revision untouched.
-
-        The colour of the selection is the one of its own judgement
-        state; a canvas whose ground truth is hidden or empty carries no
-        colour list at all and the box is stroked with the plain ground
-        truth colour, never with a colour of the record shown before.
-        """
-
-        if not self.editable:
-            return
-        entries = self._edit_shapes
-        if not entries:
-            return
-        scale = self.view_scale()
-        size = HANDLE_SIZE / scale if scale > 0 else HANDLE_SIZE
-        half = size / 2.0
-        for index, (shape, can_edit) in enumerate(entries):
-            points = shape_points(shape)
-            if not points:
-                continue
-            if not can_edit:
-                pen = QtGui.QPen(UNEDITABLE_COLOR, UNEDITABLE_PEN_WIDTH)
-                pen.setCosmetic(True)
-                pen.setStyle(QtCore.Qt.PenStyle.DashLine)
-                painter.setPen(pen)
-                painter.setBrush(QtGui.QBrush())
-                painter.drawPolygon(
-                    QtGui.QPolygonF([QtCore.QPointF(x, y) for x, y in points])
-                )
-                continue
-            if index != self._selected:
-                continue
-            color = (
-                self._gt_colors[index]
-                if index < len(self._gt_colors)
-                else GT_COLOR
-            )
-            box = _point_box(points)
-            selected = QtGui.QPen(color, SELECTED_PEN_WIDTH)
-            selected.setCosmetic(True)
-            painter.setPen(selected)
-            painter.setBrush(QtGui.QBrush())
-            painter.drawRect(
-                QtCore.QRectF(
-                    QtCore.QPointF(box[0], box[1]),
-                    QtCore.QPointF(box[2], box[3]),
-                )
-            )
-            painter.setPen(QtGui.QPen(HANDLE_COLOR, 1.0))
-            painter.setBrush(QtGui.QBrush(HANDLE_FILL_COLOR))
-            for handle in box_handles(points):
-                painter.drawRect(
-                    QtCore.QRectF(
-                        handle[0] - half, handle[1] - half, size, size
-                    )
-                )
 
     def _label_anchor(self, shape: Any) -> QtCore.QPointF:
         """Return the image point the label of one box hangs from.
@@ -2143,19 +1086,11 @@ class ImageCanvas(QtWidgets.QWidget):
 __all__ = [
     "BOX_COLOR",
     "CLASS_MISMATCH_COLOR",
-    "EDIT_CURSOR",
-    "EDIT_MODE_TITLE_SUFFIX",
     "FALSE_POSITIVE_COLOR",
     "FIT_PADDING",
     "GT_COLOR",
-    "HANDLE_COLOR",
-    "HANDLE_CURSORS",
-    "HANDLE_NAMES",
-    "HANDLE_SIZE",
-    "HIT_TOLERANCE",
     "ImageCanvas",
     "IOU_BELOW_COLOR",
-    "MIN_BOX_SIZE",
     "LABEL_GAP",
     "LABEL_MARGIN",
     "LABEL_OUTLINE",
@@ -2177,19 +1112,11 @@ __all__ = [
     "STATE_OK_PAIR",
     "STATE_TO_COLOR",
     "WHEEL_DELTA",
-    "SELECTED_PEN_WIDTH",
-    "UNEDITABLE_COLOR",
     "WHEEL_ZOOM_STEP",
     "ZOOM_ANIM_FRACTION",
     "ZOOM_ANIM_INTERVAL_MS",
-    "box_handles",
     "clamp_zoom",
-    "contains_point",
-    "handle_cursor",
-    "hit_test",
     "load_pixmap",
-    "nearest_point",
-    "resize_points",
     "shape_color",
     "shape_colors",
     "shape_label",

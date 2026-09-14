@@ -2,13 +2,14 @@
 
 import os
 import os.path as osp
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtTest, QtWidgets
 
 from anylabeling.custom.model_validation import dataset
 from anylabeling.custom.model_validation import records as records_module
@@ -82,6 +83,29 @@ def write_image(path: str) -> None:
     ok, buffer = cv2.imencode(".png", image)
     assert ok
     buffer.tofile(path)
+
+
+def wait_for_source_scan(dialog, source: str, timeout_ms: int = 5000) -> bool:
+    """Let the debounced scan of one source folder answer.
+
+    The pair count of a source directory is computed behind a worker
+    thread and a debounce now (see _on_dataset_changed), so a test that
+    wants the preview of a folder has to let that answer arrive before
+    it reads the line.
+    """
+
+    def answered() -> bool:
+        return (
+            dialog.source_dataset_dir == source
+            and not dialog._scan_pending
+        )
+
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        if answered():
+            return True
+        QtTest.QTest.qWait(10)
+    return answered()
 
 
 def label_payload(relpath: str) -> dict:
@@ -194,7 +218,7 @@ def test_preview_refresh_survives_the_first_configuration(dialog):
 
 
 def test_source_directory_is_enumerated_once(dialog, tmp_path, monkeypatch):
-    "The preview caches the pair count of the selected directory."
+    "The scheduler walks the selected directory, and only once."
 
     source = str(tmp_path / "source")
     write_image(osp.join(source, "a.png"))
@@ -211,7 +235,13 @@ def test_source_directory_is_enumerated_once(dialog, tmp_path, monkeypatch):
     monkeypatch.setattr(dataset, "collect_pairs", counting_collect)
     page = dialog.config_page
     page.set_dataset(source)
+    # the slot that watches the path line edit never walks the folder:
+    # the debounced scan of the scheduler does, once
+    assert calls == []
+    assert dialog._scan_pending is True
+    assert wait_for_source_scan(dialog, source)
     assert calls == [source]
+    assert dialog.source_pair_count == 2
     page.augment_check.setChecked(True)
     # the default mode is ratio: 2 valid originals x 0.5 = 1 copy
     assert page.mode_combo.currentData() == RATIO_MODE
@@ -525,7 +555,10 @@ def test_dropping_a_directory_fills_the_source_and_counts_it(
     event = drop_urls(page, [source])
     assert event.accepted == 1
     assert same_path(page.dataset_edit.text(), source)
-    # textChanged -> _on_dataset_changed cached the pair count once
+    # textChanged -> _on_dataset_changed asked for one scan, and the
+    # slot itself never walked the folder
+    assert calls == []
+    assert wait_for_source_scan(dialog, source)
     assert calls == [source]
     assert dialog.source_pair_count == 2
     # and the preview followed the default augmentation settings
@@ -693,6 +726,7 @@ def test_the_first_screen_previews_the_enabled_augmentation(dialog, tmp_path):
     dataset.write_json(osp.join(source, "b.json"), label_payload("b.png"))
     page = dialog.config_page
     page.set_dataset(source)
+    assert wait_for_source_scan(dialog, source)
     # no explicit setChecked(True) anywhere: the screen default alone counts
     dialog._refresh_preview()
     counts = dialog.preview_counts(2, page.collect_config())
@@ -713,6 +747,7 @@ def test_turning_the_augment_default_off_greys_the_controls(dialog, tmp_path):
     dataset.write_json(osp.join(source, "a.json"), label_payload("a.png"))
     page = dialog.config_page
     page.set_dataset(source)
+    assert wait_for_source_scan(dialog, source)
     page.augment_check.setChecked(False)
     assert page.mode_combo.isEnabled() is False
     # the three amount inputs, hidden and visible ones alike, are grey
@@ -802,6 +837,7 @@ def test_the_hidden_amount_control_does_not_feed_the_preview(dialog, tmp_path):
     dataset.write_json(osp.join(source, "a.json"), label_payload("a.png"))
     page = dialog.config_page
     page.set_dataset(source)
+    assert wait_for_source_scan(dialog, source)
     page.augment_check.setChecked(True)
     page.mode_combo.setCurrentIndex(page.mode_combo.findData(MULTIPLIER_MODE))
     page.multiplier_spin.setValue(4)

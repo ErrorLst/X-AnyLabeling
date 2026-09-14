@@ -55,26 +55,12 @@ augmented copy until the button is released. The preview is a display
 state of this page alone - it reads the records that are already in
 memory and never runs inference again.
 
-The middle button on either canvas switches the *ROI edit mode* on and
-off, and only the left canvas is edited: the ground truth of the current
-record is the annotation, the prediction of the right canvas is the
-output of the model and never a thing to correct. In the edit mode the
-left button selects and moves a box, a handle of the selection resizes
-it, a double click inside a box opens the label chooser of the class
-table (a choice, never a free text) and a double click on empty space
-keeps fitting the picture. The drag of the canvas is stored by this page
-- records.update_shape_points writes the staging json - and the row of
-the record is rewritten in place, so the list never loses its scroll
-position over an edit. The verdict of the record is deliberately left
-alone: a corrected box does not re-run the matching, the reason of the
-run is what the report says.
-
-The mode belongs to the record it was armed on. Moving the selection to
-another row is what leaves it (see _on_selection_changed): the gestures
-of the mode would otherwise travel to the next picture without a word,
-while a repaint of the *same* record - a finished drag, a renamed
-label, a display switch - keeps the mode exactly where the user left
-it.
+The page itself never edits a record: a correction is made in the main
+window of the tool, which owns the annotation editor, and the results
+page only shows the staging json the editor wrote. The E key of the
+page is the way over there: it carries the current record to the main
+window (open_in_main_requested) and leaves the staging copy, the list
+and the selection of this page exactly where the user left them.
 """
 
 from __future__ import annotations
@@ -89,7 +75,6 @@ from ..records import ValidationRecord
 from .. import judge as judge_module
 from ..labelme_io import REGION_SHAPE_TYPES
 from . import image_view as image_view_module
-from . import label_dialog
 from .image_view import (
     CLASS_MISMATCH_COLOR,
     FALSE_POSITIVE_COLOR,
@@ -142,11 +127,12 @@ GREY_TEXT_COLOR = QtGui.QColor(140, 140, 140)
 # The keyboard navigation of the list: one letter per direction, so the
 # two hands never leave the mouse row.
 SHORTCUT_HINT = (
-    "快捷键：A 上一张 / D 下一张（到首尾停住，选中行自动滚动到可见）。"
+    "快捷键：A 上一张 / D 下一张（到首尾停住，选中行自动滚动到可见）；"
+    "E = 在主窗口编辑当前记录。"
 )
 SHORTCUT_TOOLTIP = (
-    "结果页快捷键：A = 上一张，D = 下一张；焦点在本页（含列表内）时生效，"
-    "到首尾即停，不循环。"
+    "结果页快捷键：A = 上一张，D = 下一张，E = 在主窗口编辑当前记录；"
+    "焦点在本页（含列表内）时生效，到首尾即停，不循环。"
 )
 
 # The legend of the judgement colours, on its own line under the display
@@ -195,27 +181,11 @@ PREVIEW_HINT_ORIGINAL = "该记录没有父图：右键预览只用于增强图�
 PREVIEW_HINT_MISSING = "该记录的父图不在本次记录列表里，无法预览。"
 PREVIEW_NOTE_PREFIX = "原图结果（预览）："
 PREVIEW_NOTE_SUFFIX = "松开右键恢复当前增强图"
-# The tooltip of the canvases stays the one of the preview, word for word:
-# the existing delivery pins that string. The edit gesture is documented
-# by the hint line of the edit mode instead (see EDIT_HINT_TOOLTIP).
+# The tooltip of the canvases stays the one of the preview, word for
+# word: the existing delivery pins that string. The keyboard of the page
+# is documented by the hint line under the list instead (see
+# SHORTCUT_HINT).
 PREVIEW_NOTE_NOT_JUDGED = "（原图未判定，框保持本色）"
-
-# The one line of the ROI edit mode. It is hidden while the mode is off,
-# so the page keeps the compact layout of the previous revision until the
-# user really asks for the editing gestures.
-EDIT_HINT = (
-    "ROI 编辑模式：中键再次退出。左键点框选中并拖动整体移动；"
-    "拖动选中框的 8 个手柄修改尺寸；框内双击重命名标签"
-    "（标签只能从分类表中选择）；空白处双击仍是整图适配。"
-)
-EDIT_HINT_TOOLTIP = (
-    "进入/退出：在任意一幅画布上按鼠标中键；只有左幅 GT 是可编辑的标注，"
-    "右幅 Pred 只读。编辑只写暂存副本，源数据集不会被修改；判定结果不重算。"
-)
-EDIT_HINT_NO_REGION = "当前记录没有可编辑的区域标注（rectangle/rotation/quadrilateral/polygon）。"
-EDIT_HINT_NO_PREVIEW = "编辑模式下右键预览已关闭：先中键退出编辑模式。"
-EDIT_HINT_NO_CLASSES = "分类表为空：本次运行没有可选的标签，无法重命名。"
-EDIT_TITLE_SUFFIX = image_view_module.EDIT_MODE_TITLE_SUFFIX
 
 
 def legend_html() -> str:
@@ -429,19 +399,6 @@ def record_sort_key(record: ValidationRecord) -> Tuple[int, List[Any]]:
     )
 
 
-SHAPE_TYPE_CHOICES = (
-    "rectangle",
-    "polygon",
-    "rotation",
-    "quadrilateral",
-    "point",
-    "line",
-    "linestrip",
-    "circle",
-    "cuboid",
-)
-
-
 def marked_record(record: ValidationRecord) -> bool:
     """Return True when a record carries one of the two marks.
 
@@ -466,12 +423,11 @@ def record_modified(record: ValidationRecord) -> bool:
     """Return True when a user changed or marked a record.
 
     This is the 修改 filter, and it is the union of the two ways a
-    record can leave its own run: the *edit* flags a correction of the
-    annotation writes (records.update_shape / records.update_shape_points
-    set records.edited) and the two marks of the list - the delete mark
-    of an original and the export mark of an augmented copy (see
-    marked_record). The filter reads those flags themselves and never
-    keeps a list of its own.
+    record can leave its own run: the *edit* flag a correction made in
+    the main window writes (records.edited) and the two marks of the
+    list - the delete mark of an original and the export mark of an
+    augmented copy (see marked_record). The filter reads those flags
+    themselves and never keeps a list of its own.
     """
 
     return bool(record.edited) or marked_record(record)
@@ -722,17 +678,12 @@ class ResultsPage(QtWidgets.QWidget):
     toggle_deleted = QtCore.pyqtSignal(list, bool)
     toggle_export = QtCore.pyqtSignal(list, bool)
     export_requested = QtCore.pyqtSignal()
-    # kept as the documented hook of the record layer (records.update_shape
-    # is still there); the read only view of this revision emits nothing.
-    edit_requested = QtCore.pyqtSignal(str, int, object, object)
+    # The E key of the page asks the window that holds this page to open
+    # the current record in the main window, where the annotation editor
+    # lives. The request carries no argument: the receiver reads the
+    # current record from this page itself.
+    open_in_main_requested = QtCore.pyqtSignal()
     selection_changed = QtCore.pyqtSignal(str)
-    # The signal of the ROI edit mode: the canvas publishes the point
-    # set a drag produced and the dialog of this page is what stores it
-    # (records.update_shape_points), so the page itself keeps owning no
-    # file. The rename of a box needs no signal of its own: the page
-    # asks for the new label itself and requests it on edit_requested,
-    # the very seam the label edit of the previous revision used.
-    shape_moved = QtCore.pyqtSignal(str, int, object)
 
     def __init__(self, parent: Optional[Any] = None) -> None:
         super().__init__(parent)
@@ -756,19 +707,6 @@ class ResultsPage(QtWidgets.QWidget):
         # current augmented record was made from
         self._preview_active = False
         self._preview_record: Optional[ValidationRecord] = None
-        # the ROI edit mode: off out of the box, and it only ever holds
-        # the ground truth of the record on screen (the predictions of
-        # the right canvas are the output of the model, never a thing to
-        # correct); _edit_record_id is the record the editable shapes
-        # were handed over for, so the selection survives a repaint of
-        # the same record and is dropped when another one arrives
-        self.edit_mode = False
-        self._edit_record_id = ""
-        self._edit_selection = -1
-        # the record the two canvases were last answered the selection
-        # signal for: the edit mode is dropped on a *change* of it, not
-        # on the signal (see _on_selection_changed)
-        self._shown_record_id = ""
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -884,14 +822,6 @@ class ResultsPage(QtWidgets.QWidget):
         self.preview_note.setVisible(False)
         right_layout.addWidget(self.preview_note)
 
-        # the one line of the edit mode, written where the gestures
-        # happen and hidden while the mode is off
-        self.edit_hint = QtWidgets.QLabel("")
-        self.edit_hint.setWordWrap(True)
-        self.edit_hint.setToolTip(self.tr(EDIT_HINT_TOOLTIP))
-        self.edit_hint.setVisible(False)
-        right_layout.addWidget(self.edit_hint)
-
         canvases = QtWidgets.QHBoxLayout()
         self.gt_canvas = ImageCanvas(self.tr(GT_CANVAS_TITLE))
         self.pred_canvas = ImageCanvas(self.tr(PRED_CANVAS_TITLE))
@@ -911,16 +841,6 @@ class ResultsPage(QtWidgets.QWidget):
         self.pred_canvas.view_changed.connect(
             lambda *_state: self._mirror_view(self.pred_canvas, self.gt_canvas)
         )
-        # the edit mode always belongs to the left canvas, whatever
-        # canvas the user asked on: the right one only mirrors the mode
-        # for its title and forwards every gesture to the left one
-        self.gt_canvas.edit_mode_toggled.connect(self._sync_edit_mode)
-        self.pred_canvas.edit_mode_toggled.connect(self._sync_edit_mode)
-        self.gt_canvas.shape_selected.connect(self._on_shape_selected)
-        self.pred_canvas.shape_selected.connect(lambda *args: None)
-        for canvas in (self.gt_canvas, self.pred_canvas):
-            canvas.shape_move_finished.connect(self.on_shape_moved)
-            canvas.shape_rename_requested.connect(self.on_shape_rename)
         canvases.addWidget(self.gt_canvas, 1)
         canvases.addWidget(self.pred_canvas, 1)
         # the two pictures own the whole right hand side: the detail
@@ -966,9 +886,9 @@ class ResultsPage(QtWidgets.QWidget):
         self._install_shortcuts()
 
     def _install_shortcuts(self) -> None:
-        """Install the A / D navigation of the record list.
+        """Install the A / D navigation and the E handover of the list.
 
-        The two shortcuts belong to this page *and to its children*, so
+        The three shortcuts belong to this page *and to its children*, so
         they fire while the list (or any other control of the page) holds
         the focus and they never fire while the user works in another
         window. A single letter is no shortcut of the tree itself, so the
@@ -989,6 +909,18 @@ class ResultsPage(QtWidgets.QWidget):
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self.next_shortcut.activated.connect(self.select_next_record)
+        # E asks the window that holds this page to edit the current
+        # record in the main window: the page itself never writes an
+        # annotation, it only carries the request over
+        self.open_in_main_shortcut = QtGui.QShortcut(
+            QtGui.QKeySequence(QtCore.Qt.Key.Key_E), self
+        )
+        self.open_in_main_shortcut.setContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self.open_in_main_shortcut.activated.connect(
+            self.open_in_main_requested.emit
+        )
 
     # ---------------------------------------------------------- navigation
     def select_relative_row(self, step: int) -> bool:
@@ -1520,12 +1452,6 @@ class ResultsPage(QtWidgets.QWidget):
             (self.pred_canvas, PRED_CANVAS_TITLE),
         ):
             text = prefix + self.tr(title)
-            # the edit mode is a state of the left canvas alone, so its
-            # suffix is written there and nowhere else: the right canvas
-            # keeps the title of the record it shows, whose predictions
-            # are never edited
-            if self.edit_mode and canvas is self.gt_canvas:
-                text += self.tr(EDIT_TITLE_SUFFIX)
             if canvas.title != text:
                 canvas.title = text
                 canvas.update()
@@ -1533,9 +1459,8 @@ class ResultsPage(QtWidgets.QWidget):
     def _set_note(self, text: str) -> None:
         """Write the one status line of the right hand side.
 
-        The line carries the state of the preview and the refusal of the
-        edit mode; an empty text hides it, which is what a page without
-        a held button and without an edit mode shows.
+        The line carries the state of the preview; an empty text hides
+        it, which is what a page without a held button shows.
         """
 
         self.preview_note.setText(str(text))
@@ -1555,43 +1480,12 @@ class ResultsPage(QtWidgets.QWidget):
         consumed here, so a canvas never starts a pan or a context menu
         on the right button. A left press is the second way out: the
         preview ends and the canvas pans the picture it shows.
-
-        The middle button of the edit mode is filtered here as well, and
-        its rule is deliberately one sided: *entering* the mode needs the
-        pointer to sit on the picture, while *leaving* it works wherever
-        the pointer is - the black band around a fitted image included.
-        Arming the gesture on the annotation from the letterbox would be
-        a click that selects nothing, but a way out that a user cannot
-        reach - a picture zoomed past the widget, a pointer that happens
-        to rest on the border - would lock the mode in place. The tests
-        pin both directions (test_mv_edit_mode).
         """
 
         if watched in (self.gt_canvas, self.pred_canvas):
             kind = event.type()
             if kind == QtCore.QEvent.Type.MouseButtonPress:
-                if event.button() == QtCore.Qt.MouseButton.MiddleButton:
-                    # The middle button is the switch of the edit mode,
-                    # on either canvas and whether the mode is on or
-                    # off: it always acts on the *left* canvas, because
-                    # the ground truth is the annotation and the
-                    # prediction of the right one is the output of the
-                    # model. A press in the letterbox around the picture
-                    # starts nothing: it is swallowed here so the
-                    # canvases below never see a half gesture either.
-                    if self.edit_mode or self._canvas_has_picture(
-                        watched, QtCore.QPointF(event.position())
-                    ):
-                        self.toggle_edit_mode()
-                    return True
                 if event.button() == QtCore.Qt.MouseButton.RightButton:
-                    # the edit mode refuses the preview: a held right
-                    # button would replace the very picture the user is
-                    # dragging, so the press is answered with one line
-                    # of status instead
-                    if self.edit_mode:
-                        self._set_note(self.tr(EDIT_HINT_NO_PREVIEW))
-                        return True
                     self.begin_parent_preview()
                     return True
                 if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -1602,203 +1496,20 @@ class ResultsPage(QtWidgets.QWidget):
                     return True
         return super().eventFilter(watched, event)
 
-    # ------------------------------------------------------------- edit ROI
-    def _canvas_has_picture(
-        self, canvas: ImageCanvas, position: QtCore.QPointF
-    ) -> bool:
-        """Return True when a position sits on the picture of a canvas.
-
-        The edit mode is only ever asked for on the picture itself: a
-        middle click in the letterbox around a fitted image is no
-        request to edit anything and must not arm the gesture either.
-        """
-
-        size = canvas.image_size()
-        if size.width() <= 0 or size.height() <= 0:
-            return False
-        return bool(canvas._target_rect().contains(position))
-
-    def editable_regions(self) -> List[Any]:
-        """Return the region shapes of the current record, editable ones.
-
-        The interface of the *original* annotation is the only thing the
-        edit mode ever hands over: the ground truth of the record on
-        screen, filtered down to the region shape types of
-        labelme_io.REGION_SHAPE_TYPES. A point, a line, a circle or a
-        cuboid is a shape this tool does not resize and stays read only.
-        """
-
-        record = self.current_record()
-        if record is None:
-            return []
-        ground_truth, _predictions, _detail = self._load_shapes(record)
-        return [
-            shape
-            for shape in ground_truth
-            if str(shape.get("shape_type") or "") in REGION_SHAPE_TYPES
-        ]
-
-    def leave_edit_mode(self) -> bool:
-        """Drop the ROI edit mode of the record that is leaving the screen.
-
-        Called wherever the page stops showing one record and starts
-        showing another (see _on_selection_changed) and by the way out
-        of the mode itself. The mode, the selection of the left canvas,
-        the title suffix, the hint line and the shapes the canvas was
-        allowed to edit all go back to the state of a plain viewer in
-        one step - so the gestures of the mode can never travel to a
-        picture the user has not armed them on. An already left mode is
-        answered with False and costs nothing.
-        """
-
-        if not self.edit_mode:
-            return False
-        self.edit_mode = False
-        self._edit_record_id = ""
-        self._edit_selection = -1
-        self.gt_canvas.clear_selection()
-        self.gt_canvas.set_edit_mode(False)
-        self.pred_canvas.set_edit_mode(False)
-        self._sync_edit_mode(False)
-        # the canvas keeps the objects it was handed over until the next
-        # repaint hands it another set (see ImageCanvas.set_editable_shapes),
-        # so the mode drops the set itself as well: an inactive canvas
-        # holding a shape the user may not touch any more would make the
-        # state of the page read as two answers to one question
-        self.gt_canvas.set_editable_shapes("", [], [])
-        return True
-
-    def toggle_edit_mode(self) -> bool:
-        """Enter or leave the ROI edit mode (the middle button).
-
-        Entering the mode leaves the parent preview first: the preview
-        replaces the picture on screen by another record, while an edit
-        always belongs to the row the user selected. A record without a
-        single editable region shape answers with one line of status
-        instead of arming gestures that could not do anything.
-        """
-
-        # the way out of the mode always works: only *entering* it is
-        # refused when the record has nothing to edit, so a record that
-        # turns empty under the user never traps the gestures
-        if not self.edit_mode and not self.editable_regions():
-            self._set_note(self.tr(EDIT_HINT_NO_REGION))
-            return False
-        self._drop_preview()
-        self._set_note("")
-        if self.edit_mode:
-            self.leave_edit_mode()
-            self._refresh_canvases()
-            return True
-        self.edit_mode = True
-        self.gt_canvas.set_edit_mode(True)
-        self.pred_canvas.set_edit_mode(False)
-        self._sync_edit_mode(True)
-        self._refresh_canvases()
-        return True
-
-    def _sync_edit_mode(self, enabled: bool) -> None:
-        """Write the edit state into the titles and the hint line.
-
-        The mode is one state of the whole page, so both canvases are
-        told about it: the right one mirrors it (a middle click there
-        ends the mode as well) while only the left one ever holds an
-        editable shape.
-        """
-
-        self.edit_mode = bool(enabled)
-        self.pred_canvas.set_edit_mode(False)
-        self._apply_canvas_titles(self.preview_active())
-        self.edit_hint.setText(self.tr(EDIT_HINT) if self.edit_mode else "")
-        self.edit_hint.setVisible(self.edit_mode)
-
-    def _on_shape_selected(self, record_id: str, index: int) -> None:
-        """Remember which shape of which record the user picked."""
-
-        self._edit_selection = int(index)
-
-    def on_shape_moved(self, record_id: str, index: int, points: Any) -> None:
-        """Forward a finished drag to the dialog that stores it.
-
-        The page owns no file: the assignment itself lives in the owner
-        of the records (see ModelValidationDialog.on_shape_moved), the
-        very split the label edit of the previous revision already used.
-        """
-
-        self.shape_moved.emit(str(record_id), int(index), points)
-
-    def on_shape_rename(self, record_id: str, index: int) -> None:
-        """Ask for a new label of one shape and request the rename.
-
-        The label is picked out of the class table of the run and the
-        request is only emitted when the user really chose another
-        name: a cancel, an empty class table and the label the shape
-        already carries all leave the staging json untouched.
-        """
-
-        shape = self.shape_of(str(record_id), int(index))
-        if shape is None:
-            return
-        current = image_view_module.shape_label(shape)
-        if not self.classes:
-            self._set_note(self.tr(EDIT_HINT_NO_CLASSES))
-            return
-        chosen = label_dialog.choose_label(self, self.classes, current)
-        if chosen is None or str(chosen) == current:
-            return
-        self.edit_requested.emit(str(record_id), int(index), str(chosen), None)
-
-    def shape_of(self, record_id: str, index: int) -> Optional[Dict[str, Any]]:
-        """Return one shape of a record of this run, None when there is none."""
-
-        record = self._records_by_id.get(str(record_id))
-        if record is None:
-            return None
-        label = records_module.read_staging_label(record)
-        shapes = list((label or {}).get("shapes") or [])
-        position = int(index)
-        if position < 0 or position >= len(shapes):
-            return None
-        shape = shapes[position]
-        return shape if isinstance(shape, dict) else None
-
-    def apply_edit_result(
-        self, record_id: str, index: int, points: Any
-    ) -> bool:
-        """Store one moved point set and rewrite the row in place.
-
-        The cheap path of an edit: the staging json of the record is
-        written (records.update_shape_points), the one row of the list
-        is rewritten - so the "(edited)" note appears without the list
-        rebuilding itself and without losing its scroll position - and
-        the two canvases are repainted from the new points. The verdict
-        of the record is deliberately left alone: correcting a box does
-        not re-run the matching of the run.
-        """
-
-        record = self._records_by_id.get(str(record_id))
-        if record is None:
-            return False
-        if not records_module.update_shape_points(record, int(index), points):
-            return False
-        self.refresh_rows([record.record_id])
-        self._refresh_canvases()
-        return True
-
     def reload_record(self, record_id: str) -> bool:
         """Show one record again after its staging json was rewritten.
 
-        A write into the annotation of a record - the label of a rename
-        (see dialog.on_edit_shape) - is invisible to a table that only
+        A write into the annotation of a record - the label a rename in
+        the main window changed - is invisible to a table that only
         rewrites its own cells: the picture of the two canvases is drawn
         from the shapes the page loaded, so the left canvas would keep
         painting the label the geometry came with until another record
         is visited. This is the one public entry point that closes that
         gap: the row of the list is rewritten in place and the two
         canvases are read from the staging file again, with the very
-        cheap path a finished point drag already takes (see
-        apply_edit_result). The list itself is never rebuilt, so the
-        scroll position and the selection stay where the user left them.
+        cheap path a mark toggle already takes (see refresh_rows). The
+        list itself is never rebuilt, so the scroll position and the
+        selection stay where the user left them.
         """
 
         record = self._records_by_id.get(str(record_id))
@@ -1808,55 +1519,22 @@ class ResultsPage(QtWidgets.QWidget):
         self._refresh_canvases()
         return True
 
-    def _editable_shapes_for(self, record: ValidationRecord, shapes=None):
-        """Return the (shapes, flags) the left canvas may edit of a record.
-
-        The shapes are the very objects the canvas paints - the ground
-        truth of the staging label - and a flag says which of them the
-        edit mode accepts (see REGION_SHAPE_TYPES). A flag of False is
-        not a refusal to draw: the shape is painted grey and dashed and
-        is simply never picked.
-
-        The caller may hand the ground truth it already read over: the
-        repaint of the canvases has it in hand, and reading the staging
-        json twice per repaint would be wasted work on a long list.
-        """
-
-        if shapes is None:
-            shapes, _predictions, _detail = self._load_shapes(record)
-        ground_truth = list(shapes)
-        flags = [
-            str(shape.get("shape_type") or "") in REGION_SHAPE_TYPES
-            for shape in ground_truth
-        ]
-        return ground_truth, flags
-
     # -------------------------------------------------------------- viewers
     def _on_selection_changed(self) -> None:
         """Refresh the right hand side for the current row.
 
-        The record id the selection signal was answered for is written
-        down here, and the edit mode is dropped *only* while that id
-        really changed. The signal itself is the wrong question: the
-        page rewrites the rows of one record in place after a drag, a
-        rename or a display switch, and a rebuild of the list answers
-        the very same signal with the very same record - leaving the
-        mode there would throw the user out of the gestures after every
-        finished drag.
-
         A signal raised *while* the table is rebuilt is no switch
         either: refresh clears the table before it fills it again, and
         the empty selection of that moment is answered with the early
-        return below (see the _loading flag).
+        return below (see the _loading flag), so the row the page finds
+        selected once the flag is down again is the one it reports.
         """
 
         if self._loading:
             # a rebuild clears the table before it fills it again (see
             # refresh): the empty selection of that moment is not a
             # switch of the record, and the row the page means to show
-            # is selected once the flag is down again. Dropping the
-            # mode here would throw the user out of the gestures for
-            # nothing - a filter that keeps the row keeps the mode.
+            # is selected once the flag is down again
             return
         # another row is another record: the preview of a held right
         # button belongs to the row it was asked on and never survives
@@ -1865,9 +1543,6 @@ class ResultsPage(QtWidgets.QWidget):
         self._set_note("")
         record = self.current_record()
         record_id = record.record_id if record else ""
-        if record_id != self._shown_record_id:
-            self._shown_record_id = record_id
-            self.leave_edit_mode()
         self.selection_changed.emit(record_id)
         self._refresh_canvases()
 
@@ -1893,49 +1568,9 @@ class ResultsPage(QtWidgets.QWidget):
             self._pixmap = None
             self.gt_canvas.clear()
             self.pred_canvas.clear()
-            # an emptied page has no record left to edit: the two
-            # canvases are told so as well, or a shape of the record
-            # that just left would keep its handles on a blank picture
-            self.gt_canvas.set_editable_shapes("", [], [])
-            self.pred_canvas.set_editable_shapes("", [], [])
-            self._edit_record_id = ""
-            self._edit_selection = -1
             return
         pixmap = self._pixmap_for(record)
         ground_truth, predictions, detail = self._load_shapes(record)
-        # The right canvas never edits anything: the predictions are the
-        # output of the model and stay read only whatever the mode says.
-        self.pred_canvas.set_editable_shapes("", [], [])
-        if self.edit_mode:
-            current = self.current_record()
-            shown = current if current is not None else record
-            # The picture on screen may be another record than the row
-            # the user selected: the preview of a held right button
-            # shows the parent of that row. The edit overlay only ever
-            # decorates the shapes the canvases draw (see
-            # ImageCanvas.set_editable_shapes), so a previewed original
-            # hands over no shape at all - no box of a record that is
-            # not the selected one can be picked, moved or resized
-            # while the original it came from is on screen.
-            selected = str(current.record_id) if current is not None else ""
-            if selected and str(record.record_id) == selected:
-                edit_shapes, editable_flags = self._editable_shapes_for(
-                    shown, ground_truth
-                )
-            else:
-                edit_shapes, editable_flags = [], []
-                self._edit_selection = -1
-                self.gt_canvas.select_shape(-1)
-            if str(shown.record_id) != self._edit_record_id:
-                self._edit_record_id = str(shown.record_id)
-                self.gt_canvas.select_shape(-1)
-            self.gt_canvas.set_editable_shapes(
-                str(shown.record_id), edit_shapes, editable_flags
-            )
-        else:
-            self.gt_canvas.set_editable_shapes("", [], [])
-            self._edit_record_id = ""
-            self._edit_selection = -1
         # both canvases read the states of the very same judgement, so a
         # defect carries one colour on the left and on the right; only
         # the shapes of each side are handed over, never the record
@@ -2002,12 +1637,6 @@ __all__ = [
     "COLUMN_RELPATH",
     "COLUMN_VERDICT",
     "DEFAULT_FILTER",
-    "EDIT_HINT",
-    "EDIT_HINT_NO_CLASSES",
-    "EDIT_HINT_NO_PREVIEW",
-    "EDIT_HINT_NO_REGION",
-    "EDIT_HINT_TOOLTIP",
-    "EDIT_TITLE_SUFFIX",
     "FILTER_EDITED",
     "GREY_TEXT_COLOR",
     "GT_CANVAS_TITLE",
@@ -2026,7 +1655,6 @@ __all__ = [
     "RecordItem",
     "RecordTree",
     "ResultsPage",
-    "SHAPE_TYPE_CHOICES",
     "SHORTCUT_HINT",
     "SHORTCUT_TOOLTIP",
     "edited_records",

@@ -139,24 +139,52 @@ def make_record(tmp_path, kind: str = "original", relpath: str = "a.png"):
     )
 
 
-def test_read_and_edit_staging_label_roundtrip(tmp_path):
+def test_read_and_write_staging_label_roundtrip(tmp_path):
+    """Read, change, write, read again: no field of the label is lost.
+
+    records.update_shape / records.update_shape_points are gone, so the
+    staging json is changed the way the UI does it now: the label of a
+    record is read (records.read_staging_label), one of its shapes is
+    changed in memory and the whole document is written back
+    (records.write_staging_label). The shape that was changed carries
+    the new value and every other key - the shape keys this revision
+    does not know (custom), the document keys of the label (imagePath,
+    imageHeight, imageWidth) and a key another tool added (extra_key) -
+    comes back untouched.
+    """
+
     record = make_record(tmp_path)
     data = records_module.read_staging_label(record)
     assert data["extra_key"] == "keep-me"
-    assert records_module.update_shape(
-        record, 0, labels="bus", shape_type="polygon"
-    )
+    assert data["imagePath"] == "a.png"
+    assert data["imageHeight"] == 6
+    assert data["imageWidth"] == 8
+    data["shapes"][0]["label"] = "bus"
+    data["shapes"][0]["shape_type"] = "polygon"
+    records_module.write_staging_label(record, data)
     refreshed = records_module.read_staging_label(record)
     assert refreshed["shapes"][0]["label"] == "bus"
     assert refreshed["shapes"][0]["shape_type"] == "polygon"
+    assert refreshed["shapes"][0]["points"] == [[0, 0], [1, 1]]
     assert refreshed["shapes"][0]["custom"] == 5
+    assert refreshed["imagePath"] == "a.png"
+    assert refreshed["imageHeight"] == 6
+    assert refreshed["imageWidth"] == 8
     assert refreshed["extra_key"] == "keep-me"
-    assert record.edited is True
 
 
-def test_update_shape_rejects_bad_index(tmp_path):
+def test_staging_label_io_stays_in_the_staging_folder(tmp_path):
+    """Both functions target the staging label of the record alone."""
+
     record = make_record(tmp_path)
-    assert not records_module.update_shape(record, 9, labels="x")
+    paths = dataset.staging_paths(str(tmp_path), record.kind, record.relpath)
+    assert record.staging_label_path == paths["label"]
+    records_module.write_staging_label(record, {"shapes": []})
+    assert records_module.read_staging_label(record)["shapes"] == []
+    # a record without a staging label answers None: the reader never
+    # falls back to a source dataset path
+    record.staging_label_path = ""
+    assert records_module.read_staging_label(record) is None
 
 
 def test_export_formula_and_defaults(tmp_path):

@@ -15,13 +15,14 @@ itself on a signal of its own instead of the failure path.
 
 import os
 import os.path as osp
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtTest, QtWidgets
 
 from anylabeling.custom.model_validation import dataset
 from anylabeling.custom.model_validation import records as records_module
@@ -142,6 +143,28 @@ def build_worker(staging: str, records) -> ValidationWorker:
     worker = ValidationWorker(config, CLASSES, staging)
     worker.records = list(records)
     return worker
+
+
+def wait_for_source_scan(dialog, source: str, timeout_ms: int = 5000) -> bool:
+    """Let the debounced scan of the source directory answer.
+
+    The pair count of a source folder is no longer computed inside the
+    slot that watches the path line edit (see _on_dataset_changed): the
+    window asks the scheduler for a debounced scan, so a test that wants
+    the estimate of that folder has to let that answer arrive.
+    """
+
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        if (
+            dialog.source_dataset_dir == source
+            and not dialog._scan_pending
+        ):
+            return True
+        QtTest.QTest.qWait(10)
+    return (
+        dialog.source_dataset_dir == source and not dialog._scan_pending
+    )
 
 
 def loaded_dialog(dialog, tmp_path, records=3):
@@ -322,6 +345,9 @@ def test_the_cancel_button_goes_back_to_the_form_and_drops_the_run(
     worker, staged, source, staging = loaded_dialog(dialog, tmp_path)
     assert dialog.results_page.table.rowCount() == 2
     assert "有效原图 2" in dialog.config_page.preview_label.text()
+    # the cancel falls back to the estimate of the source folder: let the
+    # debounced scan of the scheduler answer before the click
+    assert wait_for_source_scan(dialog, source)
 
     dialog.cancel_validation()
 

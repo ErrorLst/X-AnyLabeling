@@ -5,7 +5,9 @@ draws the ground truth, the right one the predictions, both in the pixel
 coordinate system of the original image (origin at the top left) and
 both driven by one view state. The wheel zoom is animated (a notch
 moves a target, small steps walk towards it) and the left button drags
-the picture.
+the picture. The canvas owns no edit state at all: the box editor of
+the previous revision lived here and is gone (see
+test_the_canvas_owns_no_edit_gesture).
 """
 
 import os
@@ -21,6 +23,9 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from anylabeling.custom.model_validation import dataset
 from anylabeling.custom.model_validation import records as records_module
+from anylabeling.custom.model_validation.ui import (
+    image_view as image_view_module,
+)
 from anylabeling.custom.model_validation.ui.dialog import ModelValidationDialog
 from anylabeling.custom.model_validation.ui.image_view import (
     LABEL_PADDING,
@@ -434,6 +439,60 @@ def test_a_double_click_fits_the_image_again(qt_app):
     assert canvas.view_center().y() == pytest.approx(IMAGE_SIZE[1] / 2.0)
 
 
+def test_the_canvas_owns_no_edit_gesture(qt_app):
+    "The canvas is a viewer: no edit state, no handle, no edit signal."
+
+    canvas = make_canvas(*IMAGE_SIZE)
+    # the canvas of the previous revision carried an edit state and a
+    # selection; neither has a place in a viewer
+    for removed in (
+        "editable",
+        "set_edit_mode",
+        "set_editable_shapes",
+        "editable_shapes",
+        "editable_flags",
+        "edit_record_id",
+        "selected_index",
+        "select_shape",
+        "clear_selection",
+        "apply_edit_points",
+        "_draw_edit_overlay",
+        "_begin_drag",
+        "_update_drag",
+        "_finish_drag",
+        "_edit_at",
+    ):
+        assert not hasattr(canvas, removed), removed
+    for signal in (
+        "edit_mode_toggled",
+        "shape_selected",
+        "shape_move_finished",
+        "shape_rename_requested",
+    ):
+        assert not hasattr(ImageCanvas, signal), signal
+    # the module no longer carries the geometry of a box editor either
+    for helper in (
+        "EDIT_CURSOR",
+        "EDIT_MODE_TITLE_SUFFIX",
+        "HANDLE_COLOR",
+        "HANDLE_CURSORS",
+        "HANDLE_NAMES",
+        "HIT_TOLERANCE",
+        "MIN_BOX_SIZE",
+        "SELECTED_PEN_WIDTH",
+        "UNEDITABLE_COLOR",
+        "box_handles",
+        "contains_point",
+        "handle_cursor",
+        "hit_test",
+        "nearest_point",
+        "resize_points",
+    ):
+        assert not hasattr(image_view_module, helper), helper
+    # the one signal the canvas still owns
+    assert hasattr(ImageCanvas, "view_changed")
+
+
 # -------------------------------------------------------------- the pair
 def test_both_canvases_share_one_zoom_one_anchor_and_one_pan(dialog, tmp_path):
     "An action on either side shows the very same image region."
@@ -734,9 +793,11 @@ def test_the_viewer_owns_no_edit_control(dialog):
         "apply_button",
     ):
         assert not hasattr(page, removed), removed
-    # the signals of the record layer stay declared
-    assert hasattr(page, "edit_requested")
+    # the two mark toggles of the record layer stay declared, while the
+    # edit hook of the previous revision - the one the removed gesture
+    # emitted - is gone
     assert hasattr(page, "toggle_deleted")
     assert hasattr(page, "toggle_export")
+    assert not hasattr(page, "edit_requested")
     # and the two canvases are the only image widgets
     assert len(page.findChildren(ImageCanvas)) == 2
