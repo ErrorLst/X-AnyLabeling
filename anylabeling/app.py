@@ -20,6 +20,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+from anylabeling.custom.crash_log import install_crash_log  # fork 挂载点
+install_crash_log()  # fork 挂载点
+
 import yaml
 from PyQt6 import QtCore, QtGui, QtWidgets
 
