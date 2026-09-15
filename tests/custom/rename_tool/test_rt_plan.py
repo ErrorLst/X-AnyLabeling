@@ -1,4 +1,4 @@
-"""Tests of the naming rules: numbering, compliance and _aug chains."""
+"""Tests of the naming rules: numbering and compliance."""
 
 import os
 
@@ -129,8 +129,9 @@ class TestCompliance:
         assert len(plan.unchanged_items()) == 1
 
 
-class TestAugChain:
-    """An _aug item follows its parent and keeps its suffix."""
+class TestAugNamesAreOrdinary:
+    """An _aug name is ordinary stem text: it is numbered like any other
+    stem."""
 
     def test_e6_chain(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
@@ -138,33 +139,37 @@ class TestAugChain:
         make_pair(rt_dataset, "a_aug2", "person")
         assert _summary(rt_dataset) == {
             "a": "person_1",
-            "a_aug1": "person_1_aug1",
-            "a_aug2": "person_1_aug2",
+            "a_aug1": "person_2",
+            "a_aug2": "person_3",
         }
         plan = _plan(rt_dataset)
         assert len(plan.valid_items()) == 3
 
-    def test_e7_already_chain(self, rt_dataset):
+    def test_e7_numbered_aug_name_takes_the_next_number(self, rt_dataset):
         make_pair(rt_dataset, "person_1", "person")
         make_pair(rt_dataset, "person_1_aug1", "person")
         plan = _plan(rt_dataset)
-        assert plan.valid_items() == []
+        assert _summary(rt_dataset) == {
+            "person_1": "person_1",
+            "person_1_aug1": "person_2",
+        }
+        assert len(plan.valid_items()) == 1
         assert _item(
-            rt_dataset, "person_1_aug1.jpg"
-        ).target_stem == "person_1_aug1"
+            rt_dataset, "person_1.jpg"
+        ).action == core.ACTION_ALREADY
 
     def test_e8_bare_suffix(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug", "person")
         assert _summary(rt_dataset) == {
             "a": "person_1",
-            "a_aug": "person_1_aug",
+            "a_aug": "person_2",
         }
 
-    def test_e8_second_run_is_already(self, rt_make):
+    def test_second_run_is_already(self, rt_make):
         root = rt_make()
         make_pair(root, "person_1", "person")
-        make_pair(root, "person_1_aug", "person")
+        make_pair(root, "person_2", "person")
         plan = _plan(root)
         assert plan.valid_items() == []
         assert plan.total_files() == 4
@@ -172,51 +177,58 @@ class TestAugChain:
     def test_nested_chain(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug1_aug2", "person")
-        item = _item(rt_dataset, "a_aug1_aug2.jpg")
-        assert item.pure_stem == "a"
-        assert item.suffixes == ("_aug1", "_aug2")
-        assert item.target_stem == "person_1_aug1_aug2"
+        assert _summary(rt_dataset) == {
+            "a": "person_1",
+            "a_aug1_aug2": "person_2",
+        }
 
-    def test_aug_does_not_take_a_number(self, rt_dataset):
+    def test_aug_name_takes_the_next_number(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug1", "person")
         make_pair(rt_dataset, "b", "person")
-        assert _item(rt_dataset, "b.jpg").target_stem == "person_2"
+        assert _item(rt_dataset, "b.jpg").target_stem == "person_3"
 
-    def test_aug_different_label_follows_parent(self, rt_dataset):
+    def test_aug_name_numbers_under_its_own_label(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug1", "dog")
-        assert _item(rt_dataset, "a_aug1.jpg").target_stem == (
-            "person_1_aug1"
-        )
+        assert _item(rt_dataset, "a_aug1.jpg").target_stem == "dog_1"
+
+    def test_aug_name_is_already_only_when_the_label_matches(
+        self, rt_dataset
+    ):
+        make_pair(rt_dataset, "a_aug_1", "a_aug")
+        item = _item(rt_dataset, "a_aug_1.jpg")
+        assert item.action == core.ACTION_ALREADY
+        assert item.target_stem == "a_aug_1"
 
 
-class TestOrphan:
-    """An _aug item without a parent is mirrored under its name."""
+class TestAugNameAlone:
+    """An _aug name without a sibling is a plain stem."""
 
-    def test_e9_orphan(self, rt_dataset):
+    def test_e9_alone_is_renamed(self, rt_dataset):
         make_pair(rt_dataset, "a_aug1", "person")
         item = _item(rt_dataset, "a_aug1.jpg")
-        assert item.action == core.ACTION_ORPHAN
-        assert item.target_stem == "a_aug1"
-        assert item.target_image_name() == "a_aug1.jpg"
+        assert item.action == core.ACTION_RENAME
+        assert item.target_stem == "person_1"
+        assert item.target_image_name() == "person_1.jpg"
 
-    def test_orphan_does_not_reserve(self, rt_dataset):
+    def test_alone_reserves_its_number(self, rt_dataset):
         make_pair(rt_dataset, "a_aug1", "person")
         make_pair(rt_dataset, "b", "person")
-        assert _item(rt_dataset, "b.jpg").target_stem == "person_1"
+        assert _item(rt_dataset, "a_aug1.jpg").target_stem == "person_1"
+        assert _item(rt_dataset, "b.jpg").target_stem == "person_2"
 
-    def test_orphan_keeps_name_in_entries(self, rt_dataset):
+    def test_alone_entries_follow_the_new_name(self, rt_dataset):
         make_pair(rt_dataset, "a_aug1", "person")
         plan = _plan(rt_dataset)
-        assert ("a_aug1.jpg", "a_aug1.jpg") in plan.entries()
-        assert ("a_aug1.json", "a_aug1.json") in plan.entries()
+        assert ("a_aug1.jpg", "person_1.jpg") in plan.entries()
+        assert ("a_aug1.json", "person_1.json") in plan.entries()
 
-    def test_orphan_plan_is_not_blocked(self, rt_dataset):
+    def test_alone_is_not_blocked(self, rt_dataset):
         make_pair(rt_dataset, "a_aug1", "person")
         plan = _plan(rt_dataset)
         assert plan.blocked() is False
-        assert plan.valid_items() == []
+        assert len(plan.valid_items()) == 1
 
 
 class TestPlanSurface:
@@ -266,11 +278,11 @@ class TestPlanSurface:
         assert plan.item_by_filename("a.json") is plan.items[0]
         assert plan.item_by_filename("nope") is None
 
-    def test_unmatched_json_stays_mirrored(self, rt_dataset):
+    def test_aug_pair_is_renamed_together(self, rt_dataset):
         make_pair(rt_dataset, "a_aug1", "person")
         plan = _plan(rt_dataset)
         assert "a_aug1.json" not in plan.mirrored
-        assert ("a_aug1.json", "a_aug1.json") in plan.entries()
+        assert ("a_aug1.json", "person_1.json") in plan.entries()
 
     def test_scan_progress(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")

@@ -225,13 +225,16 @@ class TestCombined:
 class TestCollisionWithKeptName:
     """R8 entry name check: a target may not shadow a kept name.
 
-    plan.mirrored alone cannot trigger it in a resolvable folder (see
-    FEATURES.md): an image shaped name only lands in mirrored when its
-    stem is already taken by another image, which is the B5 blocker,
-    and a .json name only when it is an orphan or a B5 duplicate. The
-    already / orphan names of plan.items can collide though, and
-    test_target_collides_with_orphan_name_in_a_real_folder pins that
-    with a plain three pair folder.
+    The two white box cases below pin the plan.mirrored half by hand.
+    The plan.unchanged_names() half also holds the current names of
+    unresolved items: a B1/B3 item has no number, never enters
+    reserved and carries no target stem, so it is mirrored under its
+    own name and a healthy target can land on it. A real folder of
+    that shape is
+    test_target_collides_with_kept_name_of_an_unresolved_item. A
+    healthy folder cannot hit it - an already number enters the
+    reserved set, and an image shaped name in mirrored is a B5
+    blocker - so this check is defence in depth.
     """
 
     def test_target_collides_with_mirrored_name(self, rt_dataset):
@@ -243,34 +246,38 @@ class TestCollisionWithKeptName:
         text = " | ".join(plan.blockers)
         assert "person_1.jpg" in text and "同名" in text
 
-    def test_target_collides_with_orphan_name(self, rt_dataset):
+    def test_target_collides_with_a_hand_added_json_name(
+        self, rt_dataset
+    ):
         make_pair(rt_dataset, "a", "person")
         plan = core.plan_directory(rt_dataset)
         plan.mirrored.append("person_1.json")
         core.resolve_targets(plan)
         assert plan.blocked() is True
 
-    def test_target_collides_with_orphan_name_in_a_real_folder(
+    def test_target_collides_with_kept_name_of_an_unresolved_item(
         self, rt_dataset
     ):
-        make_pair(rt_dataset, "b", "person")
-        make_pair(rt_dataset, "b_aug1", "person")
-        make_pair(rt_dataset, "person_1_aug1", "person")
-        plan = _plan(rt_dataset)
+        make_pair(rt_dataset, "a", "person")
+        make_pair(rt_dataset, "person_1", "person")
+        with open(os.path.join(rt_dataset, "person_1.json"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("{oops")
+        plan = core.plan_directory(rt_dataset)
+        core.resolve_targets(plan)
         assert plan.blocked() is True
-        assert _target(plan, "b.jpg") == "person_1"
-        assert _target(plan, "person_1_aug1.jpg") == "person_1_aug1"
+        assert _target(plan, "a.jpg") == "person_1"
         text = " | ".join(plan.blockers)
-        assert "person_1_aug1.jpg" in text
-        assert "同名" in text
+        assert "无法解析" in text
+        assert "person_1.jpg" in text and "同名" in text
 
-    def test_folder_variant_of_e10(self, rt_dataset):
+    def test_bare_aug_name_gets_the_next_number(self, rt_dataset):
         make_pair(rt_dataset, "a", "a", ext=".png")
         make_pair(rt_dataset, "a_aug", "a", ext=".png")
         plan = _plan(rt_dataset)
         assert plan.blocked() is False
         assert _target(plan, "a.png") == "a_1"
-        assert _target(plan, "a_aug.png") == "a_1_aug"
+        assert _target(plan, "a_aug.png") == "a_2"
 
     def test_entry_names_are_unique(self, rt_dataset):
         make_pair(rt_dataset, "a", "person")
@@ -383,10 +390,11 @@ class TestHealthyControl:
         assert _target(plan, "a.jpg") == "person_1"
         assert _target(plan, "person_01.jpg") == "person_2"
 
-    def test_orphan_aug_is_not_a_blocker(self, rt_dataset):
+    def test_aug_name_is_not_a_blocker(self, rt_dataset):
         make_pair(rt_dataset, "a_aug1", "person")
         plan = _plan(rt_dataset)
         assert plan.blocked() is False
+        assert _target(plan, "a_aug1.jpg") == "person_1"
 
     def test_missing_directory_raises(self, rt_make):
         path = rt_make()

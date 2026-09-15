@@ -484,7 +484,7 @@ class TestParseOutput:
         dialog = _dialog(data)
         lines = _lines(dialog)
         for line in _renames(lines):
-            for name in ("person_1.jpg", "person_1.json", "b_aug1.jpg"):
+            for name in ("person_1.jpg", "person_1.json"):
                 assert not line.startswith(name)
         assert "classes.txt" not in dialog.plain_text()
 
@@ -510,22 +510,20 @@ class TestExecute:
         assert sorted(os.listdir(parent)) == ["data", _zip_name(data)]
         entries = read_zip(path)
         assert sorted(entries) == [
-            "b_aug1.jpg",
-            "b_aug1.json",
             "classes.txt",
             "person_1.jpg",
             "person_1.json",
             "person_2.jpg",
             "person_2.json",
+            "person_3.jpg",
+            "person_3.json",
         ]
         assert zip_doc(path, "person_2.json")["imagePath"] == "person_2.jpg"
         assert entries["person_1.jpg"] == b"image:person_1.jpg"
         assert entries["person_1.json"] == _read(
             os.path.join(data, "person_1.json")
         )
-        assert entries["b_aug1.json"] == _read(
-            os.path.join(data, "b_aug1.json")
-        )
+        assert zip_doc(path, "person_3.json")["imagePath"] == "person_3.jpg"
         assert entries["classes.txt"] == b"person\n"
         assert seen and path in str(seen[0][2])
         assert snapshot(data) == before
@@ -539,11 +537,13 @@ class TestExecute:
         dialog = _dialog(data)
         result = dialog.execute()
         lines = _lines(dialog)
-        assert result["renamed"] == 2
+        assert result["renamed"] == 4
         assert "a.jpg -> person_2.jpg" in _renames(lines)
         assert "a.json -> person_2.json" in _renames(lines)
-        assert len(_renames(lines)) == 2
-        assert "b_aug1.jpg" not in "\n".join(_renames(lines))
+        assert "b_aug1.jpg -> person_3.jpg" in _renames(lines)
+        assert "b_aug1.json -> person_3.json" in _renames(lines)
+        assert len(_renames(lines)) == 4
+        assert "person_1.jpg" not in "\n".join(_renames(lines))
 
     def test_write_progress_counts_the_renames(
         self, rt_parent, monkeypatch
@@ -557,9 +557,11 @@ class TestExecute:
             (line, _progress(line)) for line in _lines(dialog)
             if _progress(line)
         ]
-        assert len(progress) == _progress_count(dialog) == 2
-        assert progress[0] == ("a.jpg -> person_2.jpg    1/2", "1/2")
-        assert progress[1] == ("a.json -> person_2.json    2/2", "2/2")
+        assert len(progress) == _progress_count(dialog) == 4
+        assert progress[0] == ("a.jpg -> person_2.jpg    1/4", "1/4")
+        assert progress[1] == ("a.json -> person_2.json    2/4", "2/4")
+        assert progress[2] == ("b_aug1.jpg -> person_3.jpg    3/4", "3/4")
+        assert progress[3] == ("b_aug1.json -> person_3.json    4/4", "4/4")
 
     def test_write_summary_line(self, rt_parent, monkeypatch):
         _parent, data = rt_parent
@@ -570,7 +572,7 @@ class TestExecute:
         lines = _lines(dialog)
         assert "已导出：%s" % result["zip_path"] in lines
         assert (
-            "共 7 个文件：改名 2、保持原名 4、原样镜像 1、忽略 0" in lines
+            "共 7 个文件：改名 4、保持原名 2、原样镜像 1、忽略 0" in lines
         )
 
     def test_summary_keeps_the_kept_name_despite_ignored(
@@ -649,7 +651,7 @@ class TestExecute:
         dialog = _dialog(data)
         dialog.execute()
         lines = _lines(dialog)
-        assert "待改名 2 个：" in lines
+        assert "待改名 4 个：" in lines
         assert lines.count("a.jpg -> person_2.jpg") == 1
 
     def test_existing_archive_is_not_overwritten(

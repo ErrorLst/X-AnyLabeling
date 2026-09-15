@@ -980,9 +980,9 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 
 ### 代码与体量
 
-`anylabeling/custom/rename_tool/`（4 个文件 1762 行：`rename_core.py` 规则与打包
-913 行、`dialog.py` Qt 层 769 行、`launcher.py` 惰性启动、`__init__.py` 导出）；
-测试 `tests/custom/rename_tool/`（8 个文件 2985 行）。
+`anylabeling/custom/rename_tool/`（4 个文件 1685 行：`rename_core.py` 规则与打包
+836 行、`dialog.py` Qt 层 769 行、`launcher.py` 惰性启动、`__init__.py` 导出）；
+测试 `tests/custom/rename_tool/`（8 个文件 3002 行）。
 
 ### 入口符号
 
@@ -1020,12 +1020,8 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
   十进制（无前导零）。`person_0` / `person_01` / `person_1_extra` 都不算符合规范。
 - **R4 符合命名规范**：某项算出的目标名与当前文件名完全相同（图片名与 json 名
   都相同）→ `already`（不改名、占编号）；否则 `rename`。
-- **R5 `_aug` 项**：`SUFFIX = ^(?P<base>.+)_aug(?P<x>\d*)$`（贪婪，取最右一个
-  `_aug` 之后为 x）；纯 stem 迭代剥离直到不再命中，后缀链按剥离顺序
-  （`a_aug1_aug2` → 纯 stem `a`、后缀链 `("_aug1", "_aug2")`）；目标 stem =
-  父项目标 stem + 后缀链原样拼接（x 不重算、不臆造）；`_aug` 项不占编号，只继承父项编号。
-- **R6 孤儿 `_aug`**：纯 stem 在源目录没有对应图片 → `orphan`：不改名、不占编号、
-  以当前名字原样镜像进 zip（它的 json 也不重写 `imagePath`），结果表里单列一类，不阻塞。
+- **（R5/R6 已移除）**：`_aug` 后缀不再有任何特殊处理——`_aug` 只是普通 stem 文本，
+  与其它文件一样走 R1–R4。规则编号 R7–R11 保持不变。
 - **R7 阻塞条件**（任一存在即不导出（不写 zip、不碰 `.part`）；blockers 每项一句
   中文，带文件名）：B1 图片没有同名 json；B3 json 无法解析或顶层不是对象；B4 目录内
   有子目录（只处理顶层文件）；B5 同一 stem 有多张图片或多份 json。
@@ -1039,8 +1035,8 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 - **R8 条目名校验**：条目名非空、不含斜杠、不含 `..`、非绝对路径；每个源文件名在
   计划里恰好出现一次（`check_entry_names` 会重新列一遍源目录顶层文件，漏镜像、重复
   计入、幽灵文件、忽略集合与计划重叠都算问题；`plan.ignored` 是完整性守卫的唯一例外，
-  既不被要求镜像、也不允许出现在计划里）；任何改名目标名不得等于任何「原样镜像」文件
-  的名字（already / orphan / mirrored 三类），否则阻塞。`entry_name_ok` 拒绝任何含
+  既不被要求镜像、也不允许出现在计划里）；任何改名目标名不得等于任何「保持原名」文件
+  的名字（already 项 / `target_stem` 为空的未解析项 / mirrored 三类），否则阻塞。`entry_name_ok` 拒绝任何含
   连续两个点的名字（`v1..2.txt` 即非法），比「不含 `../`」更严；`execute()` 会把
   `check_entry_names` 的结果并入阻塞项，非法条目名在解析阶段就阻塞（按钮禁用），
   而不是等到写 zip 才失败。
@@ -1096,16 +1092,17 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
   - E3 E2 + `IMG_2.jpg`(person) → `IMG_2` → `person_2`
   - E4 `person_2.jpg`(already 占 2) + `a.jpg`(person) → `a` → `person_1`
   - E5 幂等：对 E1 执行后的结果目录再跑一遍 → 0 个 rename，全部 already
-  - E6 `a` + `a_aug1` + `a_aug2`(person) → `person_1` / `person_1_aug1` / `person_1_aug2`
-  - E7 `person_1` + `person_1_aug1` → 两者都 already
-  - E8 `a_aug`（裸后缀）+ 父项 `a`(person) → `person_1` / `person_1_aug`（不补编号 1）
-  - E9 孤儿 `a_aug1`（没有 `a`）→ 放行、保持原名、不占号
+  - E6 `a` + `a_aug1` + `a_aug2`(person) → `person_1` / `person_2` / `person_3`（3 个 rename）
+  - E7 `person_1`(person) + `person_1_aug1`(person) → `person_1` 保持（already，占号 1）、`person_1_aug1` → `person_2`
+  - E8 `a`(person) + `a_aug`(person) → `person_1` / `person_2`
+  - E9 单独 `a_aug1`(person) → `person_1`（rename，不再「保持原名、不占号」）
+  - E9b `a_aug_1`（主标签恰为 `a_aug`）→ 命中通用已符合规则，保持原名
   - E10 同名陷阱：改名目标撞上原样镜像的名字 → 阻塞（见「已知坑」）
 
 ### 测试
 
-`QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/rename_tool -v`
-（用仓库根下的 .venv/bin/python 跑；需 PyQt6；本工作区 276 个用例全部通过）。
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/rename_tool -v`
+（用仓库根下的 .venv/bin/python 跑；需 PyQt6；本工作区 268 个用例全部通过）。
 
 ### 已知坑
 
@@ -1117,7 +1114,8 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 - 缺 json、坏 json、子目录、同 stem 多文件都会**整体阻塞**，一项都不改；显示器给出
   原因（全部列出，界面上限 5000 行），主按钮禁用、状态栏同步提示，数据集同级目录里不会
   出现任何文件，包括 `.part`。**只有 json 没有图片不再阻塞**：忽略它，只报数量。
-- 孤儿 `_aug` 放行且保持原名（它没有父项可继承编号），也不占号。
+- `_aug` 名字是普通名字：不再跟随父项、也不再保留「孤儿保持原名」的口子；单独一个
+  `a_aug1`(person) 照样改名成 `person_1`。
 - 失败出口（扫描与写 zip 共两条分支）都在显示器里追加失败原因、不追加成功行，已经打印
   的写进度行保留；写失败同时回退按钮（`_refresh_actions()`）并弹窗，状态栏同步。
 - 显示器开了 `setMaximumBlockCount(5000)`：Qt 到上限会丢行，`toPlainText()` 可能返回
@@ -1131,14 +1129,15 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
   另一张图片占用（那是 B5，已阻塞）时才会进 mirrored，`.json` 形状则只可能是 B5
   重复，所以扩展名形状互斥；白盒用例（手工往 `plan.mirrored` 里加
   撞名）钉的就是这个分支。
-  ② 但 `plan.unchanged_names()` 还包含 already / orphan 两类 item 的当前名字，orphan
-  的名字就是普通的 `<stem>_aug<x>.jpg` 形状，**真实目录里撞得上**：`b.jpg` +
-  `b.json`(person) + `b_aug1.jpg`/`b_aug1.json` +
-  `person_1_aug1.jpg`/`person_1_aug1.json` 时 `b -> person_1`、
-  `b_aug1 -> person_1_aug1`，而 `person_1_aug1` 因纯 stem
-  `person_1` 没有图片成为 orphan 保持原名，于是撞名阻塞。不拦就会写出两个同名 zip 条目，
-  所以这是真实可达的阻塞，用例见 `test_rt_blockers.py` 的
-  `test_target_collides_with_orphan_name_in_a_real_folder`。
+  ② `plan.unchanged_names()` 还包含未解析项的当前名字（B1 缺 json / B3 坏 json 的项
+  没有编号、不进 `reserved`、`target_stem` 为空、按原名镜像）。真实目录里撞得上：
+  `person_1.jpg` + 坏掉的 `person_1.json`(B3) + `a.jpg`/`a.json`(person) 时
+  `a -> person_1`，与保持原名的 `person_1.jpg`/`person_1.json` 同名，于是追加一条
+  撞名 blocker（该目录本来就因 B3 阻塞，这条只是叠加）；用例
+  `test_rt_blockers.py::TestCollisionWithKeptName::`
+  `test_target_collides_with_kept_name_of_an_unresolved_item`。
+  健康目录里撞不上：already 项的编号会进 `reserved`，mirrored 里出现图片形状的名字
+  必是 B5，两者都已经先阻塞——所以这条检查现在是纵深防御。
 - 扫描与打包都在主线程：几千个文件的大目录会在解析时短暂卡住界面，靠进度条 +
   `processEvents` 维持响应，不提供取消（取消会留下用户看不见的 `.part`）。
 - 阻塞不弹窗（裁决 1）：只有显示器首行 + 状态栏 + 禁用按钮；写 zip 失败仍然弹窗。

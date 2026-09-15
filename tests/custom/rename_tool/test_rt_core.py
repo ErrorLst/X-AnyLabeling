@@ -195,37 +195,6 @@ class TestDominantLabel:
         assert core.dominant_label(path) == ("dog", "")
 
 
-class TestSplitAugSuffix:
-    """The augment chain peels from the right, greedily."""
-
-    @pytest.mark.parametrize(
-        "stem,expected",
-        [
-            ("a", ("a", ())),
-            ("a_aug", ("a", ("_aug",))),
-            ("a_aug1", ("a", ("_aug1",))),
-            ("a_aug1_aug2", ("a", ("_aug1", "_aug2"))),
-            ("a_aug_x", ("a_aug_x", ())),
-            ("_aug1", ("_aug1", ())),
-        ],
-    )
-    def test_single_peel(self, stem, expected):
-        assert core.split_aug_suffix(stem) == expected
-
-    def test_no_suffix(self):
-        assert core.split_aug_suffix("person_1") == ("person_1", ())
-
-    def test_nested_stem(self):
-        assert core.split_aug_suffix("a_aug1_aug2") == (
-            "a",
-            ("_aug1", "_aug2"),
-        )
-
-    def test_peeling_stops(self):
-        assert core.split_aug_suffix("aug1") == ("aug1", ())
-        assert core.split_aug_suffix("a_augx") == ("a_augx", ())
-
-
 class TestResolveOutputPath:
     """The archive name never overwrites an existing file."""
 

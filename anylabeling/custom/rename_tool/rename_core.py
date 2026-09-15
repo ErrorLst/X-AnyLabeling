@@ -10,14 +10,10 @@ temporary file and no staging folder is ever created next to it.
 
 Naming rules:
 
-* the target stem of an ordinary item is <label>_<n> with n a canonical
+* the target stem of an item is <label>_<n> with n a canonical
   decimal number starting at 1 (no leading zero);
 * an item whose computed target equals its current file name is
   compliant already: it is left alone and merely reserves its number;
-* an _aug<x> item follows its parent: it keeps its augment suffix chain
-  verbatim and only inherits the number of the parent item;
-* an _aug<x> item whose parent is not in the folder is an orphan: it is
-  mirrored under its current name and reserves nothing;
 * labels are sanitized (file name illegal characters collapse into a
   single underscore) before the occurrence count is taken;
 * a json without the image of the same stem is ignored: it is not part
@@ -60,7 +56,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 __all__ = [
     "ACTION_ALREADY",
-    "ACTION_ORPHAN",
     "ACTION_RENAME",
     "COMPLIANT",
     "IMAGE_EXTS",
@@ -70,7 +65,6 @@ __all__ = [
     "RenameError",
     "RenameItem",
     "RenamePlan",
-    "SUFFIX",
     "ZIP_DEFAULT_SUFFIX",
     "ZIP_FALLBACK_FORMAT",
     "dominant_label",
@@ -80,7 +74,6 @@ __all__ = [
     "resolve_output_path",
     "resolve_targets",
     "sanitize_label",
-    "split_aug_suffix",
     "write_zip",
 ]
 
@@ -91,12 +84,10 @@ ZIP_FALLBACK_FORMAT = "{stem}_{index}{suffix}"
 METHOD_IMAGE = zipfile.ZIP_STORED
 METHOD_OTHER = zipfile.ZIP_DEFLATED
 
-SUFFIX = re.compile(r"^(?P<base>.+)_aug(?P<x>[0-9]*)$")
 COMPLIANT = re.compile(r"^(?P<label>.+)_(?P<n>[1-9][0-9]*)$")
 
 ACTION_RENAME = "rename"
 ACTION_ALREADY = "already"
-ACTION_ORPHAN = "orphan"
 
 _WINDOWS_SEP = chr(92)
 
@@ -109,21 +100,14 @@ class RenameError(Exception):
 class RenameItem:
     """One image/json pair of the source folder and its target name.
 
-    suffixes is the augment suffix chain in peel order, so a_aug1_aug2
-    peels to the pure stem a with the chain ("_aug1", "_aug2").
-    parent_stem is the stem of the item this one follows; it is empty
-    for an orphan. action is one of ACTION_RENAME, ACTION_ALREADY or
-    ACTION_ORPHAN; error carries the scan problem of a blocked item
-    and is empty for a healthy one.
+    action is one of ACTION_RENAME or ACTION_ALREADY; error carries
+    the scan problem of a blocked item and is empty for a healthy one.
     """
 
     stem: str
     image_name: str
     json_name: str
     label: str = ""
-    pure_stem: str = ""
-    suffixes: Tuple[str, ...] = ()
-    parent_stem: str = ""
     target_stem: str = ""
     action: str = ""
     error: str = ""
@@ -393,25 +377,6 @@ def dominant_label(json_path: str) -> Tuple[str, str]:
     return best, ""
 
 
-def split_aug_suffix(stem: str) -> Tuple[str, Tuple[str, ...]]:
-    """Split stem into its pure stem and its augment suffix chain.
-
-    The chain comes back in peel order: a_aug1_aug2 gives the pure
-    stem a and the chain ("_aug1", "_aug2").
-    """
-
-    suffixes: List[str] = []
-    base = stem
-    while True:
-        match = SUFFIX.match(base)
-        if match is None:
-            break
-        suffixes.append("_aug" + match.group("x"))
-        base = match.group("base")
-    suffixes.reverse()
-    return base, tuple(suffixes)
-
-
 def resolve_output_path(directory: str, filename: str) -> str:
     """Return a zip path inside directory that does not exist yet.
 
@@ -452,15 +417,6 @@ def _read_dir(directory: str) -> List[str]:
         raise RenameError("无法读取目录：%s（%s）" % (directory, error))
     names.sort(key=natural_key)
     return names
-
-
-def _split_into(item: RenameItem) -> None:
-    """Fill the pure stem and the suffix chain of item."""
-
-    pure, suffixes = split_aug_suffix(item.stem)
-    item.pure_stem = pure
-    item.suffixes = suffixes
-    item.parent_stem = ""
 
 
 def _distinct_conflicts(
@@ -563,7 +519,6 @@ def plan_directory(
                 json_name=stem + ".json",
                 error="缺少同名 json",
             )
-            _split_into(item)
             items.append(item)
             missing.append(image_name)
             continue
@@ -575,7 +530,6 @@ def plan_directory(
             label=label,
             error=error,
         )
-        _split_into(item)
         items.append(item)
         if error:
             bad_json.append(json_name)
@@ -626,19 +580,13 @@ def resolve_targets(plan: RenamePlan) -> RenamePlan:
 
     A compliant item (<label>_<n> matching its own dominant label)
     keeps its number, everything else takes the smallest free number
-    of its label. An augment item follows its parent and never
-    reserves a number; an augment item without a parent is an orphan
-    that keeps its current name. Entry names colliding with a kept
-    name append one blocker.
+    of its label. Entry names colliding with a kept name append one
+    blocker.
     """
-
-    items_by_pure_stem: Dict[str, RenameItem] = {}
-    for item in plan.items:
-        items_by_pure_stem.setdefault(item.pure_stem, item)
 
     reserved: Dict[str, set] = {}
     for item in plan.items:
-        if item.suffixes or not item.label or item.error:
+        if not item.label or item.error:
             continue
         match = COMPLIANT.match(item.stem)
         if match is None:
@@ -655,7 +603,7 @@ def resolve_targets(plan: RenamePlan) -> RenamePlan:
 
     next_number: Dict[str, int] = {}
     for item in sorted(plan.items, key=_item_key):
-        if item.suffixes or not item.label or item.error:
+        if not item.label or item.error:
             continue
         if item.action == ACTION_ALREADY:
             continue
@@ -668,38 +616,6 @@ def resolve_targets(plan: RenamePlan) -> RenamePlan:
         next_number[item.label] = number + 1
         item.target_stem = "%s_%d" % (item.label, number)
         item.action = ACTION_RENAME
-
-    memo: Dict[int, Optional[str]] = {}
-
-    def resolve(item: RenameItem) -> Optional[str]:
-        if not item.suffixes:
-            return item.target_stem or None
-        key = id(item)
-        if key in memo:
-            return memo[key]
-        memo[key] = None
-        parent = items_by_pure_stem.get(item.pure_stem)
-        if parent is None or parent is item:
-            return None
-        parent_target = resolve(parent)
-        if not parent_target:
-            return None
-        found = parent_target + "".join(item.suffixes)
-        memo[key] = found
-        return found
-
-    for item in sorted(plan.items, key=_item_key):
-        if not item.suffixes:
-            continue
-        found = resolve(item)
-        if found is None:
-            item.action = ACTION_ORPHAN
-            item.target_stem = item.stem
-            continue
-        item.target_stem = found
-        item.action = (
-            ACTION_ALREADY if found == item.stem else ACTION_RENAME
-        )
 
     kept = set(plan.unchanged_names())
     collisions: List[str] = []

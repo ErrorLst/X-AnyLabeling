@@ -130,12 +130,12 @@ class TestEntries:
         assert entries["blob.bin"] == blob
         assert entries["说明.txt"] == "文本".encode("utf-8")
 
-    def test_orphan_aug_is_mirrored(self, rt_dataset, rt_out):
+    def test_aug_name_is_renamed_like_any_other(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a_aug1", "person")
         _plan, path, _summary = _run(rt_dataset, rt_out)
         assert sorted(read_zip(path)) == [
-            "a_aug1.jpg",
-            "a_aug1.json",
+            "person_1.jpg",
+            "person_1.json",
         ]
 
 
@@ -206,12 +206,12 @@ class TestImagePath:
         doc = zip_doc(path, "person_1.json")
         assert doc["imagePath"] == "images/person_1.jpg"
 
-    def test_aug_chain(self, rt_dataset, rt_out):
+    def test_aug_name_carries_its_new_image_path(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug1", "person")
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert zip_doc(path, "person_1_aug1.json")["imagePath"] == (
-            "person_1_aug1.jpg"
+        assert zip_doc(path, "person_2.json")["imagePath"] == (
+            "person_2.jpg"
         )
 
     def test_unchanged_json_is_verbatim(self, rt_dataset, rt_out):
