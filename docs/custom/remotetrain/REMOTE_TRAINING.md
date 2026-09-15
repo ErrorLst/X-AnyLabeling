@@ -40,7 +40,7 @@
 | 部分结果 | 取消 / 失败 / 中断任务保留在 `artifacts/<job_id>/partial/` 的结果，清单以 `partial: true` 标注 |
 | `capabilities` | 服务端下发的能力快照（设备、显存表、参数面、常量、warnings），客户端据此决定能否提交与如何展示 |
 | `is_terminal` | 服务端下发的权威终态字段，定义 `is_terminal := (finished_at != null)` |
-| preset 家族 | 按模型家族下发的 optimizer 预设组（如 `yolo11` / `yolo26`）；`auto` 由客户端显式选择，服务端不注入超参 |
+| preset 家族 | 按模型家族下发的 optimizer 预设组（如 `yolo11` / `yolo26`）；`auto` 是取值哨兵（客户端可选、服务端默认也可选），两种来源都**不注入超参** |
 | `attempt` | 一次训练尝试；同一恢复周期内的两次 attempt 靠「自动重排入队前归档上一 attempt 的终态证据」区分（§4.3.1） |
 | 单 worker | 服务端只跑一个进程（不带 `--workers`），因此进程内全局锁与内存态才是唯一权威 |
 | 软删除 | 一切删除先移入 `.trash/`，按 `trash_ttl_hours` 到期物理回收；**唯一例外**见 §4.1.7（超配额路径下一轮即清除）；禁止直接删 |
@@ -853,7 +853,7 @@ X-AnyLabeling-Server/
     "optimizer_presets": {
       "yolo11-sgd": {"optimizer": "SGD", "lr0": 0.01, "momentum": 0.937, "weight_decay": 0.0005, "warmup_bias_lr": 0.1}
     },
-    "preset_policy": {"type": "iterations_threshold", "threshold": 10000, "default_preset": {"yolo11": "yolo11-sgd", "yolo26": "yolo26-default"}},
+    "preset_policy": {"type": "auto", "threshold": null, "default_preset": {}},
     "devices": [
       {"device_index": 0, "name": "NVIDIA GeForce RTX 4090", "total_mb": 24564,
        "free_mb": 21000, "reserved_mb": 1024,
@@ -918,7 +918,7 @@ X-AnyLabeling-Server/
 | `model_families` | object | 家族 → `{min_ultralytics, available, unavailable_reason, weights, weights_ready, presets}`，**每个家族的键集形状完全一致**（不得缺键）。`available` = 当前环境 ultralytics 版本是否不低于该家族 `min_ultralytics`；`unavailable_reason` 为 `null` 或不可用时的错误码字符串（当前只会是 `MODEL_FAMILY_UNSUPPORTED`）。`weights_ready[file]` **只有一个含义**：该文件是否已存在于 `<work_dir>/weights/`——不表示是否允许下载，也不表示不可提交 |
 | `param_schema` | object | **恰好覆盖 §3.8.2 的全部 23 个客户端可传参数**，是客户端本地校验的唯一依据；区间语义见 §3.1。`optimizer.values` 是**全部家族 preset 的并集**（与家族可用性无关），客户端必须先按所选家族的 `model_families[family].presets` 过滤再展示 |
 | `optimizer_presets` | object | preset 名 → `{optimizer, lr0, momentum, weight_decay, warmup_bias_lr}`（对象形状即超参白名单，示例只列 `yolo11-sgd`） |
-| `preset_policy` | object | `{"type": "iterations_threshold", "threshold": 10000, "default_preset": {"<家族>": "<preset>"}}`；选择算法与兜底顺序见 §3.8.4 |
+| `preset_policy` | object | `{"type": "auto", "threshold": null, "default_preset": {}}`；`type ∈ {auto, iterations_threshold}`（缺省 ⇒ 数据类默认 `auto`，与出货默认一致；显式 `null` 属非法取值，§4.4.2）；`type:"auto"` 时 `threshold=null`、`default_preset={}`——键集与形状不变；选择算法与兜底顺序见 §3.8.4 |
 | `devices[]` | object[] | 各卡显存账本快照：`device_index` / `name` / `total_mb` / `free_mb` / `reserved_mb` / `in_flight_estimate_mb`（**仅 `preparing` 任务估算之和**）/ `running_estimate_mb`（**只读诊断字段，不参与账本公式**）/ `available_mb`。**账本公式（唯一）**：`available_mb = free_mb − reserved_mb − in_flight_estimate_mb`（`running` 任务的实际占用已包含在 `free_mb` 里，**不得再减一次**）。自洽性：`running_estimate_mb > 0` ⟺ `queue.running > 0`；`in_flight_estimate_mb > 0` ⟺ 存在 `preparing` 任务。跨卡判定一律用 §3.11 的 `min_device_total_mb` |
 | `queue` | object | `{"queued", "running", "max_concurrent_jobs", "max_concurrent_per_device"}`；与 `health.queue` 同源同字段 |
 | `cancel_grace_seconds` | int | 取消时 SIGTERM 后等待再 SIGKILL 的秒数（默认 **15**）；客户端用它显示「正在停止…（最长 N 秒）」，**不得硬编码**（§3.11） |
@@ -1059,7 +1059,7 @@ X-AnyLabeling-Server/
 | `batch` | int 或 auto | 整数 1 ≤ x ≤ 128；`allow_auto_batch: true` 时**另接受** `-1`（按 60% 显存自动）或 `0 < r < 1`（按比例自动）。**超过 128 一律 422**；1–128 内但超过该组合 `max_batch` 时**自动收敛**并在响应 `warnings[]` 记 `CONVERGED_TO_DEVICE_MAX` | 不注入；`allow_auto_batch: false` 时只接受整数 |
 | `imgsz` | enum | ∈ {320, 416, 512, 640, 768, 896, 1024, 1280, 1536} | 不注入 |
 | `workers` | int | 0 ≤ x ≤ 16 | 不注入 |
-| `optimizer` | preset 名或 `auto` | 取值域 = `capabilities.param_schema.optimizer.values`（= 各家族 `model_families[family].presets` 的并集，含 `auto`；`capabilities.optimizer_presets` 只映射真实 preset 名 → 超参对象，`auto` 不是它的键，§3.6）；显式传入的值必须属于所选家族；`auto` 是允许的显式取值，**裸优化器名不接受**（`SGD` / `AdamW` / `MuSGD` …）⇒ 422 `OPTIMIZER_UNSUPPORTED` | 缺省 → 按 `preset_policy` 选（§3.8.4） |
+| `optimizer` | preset 名或 `auto` | 取值域 = `capabilities.param_schema.optimizer.values`（= 各家族 `model_families[family].presets` 的并集，含 `auto`；`capabilities.optimizer_presets` 只映射真实 preset 名 → 超参对象，`auto` 不是它的键，§3.6）；显式传入的值必须属于所选家族；`auto` 是允许的显式取值，**裸优化器名不接受**（`SGD` / `AdamW` / `MuSGD` …）⇒ 422 `OPTIMIZER_UNSUPPORTED` | 缺省 → 按 `preset_policy` 选；出货策略 `type:"auto"` ⇒ 等价于显式 `auto`（§3.8.4） |
 | `lr0` | float | 0 < lr0 ≤ 0.05（`warn_above: 0.001` 见 §3.8.3） | preset 定义该键时以 preset 为准 |
 | `lrf` | float | 0 < lrf ≤ 1 | 不注入 |
 | `momentum` | float | 0 ≤ x ≤ 1 | preset 定义该键时以 preset 为准 |
@@ -1097,16 +1097,19 @@ batch_for_estimate = resolved_params.batch_assumed   # batch 为 auto 时用假�
 total_iterations = epochs * ceil(train_images / batch_for_estimate)
 family = request.model_family                          # 家族过滤在第一步就生效
 
-if total_iterations <= preset_policy.threshold:         # 默认 10000
-    preset = 该家族 presets 中的 adamw 类 preset（如 yolo11-adamw）
-else:
-    preset = 该家族 presets 中的 sgd 类 preset（如 yolo11-sgd）
-preset = preset or preset_policy.default_preset[family] or 该家族 presets 的首项
-assert preset in model_families[family].presets          # 不变量：选出的 preset 必属于所选家族
-# auto 不是 preset：实现里 select_preset 显式剔除 auto，候选与整条
-# fallback 链都不含它；某家族只声明了 auto 时 select_preset 返回
-# None ⇒ 422 OPTIMIZER_UNSUPPORTED（details.allowed=[]）。这是有意
-# 为之：auto 只能由客户端显式选择，绝不作为兜底被自动选中。
+if preset_policy.type == "auto":                         # 出货策略默认值
+    preset = "auto" if "auto" in model_families[family].presets else None
+else:                                                    # iterations_threshold
+    if total_iterations <= preset_policy.threshold:      # 默认 10000
+        preset = 该家族 presets 中的 adamw 类 preset（如 yolo11-adamw）
+    else:
+        preset = 该家族 presets 中的 sgd 类 preset（如 yolo11-sgd）
+    preset = preset or preset_policy.default_preset[family] or 该家族 presets 的首项
+    assert preset in model_families[family].presets      # 不变量：选出的 preset 必属于所选家族
+# auto 不是 preset：由策略（type:"auto"）或客户端给出的 auto 都原样透传，
+# 不进 preset 候选，也不进 iterations_threshold 的 fallback 链；家族未在
+# presets 里声明 auto ⇒ preset 为 None ⇒ 422 OPTIMIZER_UNSUPPORTED
+# （details.allowed=[]）——**不回落**到 preset 注入路径，这是有意为之。
 ```
 
 | 取值来源 | `resolved_params.optimizer` | `resolved_params.optimizer_preset` | `resolved_params.optimizer_source` |
@@ -1114,10 +1117,11 @@ assert preset in model_families[family].presets          # 不变量：选出的
 | 客户端显式传入 preset 名 | 该 preset 的裸优化器名（如 `AdamW`） | `null`（原始取值在请求体 `params.optimizer` 中） | `client` |
 | 客户端显式传入 `auto` | `auto`（原样透传，服务端不解析成裸名） | `null` | `auto` |
 | 服务端按 `preset_policy` 选出 | 选中 preset 的裸优化器名（如 `SGD`） | 选中的 preset 名（如 `yolo11-sgd`） | `preset` |
+| 服务端策略 `type:"auto"` 命中 | `auto` | `null` | `server_auto` |
 
-- **默认 preset 按家族映射**：`preset_policy.default_preset` = `{"yolo11": "yolo11-sgd", "yolo26": "yolo26-default"}`；兜底顺序为「家族映射 → 该家族 `presets` 的首项」，**绝不回退全局默认**（全局回退会把 yolo26 请求变成 `yolo11-sgd`，跨家族、服务端会拒绝）。客户端下拉**默认选中 `auto`**（所选家族 presets 含 `auto` 时；不含时落回「服务端按默认策略选择」项），该初值作为**显式选择**随请求发送；用户改选「（服务端按默认策略选择）」项时请求体不含 `optimizer`，服务端回到 `preset_policy` 路径。
-- **`auto` 的取值**：`resolved_params.optimizer` 的取值域是**四值** `SGD` / `AdamW` / `MuSGD` / `auto`——前三个来自 preset 的裸优化器名，`auto` 是客户端显式选择的哨兵；`auto` 不注入任何超参，且与 `lr0` / `lrf` / `momentum` / `weight_decay` / `warmup_epochs` / `warmup_momentum` / `warmup_bias_lr` 同送即 422（§3.8.2 / §3.8.3）。
-- 客户端未显式传 `optimizer` 时，`resolved_params.optimizer` 是 preset 的**裸优化器名**（`SGD` / `AdamW` / `MuSGD`），最终写入训练侧参数的也是该裸名与 preset 超参；客户端显式传 `auto` 时服务端**不选 preset、不注入超参**，`optimizer` 原样透传 `auto`（§3.8.5）。
+- **默认 preset 按家族映射（仅 `type:"iterations_threshold"` 生效）**：`preset_policy.default_preset` = `{"yolo11": "yolo11-sgd", "yolo26": "yolo26-default"}`；兜底顺序为「家族映射 → 该家族 `presets` 的首项」，**绝不回退全局默认**（全局回退会把 yolo26 请求变成 `yolo11-sgd`，跨家族、服务端会拒绝）。客户端下拉**默认停在第 0 项**（`data=None`，文案「（服务端按默认策略选择）」），**不计为显式选择**、请求体**不含** `optimizer`；用户选 `auto` 时发 `"auto"`、选具体 preset 时发该名（§5.2.2）。**第 0 项文案有两套模板**：capabilities 回显了该家族的 `default_preset` 时渲染「（由服务端默认策略决定；家族默认 X）」，否则（含出货 `type:"auto"`、回显 `default_preset: {}` 时）渲染短文案「（服务端按默认策略选择）」；两套都表示**不发** `optimizer`、由服务端策略决定，只是提示详略不同。
+- **`auto` 的取值**：`resolved_params.optimizer` 的取值域是**四值** `SGD` / `AdamW` / `MuSGD` / `auto`——前三个来自 preset 的裸优化器名，`auto` 是取值哨兵，**可由客户端显式选择，也可由出货策略给出**，两者都不解析成裸名；`auto` 不注入任何超参，且与 `lr0` / `lrf` / `momentum` / `weight_decay` / `warmup_epochs` / `warmup_momentum` / `warmup_bias_lr` 同送即 422（§3.8.2 / §3.8.3）。
+- **仅当策略为 `iterations_threshold` 时**才注入 preset 裸名与超参：客户端未显式传 `optimizer` 时，`resolved_params.optimizer` 是 preset 的**裸优化器名**（`SGD` / `AdamW` / `MuSGD`），最终写入训练侧参数的也是该裸名与 preset 超参；策略为 `type:"auto"` 或客户端显式传 `auto` 时服务端**不选 preset、不注入超参**，`optimizer` 原样透传 `auto`，来源分别记 `server_auto` / `auto`（§3.8.5）。
 
 #### §3.8.5 `resolved_params`（8 个权威字段）
 
@@ -1125,9 +1129,9 @@ assert preset in model_families[family].presets          # 不变量：选出的
 
 | 字段 | 取值 | 说明 |
 | --- | --- | --- |
-| `optimizer` | `SGD` / `AdamW` / `MuSGD` / `auto` | 服务端最终传给训练侧的优化器取值：选用 preset 时是该 preset 的**裸优化器名**；客户端显式传 `auto` 时是哨兵 `auto`（表示完全交给训练侧自选，服务端不注入超参） |
-| `optimizer_preset` | preset 名或 `null` | 由 `preset_policy` 选出时为该 preset 名；**客户端显式指定优化器时为 `null`** |
-| `optimizer_source` | `preset` / `client` / `auto` | `preset` = 服务端按 `preset_policy` 决定；`client` = 客户端显式传入 preset 名；`auto` = 客户端显式传入 `auto`（服务端不注入超参） |
+| `optimizer` | `SGD` / `AdamW` / `MuSGD` / `auto` | 服务端最终传给训练侧的优化器取值：选用 preset 时是该 preset 的**裸优化器名**；客户端显式传 `auto`、或服务端策略 `type:"auto"` 命中时是哨兵 `auto`（表示完全交给训练侧自选，服务端不注入超参） |
+| `optimizer_preset` | preset 名或 `null` | 由 `preset_policy`（`iterations_threshold`）选出时为该 preset 名；**客户端显式指定优化器、或服务端策略给出 `auto` 时为 `null`** |
+| `optimizer_source` | `preset` / `client` / `auto` / `server_auto` | `preset` = 服务端按 `preset_policy`（`iterations_threshold`）选出 preset；`client` = 客户端显式传入 preset 名；`auto` = 客户端显式传入 `auto`；`server_auto` = 服务端策略 `type:"auto"` 命中——后两者服务端都不注入超参 |
 | `batch` | int 或 number | **服务端生效值（收敛后）**：整数超过 `max_batch` 时记收敛后的值；客户端提交 auto（`-1` / 比例值 `r`）时**原样保留 auto 取值**（实际 batch 由训练侧在运行期决定）。**传给训练侧的值就是这个字段** |
 | `requested_batch` | int 或 number | **客户端原值**（未收敛前的请求体取值：整数 / `-1` / 比例值 `r`）；与 `batch` 分离后详情页可同时展示「请求值」与「生效值」 |
 | `batch_assumed` | int | 提交预检与显存账本使用的**假定 batch**：`batch` 为整数时等于收敛后的生效值；auto 时按 §4.2.5 ④ 的递减穷举折算出 `batch_cap_by_ratio`（比例预算下最大可行整数）与 `batch_cap_by_table`（= 本机实测 `max_batch`）两个 cap——**仅当两个 cap 都 ≥ 1 时**取 `min(batch_cap_by_ratio, batch_cap_by_table)`（**不得超过任一 cap**；此时 `max(1, ·)` 是空操作）；**任一有效 cap < 1 ⇒ 422 `INSUFFICIENT_VRAM`**（`details.reason` = `ratio_cap_below_one` / `table_cap_below_one`，见 §3.3），**不得钳位到 1**（钳位会直接突破比例预算并绕过提交期门禁）。权威算法见 §4.2.5 |
@@ -2014,6 +2018,8 @@ batch_assumed = min(64, 96) = 64                           # 两个 cap 都 ≥ 
 | `max_batch` 的给出方式 | 由「最高有效点 + OOM 上限证据」一起给出（因此可高于最高实测点，但不会高于硬上限 128） |
 | 合成标定数据集的参数 | **权威定义在 §4.4 的配置键**；本节只写行为：默认路径下运行时合成、系统临时目录、标定结束即清理（§2.5） |
 
+- **`vram_table.sources.auto` 与 `optimizer=auto` 无关**：前者指本机标定产物的来源计数（`auto` = 本机实测行，与 `manual` / `default` 并列，§3.6），后者是优化器取值哨兵（§3.8.4 / §3.8.5）；两者**不得混用表述**。
+
 **单点 OOM 的自适应（属预期，不算失败）**：某点 OOM = 一条「该 batch 不可行」的**上限证据**——记录该点（`ok=false` + 峰值）后**向下取半重试**，下限由 `batch_min`（默认 4）给出；降半重试本身复用 OOM 兜底语义（每点至多 `oom_retry_max` 次，§4.2.6）。**单点 OOM 绝不算标定失败。**
 
 **失败与跳过的分级（写死）**：
@@ -2436,8 +2442,8 @@ jobs/<job_id>/archive/attempt-<cycle>-<attempt>/
 
 **preset 选择算法的训练侧落地**（算法、家族映射兜底与不变量**已在 §3.8.4 定义**，本节不重述）：
 
-- 服务端把选中的 preset 名与超参写进 `resolved_params`（字段口径见 §3.8.5）：服务端按 `preset_policy` 选出时，最终传给 ultralytics 的是 preset 里的**裸优化器名**（`SGD` / `AdamW` / `MuSGD`）与超参；客户端显式传 `auto` 时**原样透传 `auto`**（`optimizer="auto"` / `optimizer_preset=null`，§3.8.5）。
-- 客户端可传的 `optimizer` 必须是所选家族的 preset 名，**或是显式取值 `auto`**（`auto` 不是 preset 名：服务端不注入超参，只允许客户端显式选择，§3.8.4 / §3.8.5）；跨家族 preset 或裸优化器名一律 422 `OPTIMIZER_UNSUPPORTED`（`details.model_family` / `details.allowed`）；`AdamW` / `Adam` 且 `lr0 > 0.001` ⇒ 提交响应 `warnings[]` 记 `ADAMW_LR0_HIGH`（任务仍可提交），`lr0 > 0.05` ⇒ 422 `PARAM_OUT_OF_RANGE`（§3.8.2）。
+- 服务端把选中的 preset 名与超参写进 `resolved_params`（字段口径见 §3.8.5）：服务端按 `preset_policy` 选出时，最终传给 ultralytics 的是 preset 里的**裸优化器名**（`SGD` / `AdamW` / `MuSGD`）与超参；客户端显式传 `auto`、或策略 `type:"auto"` 命中时都**原样透传 `auto`**、不选 preset（`optimizer="auto"` / `optimizer_preset=null`，§3.8.5）。
+- 客户端可传的 `optimizer` 必须是所选家族的 preset 名，**或是取值 `auto`**（`auto` 不是 preset 名：服务端不注入超参；它**可由客户端显式选择，也可由出货策略给出**，§3.8.4 / §3.8.5）；跨家族 preset 或裸优化器名一律 422 `OPTIMIZER_UNSUPPORTED`（`details.model_family` / `details.allowed`）；`AdamW` / `Adam` 且 `lr0 > 0.001` ⇒ 提交响应 `warnings[]` 记 `ADAMW_LR0_HIGH`（任务仍可提交），`lr0 > 0.05` ⇒ 422 `PARAM_OUT_OF_RANGE`（§3.8.2）。
 - 续训（`resume=True`）沿用请求里同一 preset——恢复不重新选 preset、不改 `resolved_params`（§4.3.1）。
 - **质量检查（可关闭，两项都是提示性检查）**：**产物校验** 用 `best.pt` 在 val 复算指标并与 `results.csv` 末轮比对（差异超 `quality_checks.artifact_metric_tolerance` 或为 0 / NaN ⇒ `artifact_suspect=true` + `suspect_reason="artifact_metric_mismatch"`）；**resume 异常检测** 在恢复后首 epoch loss 超恢复前 `quality_checks.resume_loss_spike_n` 倍时写 `log` 告警并置 `artifact_suspect=true` + `suspect_reason="resume_loss_spike"`。两项都只影响 `artifact_suspect` / `needs_attention`（§4.3.3），不改变终态本身。
 
@@ -2629,15 +2635,15 @@ auto_calibration:
 calibration_conflict_policy: defer        # defer（默认，延期到下次启动补标）| wait（等训练结束再标）| terminate（受控终止后继续标定）
 deferred_calibration_retry_min: 5         # defer 下「队列空且无存活任务」的复查周期（分钟）；满足即置 deferred_ready 并提示重启
 
-# ---- optimizer preset（auto 由客户端显式选择，服务端不注入超参，目的 = 参数显式化与跨版本可复现）----
+# ---- optimizer preset（默认 type: auto，服务端不注入超参；旧阈值策略改回 iterations_threshold。目的 = 参数显式化与跨版本可复现）----
 presets:
   yolo11-sgd:     {optimizer: SGD,   lr0: 0.01,  momentum: 0.937, weight_decay: 0.0005, warmup_bias_lr: 0.1}
   yolo11-adamw:   {optimizer: AdamW, lr0: 0.001, momentum: 0.9,   weight_decay: 0.0005, warmup_bias_lr: 0.1}
   yolo26-default: {optimizer: MuSGD, lr0: 0.01,  momentum: 0.937, weight_decay: 0.0005, warmup_bias_lr: 0.1}
 preset_policy:
-  type: iterations_threshold             # 复刻上游 auto 的选择逻辑，但输出显式 preset 名
-  threshold: 10000                       # 预计总迭代数 <= threshold 选 adamw 类 preset，否则选 sgd 类
-  default_preset:                        # 缺省回退按家族映射（键 = model_families 的家族名），绝不回退全局默认
+  type: auto                             # auto | iterations_threshold（缺省 ⇒ auto，与出货默认一致；旧阈值行为 = 显式写 iterations_threshold）；改键重启生效；改回 iterations_threshold 前先读 §5.2.2 的跨仓耦合告警
+  threshold: 10000                       # 仅 type: iterations_threshold 生效；预计总迭代数 <= threshold 选 adamw 类 preset，否则选 sgd 类
+  default_preset:                        # 仅 type: iterations_threshold 生效；缺省回退按家族映射（键 = model_families 的家族名），绝不回退全局默认
     yolo11: yolo11-sgd
     yolo26: yolo26-default
 
@@ -2696,6 +2702,7 @@ model_families:
 | `tasks` 不同时包含 `detect` 与 `segment` | 拒绝启动 |
 | `resume_fallback` 非 `restart` / `fail` | 拒绝启动 |
 | 标定非 OOM 类异常：标定子进程崩溃、auto 产物写入失败、显式指定的标定数据集缺失 / 不可读 | 按 `auto_calibration.startup_retries`（3）次、间隔 `startup_retry_interval_seconds`（30 秒）重试；耗尽仍失败 ⇒ **拒绝启动**（日志写明失败步骤与 errno） |
+| `preset_policy.type` 非 `auto` / `iterations_threshold`（键缺失 ⇒ 数据类默认 `auto`，不算非法；显式 `null` 不是字符串，仍 FATAL） | 自检项 `preset_policy_type`：**拒绝启动**（非零退出码 + 日志写明取值域与当前取值）；改键**重启生效**（§4.4.2） |
 
 **启动成功但 WARN 的条目（信息性；落 `capabilities.warnings`，§3.6；**不进** `needs_attention`）**：
 
@@ -2714,6 +2721,7 @@ model_families:
 | `blob_materialize: hardlink` 但 blob 与 `work_dir` 不同设备 | `BLOB_MATERIALIZE_DEGRADED`：自动降级为 `copy` |
 | 标定结束清理临时目录失败 | 只记 WARN 并保留路径；**不**拒绝启动、**不**进 `capabilities.warnings` |
 | 任一 TTL 键为 `0`（四个键名见 §4.4.2） | **只记 WARN、不影响启动**：提示「该保留期已关闭（`<键名>: 0`），磁盘不会被自动回收」；`0` 的语义定义见 §4.4.1 |
+| `preset_policy.type: "auto"` 但某家族 `model_families[family].presets` 未声明 `auto` | WARN `preset_policy_auto_family`：**点名该家族**并说明「该家族无法提交」——`select_preset` 返回 `None` ⇒ 提交该家族一律 422 `OPTIMIZER_UNSUPPORTED`（**不静默回落**，§3.8.4）；**只落启动日志**，不新增 `capabilities.warnings` 的 code（§3.6 的 7 个枚举不变） |
 
 - **一条交叉约束（写死）**：`dataset_ttl_days` 非 0 时 `blob_unused_ttl_days` **不得短于**它——违反即**拒绝启动**（见上表），**不会**降级为 WARN。
 - 上表的 WARN 都只是**信息性**通道：客户端据此显示信息条，**不**弹「需人工介入」，也**不**进入 job 的 `needs_attention`（§3.9、§4.3.3）。
@@ -3120,8 +3128,10 @@ def reject(self):
 
 **两条硬规则（写死）**：
 
-- `optimizer` 的**表单初值就是 `auto`**：家族 presets 含 `auto` 时下拉默认选中它，并作为**显式选择**随请求发送（`params.optimizer = "auto"`；服务端不注入任何优化器超参，§3.8.2 / §3.8.3）；`auto` 与 7 个优化器超参同送仍 422（§3.8.3）。用户选择「（服务端按默认策略选择）」项时**不发** `optimizer`，服务端回到 `preset_policy`（§3.8.4）。
+- `optimizer` 的**表单初值是第 0 项**（`data=None`，文案「（服务端按默认策略选择）」）：请求体**不含** `optimizer`，生效值由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`、来源 `server_auto`，§3.8.4）；`auto` 与具体 preset 是用户**显式选择**，选了就发（`params.optimizer = "auto"` / `"<preset 名>"`）；`auto` 与 7 个优化器超参同送仍 422（§3.8.3）。
 - `save_period: -1` **不得原样透传**：它表示「不保存周期快照」，映射时应转为 `0` 或不传；服务端范围以 `param_schema.save_period`（0–1000）为准。
+
+**跨仓耦合告警（写死）**：客户端表单默认**不发送** `optimizer`，其生效值完全由服务端 `preset_policy.type` 决定。出货配置为 `type: "auto"`；若某部署把服务端改回 `type: "iterations_threshold"`，客户端必须同步改回「默认显式发送 `auto`」（或要求用户显式选择 `auto`），否则未显式选择的提交会重新走 preset 注入路径（历史实测：`yolo11-adamw`（AdamW `lr0=0.001` + `warmup_bias_lr=0.1`）+ 80 类小数据集，100 轮训练 mAP50 从 E1 的 0.4323 崩到 E5 谷底 0.0058，末 20 轮均值 0.1890；`best.pt` 停在 epoch 1，`results.csv` 末值 0.4315 是 `best.pt` 复测，不是末轮指标）。两处改动必须**同批上线**。
 
 **另一条形态约定**：表单**只提交用户显式设置过的键**——未设置的键不出现在请求体 `params` 里，由服务端 / ultralytics 走默认值；参数面范围与分组见 §3.8。
 
@@ -3683,7 +3693,7 @@ void_reason（取值集合；每条取值对应的转移与清理时机归 §5.4
 | 数据集扫描与临时目录 | `anylabeling/custom/model_validation/dataset.py`（`collect_pairs` 的返回结构 / `sha256_file` / `create_staging_root` / 取消检查） | 配对结构、sha256、staging 与取消（§5.2.2 / §5.1.5） |
 | 图片扩展名白名单 | `anylabeling/custom/model_validation/labelme_io.py`（`IMAGE_EXTENSIONS`） | 本地扫描与 zip 打包共用（§5.2.3） |
 | 标注转换器 | `anylabeling/views/labeling/label_converter.py`（`LabelConverter` / `custom_to_yolo`） | `.json` → YOLO `.txt`（hbb / seg，§5.2.6） |
-| 任务→转换模式映射与参数默认值 | `anylabeling/services/auto_training/ultralytics/config.py`（`TASK_LABEL_MAPPINGS` / `DEFAULT_TRAINING_CONFIG`） | 模式取值与表单初值（`optimizer` 的初值按下拉默认取值，§5.2.2） |
+| 任务→转换模式映射与参数默认值 | `anylabeling/services/auto_training/ultralytics/config.py`（`TASK_LABEL_MAPPINGS` / `DEFAULT_TRAINING_CONFIG`） | 模式取值与表单初值（`optimizer` 初值 = 第 0 项、不发键；`DEFAULT_TRAINING_CONFIG` 里的 `"optimizer":"auto"` 只是本地训练默认，**不驱动远程表单初值**，§5.2.2） |
 | 服务器地址 + Token 头写法 | `anylabeling/services/auto_labeling/remote_server.py`（`remote_server_settings` / `XANYLABELING_SERVER_URL` / `{"Token": api_key}`） | 与既有远程推理一致的配置与鉴权风格（§3.1） |
 | 工作目录与 HTTP 客户端 | `anylabeling/config.py`（`get_work_directory()`）；上游核心依赖 `requests` | 台账落点与全部训练接口调用（§5.3.1 / §5.3.6） |
 
@@ -3934,7 +3944,7 @@ json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow
 | 显存基线来源 `vram_table.entries[].source` | `auto` = 本机已实测（带 `calibration_at`）；`manual` / `default` = 仍是起点值（`max_batch` 可能为 `null`）。两种状态在配置页与详情页**如实区分展示**，不把起点值说成实测值 |
 | OOM 预期 `oom_retry.enabled` | 为真时训练遇 CUDA OOM **不会**直接判失败，而由训练侧自行降 batch 重试；客户端遇到 `log` 事件 `code=OOM_BATCH_DOWNGRADE` 时提示「检测到显存不足，已自动降低 batch 重试（X → Y）」，**不**当错误弹窗 |
 
-**参数表单分组（除日志与产物记录类外全部可配）**：**常用参数** / **数据增强参数** / **学习率与优化器** / **训练控制**，分组与控件**一律由 `param_schema` 驱动**；**日志与产物记录类不暴露**（当前 23 项里对应 `save_period`，将来加入 `verbose` / `plots` 等纯记录参数同样不暴露）。`params.optimizer` 的选项来自**按所选家族过滤后的** preset 列表，**默认选中 `auto`**（家族 presets 含 `auto` 时）并作为显式选择发送；用户改选「（服务端按默认策略选择）」项时不发 `optimizer`，服务端才回到 `preset_policy.default_preset[所选家族]`（§3.8.4）；**绝不**取全局 `default_preset`（跨家族）。**未主动设置的参数一律不发送**（请求体 `params` 里不出现该键），由服务端 / ultralytics 走默认值。
+**参数表单分组（除日志与产物记录类外全部可配）**：**常用参数** / **数据增强参数** / **学习率与优化器** / **训练控制**，分组与控件**一律由 `param_schema` 驱动**；**日志与产物记录类不暴露**（当前 23 项里对应 `save_period`，将来加入 `verbose` / `plots` 等纯记录参数同样不暴露）。`params.optimizer` 的选项来自**按所选家族过滤后的** preset 列表（含 `auto`）；**默认停在第 0 项** ⇒ 不发 `optimizer`，由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`，§3.8.4）；用户选 `auto` 或具体 preset 时按**显式选择**发送；`default_preset` 仅用于第 0 项提示文案，`type:"iterations_threshold"` 时才参与 `select_preset`（§3.8.4）；**绝不**取全局 `default_preset`（跨家族）。**未主动设置的参数一律不发送**（请求体 `params` 里不出现该键），由服务端 / ultralytics 走默认值。
 
 **提交幂等（`POST /jobs` 是创建型请求，与服务端共同保证至多一次实体创建）**：
 
@@ -4269,7 +4279,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | S20 | 未知事件 type 降级 | 追加未知 `type` 事件 ⇒ 接口照常返回、`last_seq` 推进；客户端按日志行展示（**不报错、不丢弃**） |
 | S21 | `file_id` 清单即白名单 | 清单外 ⇒ 400 `VALIDATION_FAILED`；清单内但非普通文件（目录 / 符号链接）⇒ 404 `ARTIFACT_NOT_FOUND`；都不回显路径 |
 | S22 | `ETag` / 416 / 可复算 | `If-Range` + `Range` ⇒ 206 + `Content-Range`；不可满足区间 ⇒ 416；按 §3.10.1 从路径**复算** `file_id` 与清单逐字相同 |
-| S23 | preset 选择 | 家族 `default_preset` 生效（`yolo26` ⇒ `yolo26-default`、`yolo11` ⇒ `yolo11-sgd`）；未显式选择 `auto` 时 `resolved_params.optimizer` 为家族 preset 决定的优化器名，显式选择 `auto` 时 `optimizer="auto"` / `optimizer_preset=null` / `optimizer_source="auto"`（§3.8.4 取值来源表） |
+| S23 | preset 选择 | 出货策略 `type:"auto"`：未显式传 `optimizer` ⇒ `optimizer="auto"` / `optimizer_preset=null` / `optimizer_source="server_auto"`；策略为 `iterations_threshold` 时家族 `default_preset` 生效（`yolo26` ⇒ `yolo26-default`、`yolo11` ⇒ `yolo11-sgd`），未显式选择 `auto` 时 `resolved_params.optimizer` 为家族 preset 决定的优化器名；显式选择 `auto` 时 `optimizer="auto"` / `optimizer_preset=null` / `optimizer_source="auto"`（§3.8.4 取值来源表） |
 | S24 | 标定失败 ⇒ 不可调度 | 组合全部点位 OOM ⇒ `vram_table.unschedulable[]` 含它；提交该组合 ⇒ 422 `VRAM_ESTIMATE_UNAVAILABLE` |
 | S25 | TTL 与软删除 | `DELETE` ⇒ 目录**先进 `.trash/`**；`artifact_ttl_days: 0` ⇒ **不清理**；正值越期 ⇒ 到期清理 |
 

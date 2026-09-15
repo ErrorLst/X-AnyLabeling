@@ -14,9 +14,10 @@ Two rules of the specification shape this module:
   `_explicit` bookkeeping instead of "read every widget";
 - the parameter form never offers the server injected keys and never
   offers the logging / artifact recording group (spec §3.8.1, §3.8.4);
-  `optimizer` is a preset drop down whose initial value is the `auto`
-  sentinel of the family and counts as a choice of the user (spec
-  §3.8.4, §5.2.2).
+  `optimizer` is a preset drop down whose initial value is the first
+  entry (no value at all) and therefore never a choice of the user: an
+  untouched form sends no `optimizer` key and the server decides by its
+  own policy (spec §3.8.4, §5.2.2).
 """
 
 from __future__ import annotations
@@ -169,10 +170,6 @@ PRESET_UNSET_TEXT = "（服务端按默认策略选择）"
 #: another preset of the family (its iteration threshold), so the wording
 #: must not promise a concrete value.
 PRESET_UNSET_TEMPLATE = "（由服务端默认策略决定；家族默认 {0}）"
-#: The sentinel the preset combo starts on when the family declares it
-#: (spec §3.8.4): it is a real client value, not a preset, and it leaves
-#: every optimizer hyper parameter to the training side (spec §3.8.2).
-PRESET_AUTO = "auto"
 
 CLASSES_FILTER = "类别表 (*.txt);;所有文件 (*)"
 CONFIG_FILTER = "训练配置 (*.json);;所有文件 (*)"
@@ -490,10 +487,9 @@ class ConfigPage(QtWidgets.QWidget):
             self.task_combo.addItem(_task_label(str(task)), str(task))
         self.task_combo.blockSignals(False)
         # The rebuild comes first: the preset combos are built from the
-        # family lists above, so they carry the family default - the
-        # `auto` sentinel when the family declares it (spec §3.8.4).
-        # The family switch runs afterwards on the fresh widgets, which
-        # is what turns the whole form into a choice of the user.
+        # family lists above, and the family switch runs afterwards on the
+        # fresh widgets so that they start on the server policy entry
+        # (spec §3.8.4, §5.2.2).
         self.rebuild_params()
         self._on_family_changed()
 
@@ -561,18 +557,12 @@ class ConfigPage(QtWidgets.QWidget):
         self._refresh_models()
         entry = self._params.get("optimizer")
         if entry is not None:
-            # An explicit choice of the first entry ("let the server
-            # decide", spec §3.8.4) stays that choice: the refill after a
-            # family change - or a second capabilities answer - must not
-            # turn it back into the `auto` default (spec §5.2.8).
-            server_policy = (
-                entry.explicit and entry.widget.currentData() is None
-            )
+            # Only a real preset choice of the old family is carried over;
+            # the first entry (None) falls back to the first entry of the
+            # new family, which is the server policy entry again (spec
+            # §3.8.4, §5.2.8).
             self._fill_presets(
-                entry.widget,
-                entry.widget.currentData(),
-                explicit=True,
-                server_policy=server_policy,
+                entry.widget, entry.widget.currentData(), explicit=True
             )
 
     def _family_presets(self, family: str) -> List[str]:
@@ -590,45 +580,32 @@ class ConfigPage(QtWidgets.QWidget):
         widget: QtWidgets.QComboBox,
         keep: Any = None,
         explicit: bool = False,
-        server_policy: bool = False,
     ) -> None:
         """Fill one preset combo for the selected family (spec §3.6).
 
         The first entry means "let the server pick by preset_policy"
-        (spec §3.8.4).  The `auto` sentinel is a first class candidate
-        (spec §3.8.4) and the initial value whenever the family declares
-        it; the user gets back to the server policy by picking the first
-        entry.  A preset of another family is never offered: it would
+        (spec §3.8.4): it carries no value at all and is never counted as
+        a choice of the user, so an untouched form sends no `optimizer`
+        key and the server decides by its own policy (spec §5.2.2).  The
+        remaining entries - `auto` included - are the real choices of
+        the user.  A preset of another family is never offered: it would
         come back as 422 OPTIMIZER_UNSUPPORTED.
 
-        `server_policy` keeps the first entry itself: the caller has
-        an explicit "let the server decide" choice to preserve.
-        `keep` selects that value again (the family switch path); the
-        initial value counts as the choice of the user exactly when the
-        caller says so with `explicit`, which is the case for every
-        default the page establishes while it is in use (spec §3.8.4: an
-        untouched form sends `optimizer: auto`, never a preset of the
-        server policy).  The index is looked up in the freshly filled
-        list, so the rule holds per selected family, a switch included
-        (spec §5.2.2).
+        `keep` selects that value again (the family switch path); only a
+        real preset of the selected family survives the refill, the first
+        entry always means "server policy".  The index is looked up in
+        the freshly filled list, so the rule holds per selected family, a
+        switch included (spec §5.2.2).
         """
 
         family = self.model_family_combo.currentText()
         presets = self._family_presets(family)
         default = self._default_presets.get(family)
-        # The wanted *value* is resolved here, the index only after the
-        # items are in place: the current item list still belongs to the
-        # family just left (or is empty on a freshly made combo), so an
-        # index found now would be stale and silently land on the first
-        # entry - the server policy - instead of the sentinel.
-        if keep in presets:
-            wanted = keep
-        elif server_policy:
-            wanted = None
-        elif PRESET_AUTO in presets:
-            wanted = PRESET_AUTO
-        else:
-            wanted = None
+        # The target *value* first, the index only after the items are in
+        # place: the item list still belongs to the family just left (or
+        # is empty on a freshly made combo), so an index resolved now
+        # would be stale and silently land on another entry.
+        wanted = keep if keep in presets else None
         label = (
             PRESET_UNSET_TEMPLATE.format(default)
             if default in presets
@@ -646,13 +623,9 @@ class ConfigPage(QtWidgets.QWidget):
         widget.blockSignals(False)
         entry = self._params.get("optimizer")
         if entry is not None and entry.widget is widget:
-            if not explicit:
-                entry.explicit = False
-            else:
-                # Landing on `auto` is the deliberate family default;
-                # landing on the first entry is a choice only when the
-                # caller kept one, never a silent revert.
-                entry.explicit = bool(index) or server_policy
+            # The first entry never counts as a choice of the user; it is
+            # the server policy default and stays out of the request.
+            entry.explicit = bool(explicit and index > 0)
 
     def explicit_params(self) -> Dict[str, Any]:
         """The parameters the user actually set, value by value."""
@@ -674,27 +647,13 @@ class ConfigPage(QtWidgets.QWidget):
 
         The explicit parameters are carried over: a rebuild triggered by a
         late `capabilities` answer must not silently drop what the user
-        (or an imported configuration) already set.
-
-        The carry is built from the entries, not from
-        `explicit_params()`: an explicit `None` is a decision as well
-        (spec §3.8.4 - the first preset entry hands the choice back to the
-        server policy) and dropping it would let the fresh combo start on
-        the `auto` default and send it (spec §5.2.2).
+        (or an imported configuration) already set.  The carry is
+        `explicit_params()`: the only valueless explicit parameter was
+        the preset combo's first entry, and that entry no longer counts as
+        a choice of the user (spec §3.8.4, §5.2.2).
         """
 
-        if keep is not None:
-            carried = dict(keep)
-        else:
-            carried = {}
-            for name, entry in self._params.items():
-                if not entry.explicit:
-                    continue
-                try:
-                    value = entry.value()
-                except (ValueError, TypeError):
-                    continue
-                carried[name] = value
+        carried = dict(keep) if keep is not None else self.explicit_params()
         while self.params_layout.count():
             item = self.params_layout.takeAt(0)
             widget = item.widget()
@@ -744,14 +703,13 @@ class ConfigPage(QtWidgets.QWidget):
             entry = _ParamWidget(
                 name, widget, False, lambda w=widget: w.currentData()
             )
-            # The auto initial value is a deliberate default, not a
-            # missing value (spec §3.8.4): an untouched form has to send
-            # it, otherwise the server falls back to preset_policy and
-            # injects a preset's hyper parameters (spec §3.8.2).  The
-            # first entry carries no value at all: it never counts as a
-            # choice of the user, so a late capabilities answer is free
-            # to establish the family default (spec §5.2.2).
-            entry.explicit = widget.currentData() is not None
+            # The initial value is the first entry, which carries no
+            # value at all (spec §3.8.4): it hands the choice to the
+            # server policy, so it never counts as a choice of the user
+            # and an untouched form sends no `optimizer` key (spec
+            # §5.2.2).  Only a later user (or import) selection marks the
+            # entry explicit.
+            entry.explicit = False
             widget.currentIndexChanged.connect(
                 lambda _row, e=entry: self._mark_explicit(e)
             )

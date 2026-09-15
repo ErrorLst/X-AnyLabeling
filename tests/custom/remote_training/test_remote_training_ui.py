@@ -354,11 +354,11 @@ def test_parameter_surface_follows_capabilities(dialogs):
     page = dialog.config_page
     page.set_capabilities(dict(CAPABILITIES))
     assert len(page._params) == 23
-    # the only initial value is the family's auto sentinel (spec §3.8.4):
-    # every other parameter stays out of the request until it is set
-    assert page.values().params == {"optimizer": "auto"}
+    # no parameter carries an initial value (spec §3.8.4): an untouched
+    # form sends no key at all, `optimizer` included
+    assert page.values().params == {}
     page._params["epochs"].widget.setValue(7)
-    assert page.values().params == {"epochs": 7, "optimizer": "auto"}
+    assert page.values().params == {"epochs": 7}
 
 
 def test_weights_follow_family_and_task(dialogs):
@@ -387,16 +387,16 @@ def test_presets_follow_the_family(dialogs):
         return [combo.itemText(i) for i in range(combo.count())]
 
     widget = page._params["optimizer"].widget
-    # the first entry lets the server pick by preset_policy, the second
-    # is the auto sentinel the form starts on (§3.8.4)
+    # the first entry lets the server pick by preset_policy and is the
+    # initial value of the form (§3.8.4)
     assert items(widget) == ["（由服务端默认策略决定；家族默认 yolo11-sgd）",
                              "auto", "yolo11-adamw", "yolo11-sgd"]
-    assert widget.currentData() == "auto"
+    assert widget.currentData() is None
     page.model_family_combo.setCurrentIndex(
         items(page.model_family_combo).index("yolo26"))
     assert items(widget) == ["（由服务端默认策略决定；家族默认 yolo26-default）",
                              "auto", "yolo26-default"]
-    assert widget.currentData() == "auto"
+    assert widget.currentData() is None
 
 
 def test_a_family_without_the_sentinel_keeps_the_server_policy(dialogs):
@@ -421,15 +421,17 @@ def test_a_family_without_the_sentinel_keeps_the_server_policy(dialogs):
                      "yolo26-default"]
     assert widget.currentData() is None
     assert page._params["optimizer"].explicit is False
+    assert page.explicit_params() == {}
     assert page.values().params == {}
 
 
-def test_family_switch_to_an_auto_family_selects_the_sentinel(dialogs):
-    """Switching into a family with `auto` selects it (spec §3.8.4).
+def test_family_switch_stays_on_the_server_policy_entry(dialogs):
+    """A family switch keeps the form on the server policy (§3.8.4).
 
-    The family without the sentinel leaves the combo on the first entry
-    (server policy).  The switch has to resolve `auto` against the new
-    item list, not against the stale one of the family just left.
+    The family without the sentinel and the one that declares `auto`
+    both start on the first entry, and the switch has to resolve that
+    entry against the new item list, not against the stale one of the
+    family just left.
     """
 
     dialog = dialogs()
@@ -456,8 +458,48 @@ def test_family_switch_to_an_auto_family_selects_the_sentinel(dialogs):
     assert widget.currentData() is None
     assert page.values().params == {}
     page.model_family_combo.setCurrentIndex(families.index("yolo11"))
-    assert widget.currentData() == "auto"
-    assert page.values().params == {"optimizer": "auto"}
+    items = [widget.itemText(index) for index in range(widget.count())]
+    assert "auto" in items
+    assert widget.currentData() is None
+    assert page.values().params == {}
+
+
+def test_family_switch_keeps_a_shared_preset_name(dialogs):
+    """A preset both families offer stays selected across the switch.
+
+    The two families list the same names in a different order, so the
+    selection cannot be carried as an index: it has to be resolved
+    against the fresh item list of the new family (spec §3.6, §5.2.2).
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities({
+        "param_schema": {
+            "optimizer": {"type": "preset",
+                          "values": ["alpha", "beta"]},
+        },
+        "optimizer_presets": {"alpha": {"optimizer": "SGD"},
+                              "beta": {"optimizer": "AdamW"}},
+        "model_families": {
+            "yolo11": {"weights": {"detect": ["yolo11n.pt"]},
+                       "presets": ["alpha", "auto", "beta"]},
+            "yolo26": {"weights": {"detect": ["yolo26n.pt"]},
+                       "presets": ["auto", "beta", "alpha"]},
+        },
+        "preset_policy": {"default_preset": {"yolo11": "alpha",
+                                             "yolo26": "beta"}},
+        "tasks": ["detect"],
+    })
+    widget = page._params["optimizer"].widget
+    widget.setCurrentIndex(widget.findData("beta"))
+    assert page.values().params == {"optimizer": "beta"}
+    families = [page.model_family_combo.itemText(index)
+                for index in range(page.model_family_combo.count())]
+    page.model_family_combo.setCurrentIndex(families.index("yolo26"))
+    # `beta` sits at another position in the list of yolo26
+    assert widget.currentData() == "beta"
+    assert page.values().params == {"optimizer": "beta"}
 
 
 def test_import_and_export_round_trip(dialogs, tmp_path):
@@ -478,7 +520,7 @@ def test_import_and_export_round_trip(dialogs, tmp_path):
     assert page.dataset_edit.text() == "/tmp/ds"
     assert page.current_task() == "segment"
     assert page.seed_text() == "20260101"
-    assert page.values().params == {"epochs": 50, "optimizer": "auto"}
+    assert page.values().params == {"epochs": 50}
 
     target = tmp_path / "out.json"
     assert dialog.write_config_document(str(target)) is True
@@ -491,6 +533,50 @@ def test_import_and_export_round_trip(dialogs, tmp_path):
         "schema_version", "seed", "server_url", "split_strategy", "task",
         "val_ratio",
     ]
+
+
+def test_switching_family_back_keeps_the_family_default_entry_silent(
+    dialogs
+):
+    """The server policy entry is the default of every family (§3.8.4).
+
+    A preset of the family just left is not a choice for the new one
+    (it would come back as 422 OPTIMIZER_UNSUPPORTED), and the way
+    back to the first family must not resurrect it: the form is on the
+    server policy entry again and sends no `optimizer` key.
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities({
+        "param_schema": {
+            "optimizer": {"type": "preset",
+                          "values": ["alpha", "beta", "gamma"]},
+        },
+        "optimizer_presets": {"alpha": {"optimizer": "SGD"},
+                              "beta": {"optimizer": "AdamW"},
+                              "gamma": {"optimizer": "MuSGD"}},
+        "model_families": {
+            "yolo11": {"weights": {"detect": ["yolo11n.pt"]},
+                       "presets": ["alpha", "beta"]},
+            "yolo26": {"weights": {"detect": ["yolo26n.pt"]},
+                       "presets": ["gamma"]},
+        },
+        "preset_policy": {"default_preset": {"yolo11": "alpha",
+                                             "yolo26": "gamma"}},
+        "tasks": ["detect"],
+    })
+    widget = page._params["optimizer"].widget
+    widget.setCurrentIndex(widget.findData("alpha"))
+    assert page.values().params == {"optimizer": "alpha"}
+    families = [page.model_family_combo.itemText(index)
+                for index in range(page.model_family_combo.count())]
+    page.model_family_combo.setCurrentIndex(families.index("yolo26"))
+    assert widget.currentData() is None
+    assert page.values().params == {}
+    page.model_family_combo.setCurrentIndex(families.index("yolo11"))
+    assert widget.currentData() is None
+    assert page.values().params == {}
 
 
 def test_bad_seed_and_bad_import_are_reported(dialogs, tmp_path):
@@ -514,11 +600,17 @@ def test_capabilities_rebuild_keeps_explicit_params(dialogs):
     page.set_capabilities(dict(CAPABILITIES))
     page._params["epochs"].widget.setValue(50)
     page.set_capabilities(dict(CAPABILITIES))
-    assert page.values().params == {"epochs": 50, "optimizer": "auto"}
+    assert page.values().params == {"epochs": 50}
 
 
-def test_optimizer_defaults_to_auto_in_the_request(dialogs):
-    """An untouched form submits `auto` (spec §3.8.4, §5.2.2)."""
+def test_optimizer_is_out_of_the_request_by_default(dialogs):
+    """An untouched form sends no `optimizer` key (spec §3.8.4).
+
+    The first entry is the server policy one: it carries no value and
+    is not a choice of the user, so the request leaves the decision to
+    the server (`preset_policy`) instead of pinning a preset. `auto`
+    stays offered as one explicit choice among the others.
+    """
 
     dialog = dialogs()
     page = dialog.config_page
@@ -526,28 +618,44 @@ def test_optimizer_defaults_to_auto_in_the_request(dialogs):
     widget = page._params["optimizer"].widget
     items = [widget.itemText(index) for index in range(widget.count())]
     assert "auto" in items
-    assert widget.currentData() == "auto"
-    assert page._params["optimizer"].explicit is True
-    assert page.explicit_params() == {"optimizer": "auto"}
-    assert page.values().params == {"optimizer": "auto"}
-    params = dialog.job_request_body()["params"]
-    assert params == {"optimizer": "auto"}
+    assert widget.currentData() is None
+    assert page._params["optimizer"].explicit is False
+    assert page.explicit_params() == {}
+    assert page.values().params == {}
+    assert dialog.job_request_body()["params"] == {}
 
 
 def test_server_policy_entry_keeps_optimizer_out_of_the_request(dialogs):
-    """Picking the first entry hands the decision back (spec §3.8.4)."""
+    """Picking the first entry hands the decision back (spec §3.8.4).
+
+    The way back is the point: the combo already starts on the first
+    entry, so a lone `setCurrentIndex(0)` leaves it where it is and
+    covers nothing.  Going preset -> first entry is the transition
+    that has to clear the value, and with it the `optimizer` key.
+    """
 
     dialog = dialogs()
     page = dialog.config_page
     page.set_capabilities(dict(CAPABILITIES))
     widget = page._params["optimizer"].widget
+    # a concrete preset of the family the form starts on, read from the
+    # fixture so the name cannot drift away from the capabilities answer
+    family = page.model_family_combo.currentText()
+    presets = CAPABILITIES["model_families"][family]["presets"]
+    preset = next(name for name in presets if name != "auto")
+    assert widget.findData(preset) > 0
+    widget.setCurrentIndex(widget.findData(preset))
+    assert widget.currentData() == preset
+    assert page.values().params == {"optimizer": preset}
+    # back to the first entry: it carries no value at all
     widget.setCurrentIndex(0)
     assert widget.currentData() is None
-    assert "optimizer" not in page.explicit_params()
-    assert "optimizer" not in page.values().params
-    assert "optimizer" not in dialog.job_request_body()["params"]
-    # and back again: the sentinel is one explicit choice of two
+    assert page.explicit_params() == {}
+    assert page.values().params == {}
+    assert dialog.job_request_body()["params"] == {}
+    # and on again: the sentinel is one explicit choice of two
     widget.setCurrentIndex(widget.findData("auto"))
+    assert widget.currentData() == "auto"
     assert page.values().params == {"optimizer": "auto"}
 
 
@@ -555,15 +663,24 @@ def test_a_capabilities_refresh_keeps_the_server_policy_choice(dialogs):
     """The first entry survives a late `capabilities` answer (§3.8.4).
 
     A second `set_capabilities` is realistic: re-clicking 「测试连接」
-    or the error driven capabilities refresh runs it again.  The
-    explicit but valueless choice must not flip the form back to the
-    `auto` default and send `optimizer: "auto"` on the next submit.
+    or the error driven capabilities refresh runs it again.  The form
+    must stay on the valueless first entry, so the next submit still
+    carries no `optimizer` key (spec §5.2.2) - a refresh must not
+    fall back to the `auto` initial value of an older build (spec
+    §3.8.4).
     """
 
     dialog = dialogs()
     page = dialog.config_page
     page.set_capabilities(dict(CAPABILITIES))
     widget = page._params["optimizer"].widget
+    # a real round trip first: selecting the entry the combo already
+    # sits on would be a no-op and lock nothing down
+    family = page.model_family_combo.currentText()
+    presets = CAPABILITIES["model_families"][family]["presets"]
+    preset = next(name for name in presets if name != "auto")
+    widget.setCurrentIndex(widget.findData(preset))
+    assert page.values().params == {"optimizer": preset}
     widget.setCurrentIndex(0)
     assert widget.currentData() is None
     assert "optimizer" not in page.values().params
@@ -573,6 +690,7 @@ def test_a_capabilities_refresh_keeps_the_server_policy_choice(dialogs):
     assert widget.currentData() is None
     assert "optimizer" not in page.explicit_params()
     assert "optimizer" not in page.values().params
+    assert "optimizer" not in dialog.job_request_body()["params"]
     # ... and the state is stable over further answers
     page.set_capabilities(dict(CAPABILITIES))
     widget = page._params["optimizer"].widget
