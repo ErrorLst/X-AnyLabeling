@@ -468,6 +468,53 @@ class FormState:
         )
 
 
+# --------------------------------------------------- input controls
+# Presentation rule (spec §5.1.3): a value is typed with the keyboard or
+# picked from a drop down list - it is never stepped.  The four classes
+# below are the only way this page creates an input control, so a wheel
+# turn over the form scrolls the parameter page instead of changing a
+# parameter.  They stay `QComboBox` / `QSpinBox` / `QDoubleSpinBox`
+# subclasses on purpose: the readers and the tests dispatch on those
+# types (spec §5.2.2).
+
+
+class _NoWheelMixin:
+    """Let the wheel through: it scrolls the page, never a value.
+
+    `event.ignore()` and *not* `super().wheelEvent(event)`: an accepted
+    event stops at the control, and the enclosing `QScrollArea` would
+    never scroll.  Keys (arrows included) and the popup are untouched -
+    they are key / mouse events, not wheel ones.
+    """
+
+    def wheelEvent(self, event: Any) -> None:  # noqa: N802 (Qt override)
+        event.ignore()
+
+
+class _Combo(_NoWheelMixin, QtWidgets.QComboBox):
+    """One drop down: keyboard or a click on the popup only."""
+
+
+class _SpinBox(_NoWheelMixin, QtWidgets.QSpinBox):
+    """One integer box without the up / down step buttons."""
+
+    def __init__(self, parent: Optional[Any] = None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(
+            QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+
+
+class _DoubleSpinBox(_NoWheelMixin, QtWidgets.QDoubleSpinBox):
+    """One decimal box without the up / down step buttons."""
+
+    def __init__(self, parent: Optional[Any] = None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(
+            QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+
+
 class _ParamWidget:
     """One parameter control plus its explicitness bookkeeping."""
 
@@ -748,18 +795,18 @@ class ConfigPage(QtWidgets.QWidget):
     def _build_split_group(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("划分与任务")
         form = _tight_form(box)
-        self.task_combo = QtWidgets.QComboBox()
+        self.task_combo = _Combo()
         for task in TASK_CHOICES:
             # data carries the protocol spelling, the label the UI one
             self.task_combo.addItem(_task_label(protocol_task(task)),
                                     protocol_task(task))
-        self.model_family_combo = QtWidgets.QComboBox()
-        self.model_combo = QtWidgets.QComboBox()
+        self.model_family_combo = _Combo()
+        self.model_combo = _Combo()
         self.task_combo.currentIndexChanged.connect(self._on_task_changed)
         self.model_family_combo.currentIndexChanged.connect(
             self._on_family_changed
         )
-        self.val_ratio_spin = QtWidgets.QDoubleSpinBox()
+        self.val_ratio_spin = _DoubleSpinBox()
         self.val_ratio_spin.setRange(0.01, 0.99)
         self.val_ratio_spin.setSingleStep(0.05)
         self.val_ratio_spin.setDecimals(2)
@@ -1453,7 +1500,7 @@ class ConfigPage(QtWidgets.QWidget):
             )
             return entry
         if shape[0] == "enum":
-            widget = QtWidgets.QComboBox()
+            widget = _Combo()
             for value in shape[1]:
                 widget.addItem(str(value), value)
             _select_value(widget, default)
@@ -1465,7 +1512,7 @@ class ConfigPage(QtWidgets.QWidget):
             )
             return entry
         if shape[0] == "preset":
-            widget = QtWidgets.QComboBox()
+            widget = _Combo()
             entry = _ParamWidget(
                 name, widget, False, lambda w=widget: w.currentData()
             )
@@ -1479,7 +1526,7 @@ class ConfigPage(QtWidgets.QWidget):
             )
             return entry
         if shape[0] == "int":
-            widget = QtWidgets.QSpinBox()
+            widget = _SpinBox()
             _apply_range(widget, shape, default, int)
             widget.setSingleStep(1)
             entry = _ParamWidget(
@@ -1489,7 +1536,7 @@ class ConfigPage(QtWidgets.QWidget):
                 lambda _value, e=entry: self._mark_explicit(e)
             )
             return entry
-        widget = QtWidgets.QDoubleSpinBox()
+        widget = _DoubleSpinBox()
         _apply_range(widget, shape, default, float)
         entry = _ParamWidget(
             name, widget, False, lambda w=widget: float(w.value())
@@ -1507,7 +1554,7 @@ class ConfigPage(QtWidgets.QWidget):
         `batch: 16` (spec §3.8.2, §5.2.2).
         """
 
-        widget = QtWidgets.QComboBox()
+        widget = _Combo()
         widget.setEditable(False)
         for value in BATCH_CHOICES:
             widget.addItem(str(value), value)
