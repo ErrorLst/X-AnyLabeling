@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ....services.auto_training.ultralytics.config import (
     DEFAULT_TRAINING_CONFIG,
@@ -125,6 +125,98 @@ PARAM_GROUPS: Sequence[Any] = (
         ),
     ),
 )
+
+# --------------------------------------------------------------------
+# Layout (presentation only: spec §5.1.3 fixes the fields, never their
+# arrangement)
+# --------------------------------------------------------------------
+
+#: Deterministic lower bound of one parameter control, whatever growth
+#: strategy the active style gives a form layout field.
+PARAM_CONTROL_MIN_WIDTH = 240
+#: Horizontal gap of the parameter grid: between a label and its
+#: control as well as between the two columns.
+PARAM_GRID_HSPACING = 12
+#: Vertical gap of the parameter grid.
+PARAM_GRID_VSPACING = 4
+#: Groups that start folded, by group name (spec §5.1.3).  The two
+#: groups a first run usually leaves untouched are the folded ones.
+DEFAULT_COLLAPSED = {
+    "常用参数": False,
+    "学习率与优化器": False,
+    "数据增强与训练控制": True,
+    "训练控制与其它": True,
+}
+#: Constant hint of the parameter box: a submit sends the explicit keys
+#: only (spec §3.8, §5.2.8).
+PARAMS_HINT_TEMPLATE = "已显式设置 {0} 项（提交时才会发送）"
+#: Badge of one group title: how many keys of that group are set.
+GROUP_BADGE_TEMPLATE = "{0}（已设置 {1} 项）"
+#: The split preview table never gets smaller than this (it used to
+#: collapse to a 70 px strip at a 1000 px high window).
+PREVIEW_TABLE_MIN_HEIGHT = 150
+
+
+def _round_up(value: Any, step: int = 20) -> int:
+    """Round one pixel amount up to the next multiple of `step`."""
+
+    return -(-int(value) // step) * step
+
+
+def _label_width(texts: Sequence[str]) -> int:
+    """Return the width that lines up every control of a column.
+
+    The application font is the one the controls are really drawn with,
+    so the fixed label width follows a HiDPI setup instead of a hard
+    coded number (the model validation page measures its grid the same
+    way).  An import outside a GUI process has no font to measure: 0
+    then keeps every caller on its own floor.
+    """
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        return 0
+    metrics = QtGui.QFontMetrics(app.font())
+    return max([metrics.horizontalAdvance(text) for text in texts] + [0])
+
+
+#: Logical width below which the parameter form falls back to a single
+#: column: the two column form needs both controls (2 * 240), the label
+#: column of the left cell, two horizontal gaps (2 * 12) and the few
+#: pixels the group box and the page margins take (40).  The floor is
+#: 980, not the 730 the formula alone gives: the two column grid is
+#: itself 964 px wide minimum (each control keeps its 240 px, spec
+#: §5.1.3), and a switch below that could never be reached - the
+#: window could not become narrow enough to earn the single column.
+NARROW_PAGE_WIDTH = _round_up(
+    max(
+        980,
+        2 * PARAM_CONTROL_MIN_WIDTH
+        + _label_width(list(PARAM_LABELS.values()))
+        + 2 * PARAM_GRID_HSPACING
+        + 40,
+    )
+)
+
+
+def _tight_form(box: QtWidgets.QWidget) -> QtWidgets.QFormLayout:
+    """Create the compact form layout owned by a group box.
+
+    Same numbers as the model validation page: an upper group shares
+    its row with another one now, so its margins are not the place to
+    spend width.
+    """
+
+    form = QtWidgets.QFormLayout(box)
+    form.setContentsMargins(8, 6, 8, 6)
+    form.setHorizontalSpacing(8)
+    form.setVerticalSpacing(4)
+    form.setLabelAlignment(
+        QtCore.Qt.AlignmentFlag.AlignRight
+        | QtCore.Qt.AlignmentFlag.AlignVCenter
+    )
+    return form
+
 
 #: Local mirror of the range table (spec §3.8.2), used before a server
 #: answered: (type, min, max, exclusive_min, exclusive_max).
@@ -304,8 +396,30 @@ class ConfigPage(QtWidgets.QWidget):
         self._families: Dict[str, Any] = {}
         self._default_presets: Dict[str, str] = {}
         self._preview: Any = None
+        # --- presentation state (never part of the form semantics) -----
+        # The folded groups, the current column count and the four
+        # toggle buttons live on the instance: rebuild_params() destroys
+        # and recreates every control, and neither the folding nor the
+        # badge may be reset by a late capabilities answer.
+        self._collapsed: Dict[str, bool] = dict(DEFAULT_COLLAPSED)
+        self._param_columns = 2
+        self._group_buttons: Dict[str, QtWidgets.QToolButton] = {}
+        self._group_contents: Dict[str, QtWidgets.QWidget] = {}
+        self._group_grids: Dict[str, QtWidgets.QGridLayout] = {}
+        self._group_names: Dict[str, Sequence[str]] = {}
+        self._param_labels: Dict[str, QtWidgets.QLabel] = {}
+        self._label_width = _label_width(list(PARAM_LABELS.values()))
+        self._badge_pending = False
+        self._upper_stacked: Optional[bool] = None
+        # One timer owned by the page: a pending refresh dies with it, a
+        # static QTimer.singleShot would outlive a destroyed widget.
+        self._badge_timer = QtCore.QTimer(self)
+        self._badge_timer.setSingleShot(True)
+        self._badge_timer.setInterval(0)
+        self._badge_timer.timeout.connect(self._refresh_badges)
         self._build()
         self.rebuild_params()
+        self._refresh_badges()
 
     # ------------------------------------------------------------- build
 
@@ -318,15 +432,25 @@ class ConfigPage(QtWidgets.QWidget):
         outer.addWidget(self.status_row)
 
         outer.addWidget(self._build_server_group())
-        outer.addWidget(self._build_paths_group())
-        outer.addWidget(self._build_split_group())
+        outer.addWidget(self._build_upper_row())
         outer.addWidget(self._build_params_group())
         outer.addWidget(self._build_preview_group(), 1)
         outer.addWidget(self._build_buttons())
 
     def _build_server_group(self) -> QtWidgets.QWidget:
+        """The connection fields, on one row (spec §5.1.3).
+
+        A form layout would stack the address, the Token and the test
+        button; two stretch columns put the address and the Token side
+        by side and leave the button on the same line.  The widgets,
+        their placeholders and the signal are unchanged.
+        """
+
         box = QtWidgets.QGroupBox("服务端")
-        form = QtWidgets.QFormLayout(box)
+        grid = QtWidgets.QGridLayout(box)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
         self.server_url_edit = QtWidgets.QLineEdit()
         self.server_url_edit.setPlaceholderText("http://10.0.0.5:8000")
         self.api_key_edit = QtWidgets.QLineEdit()
@@ -334,19 +458,55 @@ class ConfigPage(QtWidgets.QWidget):
         self.api_key_edit.setPlaceholderText("Token")
         self.test_button = QtWidgets.QPushButton("测试连接")
         self.test_button.clicked.connect(self.connection_requested.emit)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.api_key_edit, 1)
-        row.addWidget(self.test_button)
-        form.addRow("服务器地址", self.server_url_edit)
-        form.addRow("Token", row)
+        grid.addWidget(QtWidgets.QLabel("服务器地址"), 0, 0)
+        grid.addWidget(self.server_url_edit, 0, 1)
+        grid.addWidget(QtWidgets.QLabel("Token"), 0, 2)
+        grid.addWidget(self.api_key_edit, 0, 3)
+        grid.addWidget(self.test_button, 0, 4)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
         self.health_label = QtWidgets.QLabel("")
         self.health_label.setWordWrap(True)
-        form.addRow("", self.health_label)
+        grid.addWidget(self.health_label, 1, 1, 1, 4)
         return box
+
+    def _build_upper_row(self) -> QtWidgets.QWidget:
+        """The two short upper groups, sharing one row.
+
+        The read only sources and the split / task pickers are 2 and 6
+        rows high; side by side they cost the height of the taller one,
+        which is what the parameter form below needs (spec §5.1.3).
+        The fields themselves are untouched.
+        """
+
+        self.upper_row = QtWidgets.QWidget()
+        self.upper_grid = QtWidgets.QGridLayout(self.upper_row)
+        self.upper_grid.setContentsMargins(0, 0, 0, 0)
+        self.upper_grid.setSpacing(10)
+        self.paths_box = self._build_paths_group()
+        self.split_box = self._build_split_group()
+        self._upper_stacked = False
+        self.upper_grid.addWidget(self.paths_box, 0, 0)
+        self.upper_grid.setColumnStretch(0, 1)
+        self.upper_grid.setColumnStretch(1, 2)
+        self.upper_grid.addWidget(self.split_box, 0, 1)
+        return self.upper_row
+
+    def _apply_upper_row(self, stacked: bool) -> None:
+        """Stack the two upper groups or put them back side by side."""
+
+        if stacked:
+            self.upper_grid.addWidget(self.split_box, 1, 0)
+            self.upper_grid.setColumnStretch(0, 1)
+            self.upper_grid.setColumnStretch(1, 0)
+            return
+        self.upper_grid.addWidget(self.split_box, 0, 1)
+        self.upper_grid.setColumnStretch(0, 1)
+        self.upper_grid.setColumnStretch(1, 2)
 
     def _build_paths_group(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("数据来源（只读）")
-        form = QtWidgets.QFormLayout(box)
+        form = _tight_form(box)
         self.dataset_edit = readonly_path(
             "选择数据来源目录（只读）", "数据集目录严格只读"
         )
@@ -370,7 +530,7 @@ class ConfigPage(QtWidgets.QWidget):
 
     def _build_split_group(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("划分与任务")
-        form = QtWidgets.QFormLayout(box)
+        form = _tight_form(box)
         self.task_combo = QtWidgets.QComboBox()
         for task in TASK_CHOICES:
             # data carries the protocol spelling, the label the UI one
@@ -399,13 +559,43 @@ class ConfigPage(QtWidgets.QWidget):
         return box
 
     def _build_params_group(self) -> QtWidgets.QWidget:
-        self.params_box = QtWidgets.QGroupBox("训练参数（只发送显式设置过的键）")
-        self.params_layout = QtWidgets.QVBoxLayout(self.params_box)
+        """The parameter box: one tool row plus the four groups (§5.1.3).
+
+        The tool row lives outside `params_layout`, which only holds
+        the groups: `rebuild_params()` drops and rebuilds those, and the
+        hint label with its two buttons has to survive that.
+        """
+
+        self.params_box = QtWidgets.QGroupBox(
+            "训练参数（只发送显式设置过的键）"
+        )
+        outer = QtWidgets.QVBoxLayout(self.params_box)
+        outer.setContentsMargins(6, 4, 6, 4)
+        outer.setSpacing(2)
+        tool = QtWidgets.QHBoxLayout()
+        tool.setContentsMargins(0, 0, 0, 0)
+        tool.setSpacing(8)
+        self.params_hint_label = QtWidgets.QLabel("")
+        tool.addWidget(self.params_hint_label)
+        tool.addStretch(1)
+        self.expand_all_button = QtWidgets.QPushButton("全部展开")
+        self.collapse_all_button = QtWidgets.QPushButton("全部折叠")
+        self.expand_all_button.clicked.connect(self._on_expand_all)
+        self.collapse_all_button.clicked.connect(self._on_collapse_all)
+        tool.addWidget(self.expand_all_button)
+        tool.addWidget(self.collapse_all_button)
+        outer.addLayout(tool)
+        self.params_layout = QtWidgets.QVBoxLayout()
+        self.params_layout.setContentsMargins(0, 0, 0, 0)
+        self.params_layout.setSpacing(2)
+        outer.addLayout(self.params_layout)
         return self.params_box
 
     def _build_preview_group(self) -> QtWidgets.QWidget:
         box = QtWidgets.QGroupBox("划分预览")
         layout = QtWidgets.QVBoxLayout(box)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
         self.preview_table = QtWidgets.QTableWidget(0, 3)
         self.preview_table.setHorizontalHeaderLabels(
             ["类别", "train", "val"]
@@ -414,12 +604,29 @@ class ConfigPage(QtWidgets.QWidget):
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self.preview_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.preview_table, 1)
+        # The table never shrinks below a readable height: the summary
+        # and the status row below it are what gives way first, and the
+        # splitter handle lets the user decide per session.
+        self.preview_table.setMinimumHeight(PREVIEW_TABLE_MIN_HEIGHT)
+        bottom = QtWidgets.QWidget()
+        bottom_layout = QtWidgets.QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(4)
         self.preview_summary = QtWidgets.QLabel("")
         self.preview_summary.setWordWrap(True)
-        layout.addWidget(self.preview_summary)
+        bottom_layout.addWidget(self.preview_summary)
         self.preview_row = StatusRow()
-        layout.addWidget(self.preview_row)
+        bottom_layout.addWidget(self.preview_row)
+        self.preview_splitter = QtWidgets.QSplitter(
+            QtCore.Qt.Orientation.Vertical
+        )
+        self.preview_splitter.setChildrenCollapsible(False)
+        self.preview_splitter.addWidget(self.preview_table)
+        self.preview_splitter.addWidget(bottom)
+        self.preview_splitter.setStretchFactor(0, 1)
+        self.preview_splitter.setStretchFactor(1, 0)
+        self.preview_splitter.setSizes([340, 90])
+        layout.addWidget(self.preview_splitter, 1)
         return box
 
     def _build_buttons(self) -> QtWidgets.QWidget:
@@ -626,6 +833,7 @@ class ConfigPage(QtWidgets.QWidget):
             # The first entry never counts as a choice of the user; it is
             # the server policy default and stays out of the request.
             entry.explicit = bool(explicit and index > 0)
+            self._tick_badge()
 
     def explicit_params(self) -> Dict[str, Any]:
         """The parameters the user actually set, value by value."""
@@ -661,16 +869,226 @@ class ConfigPage(QtWidgets.QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._params = {}
+        self._param_labels = {}
+        self._group_buttons = {}
+        self._group_contents = {}
+        self._group_grids = {}
+        self._group_names = {}
         for group, names in PARAM_GROUPS:
-            box = QtWidgets.QGroupBox(group)
-            form = QtWidgets.QFormLayout(box)
-            for name in names:
-                entry = self._make_param(name)
-                self._params[name] = entry
-                form.addRow(PARAM_LABELS[name], entry.widget)
-            self.params_layout.addWidget(box)
+            self.params_layout.addWidget(
+                self._build_param_group(group, names)
+            )
+        # The column count of the window is applied to the fresh
+        # widgets; the folding state of the instance is what the new
+        # toggles start from.
+        self._apply_param_columns(self._param_columns)
+        self._tick_badge()
         if carried:
             self.set_params(carried)
+
+    def _build_param_group(
+        self, group: str, names: Sequence[str]
+    ) -> QtWidgets.QWidget:
+        """Build one collapsible group: a toggle title plus its grid.
+
+        The folding state comes from the instance dictionary, which
+        survives a rebuild, and the arrow is rendered by the toggle
+        slot (the initial state goes through the same slot, so the
+        dictionary, the visibility and the arrow cannot disagree).
+        """
+
+        box = QtWidgets.QGroupBox()
+        layout = QtWidgets.QVBoxLayout(box)
+        # Tight on purpose: four of these plus their titles are what
+        # stands between the page and a 1180 px natural height.
+        layout.setContentsMargins(6, 2, 6, 4)
+        layout.setSpacing(1)
+        toggle = self._build_group_toggle(group)
+        toggle.setChecked(not self._collapsed.get(group, False))
+        layout.addWidget(toggle, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+        content = QtWidgets.QWidget()
+        grid = self._param_grid(names)
+        content.setLayout(grid)
+        layout.addWidget(content)
+        toggle.toggled.connect(
+            lambda checked, name=group: self._on_group_toggled(
+                name, bool(checked)
+            )
+        )
+        self._group_buttons[group] = toggle
+        self._group_contents[group] = content
+        self._group_grids[group] = grid
+        self._group_names[group] = tuple(names)
+        self._on_group_toggled(group, bool(toggle.isChecked()))
+        return box
+
+    def _build_group_toggle(self, name: str) -> QtWidgets.QToolButton:
+        """Create the collapsible title of one parameter group."""
+
+        button = QtWidgets.QToolButton()
+        button.setCheckable(True)
+        button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        button.setAutoRaise(True)
+        button.setText(name)
+        return button
+
+    def _on_group_toggled(self, name: str, checked: bool) -> None:
+        """Fold / unfold one group; no parameter value is touched."""
+
+        self._collapsed[name] = not checked
+        content = self._group_contents.get(name)
+        if content is not None:
+            content.setVisible(checked)
+        button = self._group_buttons.get(name)
+        if button is not None:
+            button.setArrowType(
+                QtCore.Qt.ArrowType.DownArrow
+                if checked
+                else QtCore.Qt.ArrowType.RightArrow
+            )
+
+    def _param_grid(self, names: Sequence[str]) -> QtWidgets.QGridLayout:
+        """Create the controls of one group inside a fresh grid.
+
+        The grid starts without a single cell filled: where each label
+        and control pair sits is the business of the row sync, so a
+        column count change can move the widgets without rebuilding one
+        of them.
+        """
+
+        grid = QtWidgets.QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(PARAM_GRID_HSPACING)
+        grid.setVerticalSpacing(PARAM_GRID_VSPACING)
+        for name in names:
+            entry = self._make_param(name)
+            self._params[name] = entry
+            # A minimum, never a fixed width: the column stretches and
+            # the control fills whatever the active style gives the
+            # cell, in every style (spec §5.1.3).
+            entry.widget.setMinimumWidth(PARAM_CONTROL_MIN_WIDTH)
+            label = QtWidgets.QLabel(PARAM_LABELS[name])
+            label.setFixedWidth(self._label_width)
+            self._param_labels[name] = label
+        return grid
+
+    def _apply_param_columns(self, columns: int) -> None:
+        """Move the existing parameter widgets into one or two columns."""
+
+        self._param_columns = int(columns)
+        for group, _names in PARAM_GROUPS:
+            self._sync_group_row(group)
+
+    def _sync_group_row(self, group: str) -> None:
+        """Re-place the widgets of one group (never rebuild them).
+
+        Adding a widget to a grid cell moves it out of its old one, so
+        this is the only operation the column switch needs: the
+        parameter entries, their explicit flags and the keyboard focus
+        all survive a resize.
+        """
+
+        grid = self._group_grids.get(group)
+        names = self._group_names.get(group) or ()
+        if grid is None or not names:
+            return
+        columns = 2 if self._param_columns > 1 else 1
+        rows = -(-len(names) // columns)
+        for index, name in enumerate(names):
+            row = index % rows
+            cell = index // rows
+            grid.addWidget(self._param_labels[name], row, cell * 2)
+            grid.addWidget(self._params[name].widget, row, cell * 2 + 1)
+        for cell in range(2):
+            grid.setColumnStretch(cell * 2, 0)
+            grid.setColumnStretch(cell * 2 + 1, 1)
+            grid.setColumnMinimumWidth(cell * 2, self._label_width)
+            grid.setColumnMinimumWidth(
+                cell * 2 + 1, PARAM_CONTROL_MIN_WIDTH
+            )
+        if columns < 2:
+            # The empty right half must stop claiming its 240 px: the
+            # minimumSizeHint of the page follows the grid, and a
+            # narrow page has to stay narrower than the two column
+            # form.
+            grid.setColumnStretch(2, 0)
+            grid.setColumnStretch(3, 0)
+            grid.setColumnMinimumWidth(2, 0)
+            grid.setColumnMinimumWidth(3, 0)
+
+    def _on_expand_all(self) -> None:
+        """Open every parameter group (the tool row button)."""
+
+        self._set_all_collapsed(False)
+
+    def _on_collapse_all(self) -> None:
+        """Fold every parameter group (the tool row button)."""
+
+        self._set_all_collapsed(True)
+
+    def _set_all_collapsed(self, collapsed: bool) -> None:
+        """Drive every toggle, so the toggle slot stays the only path."""
+
+        for button in self._group_buttons.values():
+            button.setChecked(not collapsed)
+
+    def _tick_badge(self) -> None:
+        """Schedule one badge refresh (debounced, never re-entrant)."""
+
+        if self._badge_pending:
+            return
+        self._badge_pending = True
+        self._badge_timer.start()
+
+    def _refresh_badges(self) -> None:
+        """Render the "N set" hints of the box and of every group.
+
+        A count only: this never writes an explicit flag, and it reads
+        the value defensively (a half typed batch box raises on
+        purpose, see the batch reader below).
+        """
+
+        self._badge_pending = False
+        counts = {group: 0 for group, _names in PARAM_GROUPS}
+        total = 0
+        for group, names in PARAM_GROUPS:
+            for name in names:
+                entry = self._params.get(name)
+                if entry is None or not entry.explicit:
+                    continue
+                try:
+                    value = entry.value()
+                except (ValueError, TypeError):
+                    value = None
+                if value is not None:
+                    counts[group] += 1
+                    total += 1
+        for group, button in self._group_buttons.items():
+            button.setText(
+                GROUP_BADGE_TEMPLATE.format(group, counts.get(group, 0))
+            )
+        self.params_hint_label.setText(PARAMS_HINT_TEMPLATE.format(total))
+
+    def resizeEvent(self, event: Any) -> None:
+        """Reflow the page: two columns wide, one column narrow.
+
+        Only a real change of the geometry touches the layout: a drag
+        of the window edge that keeps the same column count and the
+        same stacked / side by side choice returns right away and never
+        runs a relayout per pixel.
+        """
+
+        super().resizeEvent(event)
+        stacked = int(event.size().width()) < NARROW_PAGE_WIDTH
+        if stacked != self._upper_stacked:
+            self._upper_stacked = stacked
+            self._apply_upper_row(stacked)
+        columns = 1 if stacked else 2
+        if columns == self._param_columns:
+            return
+        self._apply_param_columns(columns)
 
     def _make_param(self, name: str) -> _ParamWidget:
         shape = self._schema.get(name) or fallback_spec(name)
@@ -762,6 +1180,7 @@ class ConfigPage(QtWidgets.QWidget):
 
     def _mark_explicit(self, entry: _ParamWidget) -> None:
         entry.explicit = True
+        self._tick_badge()
 
     # ------------------------------------------------------------- state
 
@@ -839,6 +1258,7 @@ class ConfigPage(QtWidgets.QWidget):
                 continue
             _assign_param(entry.widget, name, value)
             entry.explicit = True
+        self._tick_badge()
 
     def set_task(self, task: str) -> None:
         """Select a task by either spelling (spec §5.2.8 import)."""

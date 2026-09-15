@@ -2936,7 +2936,7 @@ def launch_remote_training(parent: Any = None):
 
 | 页面 | 职责 | 关键控件 | 数据来源接口（§3.2.1 的编号） |
 | --- | --- | --- | --- |
-| 配置页 `ConfigPage` | 收集提交所需的一切；提交前做本地预检与服务器能力校验 | 服务器地址 + Token（**读写**框 + 「测试连接」）、数据集目录（**只读** + 浏览）、`classes.txt`（只读 + 浏览）、任务类型下拉（Detect / Segment）、模型家族与权重下拉、参数表单（**按组呈现**：常用参数 / 数据增强参数 / 学习率与优化器 / 训练控制；**日志与产物记录类不暴露**；含 batch 的「自动」选项）、划分参数（`val_ratio` + `seed`，留空则生成并回填，§5.2.8）、「划分预览」表（§5.2.8）、「导入配置 / 导出配置」（§5.2.8）、预检摘要、「提交任务」 | #1 `GET /capabilities`、#16 `GET /health`；本地扫描结果（§5.2） |
+| 配置页 `ConfigPage` | 收集提交所需的一切；提交前做本地预检与服务器能力校验 | 服务器地址 + Token（**读写**框 + 「测试连接」）、数据集目录（**只读** + 浏览）、`classes.txt`（只读 + 浏览）、任务类型下拉（Detect / Segment）、模型家族与权重下拉、参数表单（**按组呈现**：常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它；**日志与产物记录类不暴露**；含 batch 的「自动」选项；**呈现层**：参数区按页宽自适应两列（页宽 ≥980 px）/ 单列（页宽 <980 px），四个分组可折叠且默认展开「常用参数」与「学习率与优化器」，组标题带「已设置 N 项」，参数箱顶部常驻「已显式设置 N 项（提交时才会发送）」；**字段与顺序、提交语义不变**）、划分参数（`val_ratio` + `seed`，留空则生成并回填，§5.2.8）、「划分预览」表（§5.2.8）、「导入配置 / 导出配置」（§5.2.8）、预检摘要、「提交任务」 | #1 `GET /capabilities`、#16 `GET /health`；本地扫描结果（§5.2） |
 | 任务列表页 `JobsPage` | 一览所有任务；批量操作 | `QTableWidget`（任务名 / 状态 / 进度 / 设备 / 耗时 / 需关注 / 恢复次数）、复选框、「刷新」「取消」「恢复」「查看详情」「下载结果」 | #8 `GET /jobs?ids=`（批量规则见 §3.2.4） |
 | 任务详情页 `JobDetailPage` | 单任务全貌与操作 | 状态徽标、进度条、指标卡片、`queued_reason` 提示、事件日志面板（只读 `QPlainTextEdit`）、「取消」「恢复」「下载结果」「打开产物目录」 | #9 `GET /jobs/{job_id}` + #10 `GET /jobs/{job_id}/events?after=<seq>` |
 | 结果页 `ResultsPage` | 产物浏览与下载 | 文件树（路径 / 大小 / 时间 / 「已中止」徽标；路径含 `partial/` 前缀）、下载按钮、摘要区（`summary.json` 关键字段）、黄条（`artifact_suspect`）、**底部只读调试信息区**（§5.1.5） | #13 `GET /jobs/{job_id}/files`、#15 `GET /jobs/{job_id}/download` |
@@ -3944,7 +3944,7 @@ json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow
 | 显存基线来源 `vram_table.entries[].source` | `auto` = 本机已实测（带 `calibration_at`）；`manual` / `default` = 仍是起点值（`max_batch` 可能为 `null`）。两种状态在配置页与详情页**如实区分展示**，不把起点值说成实测值 |
 | OOM 预期 `oom_retry.enabled` | 为真时训练遇 CUDA OOM **不会**直接判失败，而由训练侧自行降 batch 重试；客户端遇到 `log` 事件 `code=OOM_BATCH_DOWNGRADE` 时提示「检测到显存不足，已自动降低 batch 重试（X → Y）」，**不**当错误弹窗 |
 
-**参数表单分组（除日志与产物记录类外全部可配）**：**常用参数** / **数据增强参数** / **学习率与优化器** / **训练控制**，分组与控件**一律由 `param_schema` 驱动**；**日志与产物记录类不暴露**（当前 23 项里对应 `save_period`，将来加入 `verbose` / `plots` 等纯记录参数同样不暴露）。`params.optimizer` 的选项来自**按所选家族过滤后的** preset 列表（含 `auto`）；**默认停在第 0 项** ⇒ 不发 `optimizer`，由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`，§3.8.4）；用户选 `auto` 或具体 preset 时按**显式选择**发送；`default_preset` 仅用于第 0 项提示文案，`type:"iterations_threshold"` 时才参与 `select_preset`（§3.8.4）；**绝不**取全局 `default_preset`（跨家族）。**未主动设置的参数一律不发送**（请求体 `params` 里不出现该键），由服务端 / ultralytics 走默认值。
+**参数表单分组（除日志与产物记录类外全部可配）**：**常用参数** / **学习率与优化器** / **数据增强与训练控制** / **训练控制与其它**，分组与控件**一律由 `param_schema` 驱动**；**日志与产物记录类不暴露**（当前 23 项里对应 `save_period`，将来加入 `verbose` / `plots` 等纯记录参数同样不暴露）。`params.optimizer` 的选项来自**按所选家族过滤后的** preset 列表（含 `auto`）；**默认停在第 0 项** ⇒ 不发 `optimizer`，由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`，§3.8.4）；用户选 `auto` 或具体 preset 时按**显式选择**发送；`default_preset` 仅用于第 0 项提示文案，`type:"iterations_threshold"` 时才参与 `select_preset`（§3.8.4）；**绝不**取全局 `default_preset`（跨家族）。**未主动设置的参数一律不发送**（请求体 `params` 里不出现该键），由服务端 / ultralytics 走默认值。
 
 **提交幂等（`POST /jobs` 是创建型请求，与服务端共同保证至多一次实体创建）**：
 
@@ -4293,7 +4293,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | 2 | **不做分片 / 断点续传**：依据「单数据集常态 < 1 GB」——该依据**只在真正流式的前提下成立**，因此 upload **必须**用 `MultipartEncoder`（`files=` 会整包驻留内存）。 |
 | 3 | 结果 zip **不自动解压**：只保存到用户指定路径并提供「打开所在目录」。 |
 | 4 | **不做数据集管理页**：`GET /datasets`、`DELETE /datasets/{dataset_id}`、`GET /cache/stats` **不消费**；413 **优先**提示「服务端已触发自动回收，请稍后重试」；**仅当回收无法解除**才提示联系管理员手工清理（§4.1.7、§5.6）。 |
-| 5 | 参数表单**除日志与产物记录类外全部可配**，分四组（常用 / 数据增强 / 学习率与优化器 / 训练控制）由 `param_schema` 驱动；**未主动设置的参数不发送**。 |
+| 5 | 参数表单**除日志与产物记录类外全部可配**，分四组（常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它）由 `param_schema` 驱动；**未主动设置的参数不发送**。 |
 | 6 | **不做本地显存预估**，改为**服务端预估**；客户端只展示服务端给出的 `vram_estimate_mb` / `batch_assumed` / `resolved_params` / `warnings[]`。 |
 | 7 | **单服务器**：`server.json` 只保存一个 `server_url`，暂不考虑多服务器切换（`pending_dir` 仍持久化原始 `server_url`）。 |
 
