@@ -68,20 +68,32 @@ class TestNaturalKey:
 
     def test_non_decimal_digit_is_a_character(self):
         assert core.natural_key("a" + chr(178) + ".jpg") == [
-            "a",
-            chr(178),
-            ".",
-            "j",
-            "p",
-            "g",
+            (1, "a"),
+            (1, chr(178)),
+            (1, "."),
+            (1, "j"),
+            (1, "p"),
+            (1, "g"),
         ]
 
     def test_mixed_names_do_not_break_the_scan(self, pt_dir):
-        for name in ("a.png", "10.png", "2.png"):
+        for name in ("a.png", "10.png", "2.png", "1.png", "b.png"):
             write_image(pt_dir, name, (4, 4))
         names = [entry.name for entry in core.scan_directory(pt_dir)]
-        assert sorted(names) == ["10.png", "2.png", "a.png"]
-        assert len(names) == 3
+        assert names == ["1.png", "2.png", "10.png", "a.png", "b.png"]
+
+    def test_a_number_and_a_letter_sort(self):
+        names = ["1.jpg", "a.jpg"]
+        assert sorted(names, key=core.natural_key) == ["1.jpg", "a.jpg"]
+
+    def test_digits_and_letters_mix(self):
+        names = ["b2.jpg", "a10.jpg", "a2.jpg", "1.jpg"]
+        assert sorted(names, key=core.natural_key) == [
+            "1.jpg",
+            "a2.jpg",
+            "a10.jpg",
+            "b2.jpg",
+        ]
 
 
 class TestShapeInfo:

@@ -127,26 +127,34 @@ class PreviewFilter:
     height_threshold: float = FILTER_DEFAULT_SIZE
 
 
-def natural_key(value: str) -> List[object]:
+def natural_key(value: str) -> List[Tuple[int, object]]:
     """Sort key that keeps image_2 before image_10.
 
     Only decimal digits open a numeric run. A superscript such as the
     two of a2 passes str.isdigit() but int() rejects it with a
     ValueError, so it is compared as the ordinary character it is.
+    That matters because the scan runs inside a GUI slot, where an
+    uncaught exception would abort the whole application.
+
+    Every chunk is a (rank, value) pair: a numeric run is (0, int)
+    and a single character is (1, str). The rank keeps the chunks
+    comparable, so a folder that mixes 1.jpg with a.jpg sorts
+    instead of raising TypeError on int < str; digits rank before
+    letters, the order plain strings already have.
     """
 
-    chunks: List[object] = []
+    chunks: List[Tuple[int, object]] = []
     buffer = ""
     for char in str(value):
         if char.isdecimal():
             buffer += char
         else:
             if buffer:
-                chunks.append(int(buffer))
+                chunks.append((0, int(buffer)))
                 buffer = ""
-            chunks.append(char.lower())
+            chunks.append((1, char.lower()))
     if buffer:
-        chunks.append(int(buffer))
+        chunks.append((0, int(buffer)))
     return chunks
 
 

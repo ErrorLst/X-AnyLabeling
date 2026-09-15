@@ -223,7 +223,7 @@ class PreviewWorker(QtCore.QThread):
             try:
                 entries.sort(key=lambda item: core.natural_key(item.name))
             except Exception:
-                pass
+                entries.sort(key=lambda item: (item.name.lower(), item.name))
         snapshot = SourceSnapshot(
             directory=directory,
             entries=entries,
