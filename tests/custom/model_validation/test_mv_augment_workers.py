@@ -133,7 +133,10 @@ def build_config(total: int) -> ValidationConfig:
             translate=0.1,
             scale_min=0.9,
             scale_max=1.1,
-            fliplr=0.5,
+            fliplr=True,
+            # a probability of one keeps the counts and the bytes of this
+            # module stable: every try draws the whole candidate set
+            select_prob=1.0,
             seed=1234,
         ),
     )
@@ -484,7 +487,9 @@ def test_cancelling_stops_submitting_and_drops_the_results(
     relpaths = ["img%02d.png" % index for index in range(12)]
     pin_workers(monkeypatch, 4)
     worker = build_worker(staging, relpaths, 12)
-    real_augment = augment_module.augment_sample
+    # the stage calls the reason aware entry point of the module, so the
+    # seam of this test patches that very name
+    real_augment = augment_module.augment_sample_with_reason
     started = []
 
     def cancelling_augment(image, label, params, sample_index, **kwargs):
@@ -492,7 +497,9 @@ def test_cancelling_stops_submitting_and_drops_the_results(
         worker.cancel_requested = True
         return real_augment(image, label, params, sample_index, **kwargs)
 
-    monkeypatch.setattr(augment_module, "augment_sample", cancelling_augment)
+    monkeypatch.setattr(
+        augment_module, "augment_sample_with_reason", cancelling_augment
+    )
 
     worker._stage_augment()
 
@@ -516,14 +523,16 @@ def test_a_broken_sample_is_skipped_and_counted(tmp_path, qt_app, monkeypatch):
 
     staging = make_staging_layout(str(tmp_path), "broken")
     worker = build_worker(staging, REL_PATHS, 6)
-    real_augment = augment_module.augment_sample
+    real_augment = augment_module.augment_sample_with_reason
 
     def flaky_augment(image, label, params, sample_index, **kwargs):
         if sample_index == 2001:
             raise RuntimeError("boom")
         return real_augment(image, label, params, sample_index, **kwargs)
 
-    monkeypatch.setattr(augment_module, "augment_sample", flaky_augment)
+    monkeypatch.setattr(
+        augment_module, "augment_sample_with_reason", flaky_augment
+    )
 
     worker._stage_augment()
 

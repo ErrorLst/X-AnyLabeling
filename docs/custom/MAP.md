@@ -76,16 +76,36 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   （`chatbot`、`classifier`、`ppocr`、`settings`、`utils`、`video_classifier`、`vqa`、`widgets`）。
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
-- `anylabeling/custom/`：88 个 .py / 45078 行（目录内全部 .py；FEATURES.md 登记其中
-  10 个自研功能，另有未登记的 `remote_training`）。
-- `anylabeling/custom/model_validation/`：24 个 .py / 12543 行（关键文件：`ui/` 下的
-  `dialog.py` 1188、`results_page.py` 2008、`image_view.py` 1280，以及
-  `main_window_bridge.py` 689、`async_scan.py` 189、`multilabel.py` 360）；本轮新增
+- `anylabeling/custom/`：88 个 .py / 46310 行（目录内全部 .py；FEATURES.md 登记其中
+  10 个自研功能，另有未登记的 `remote_training`；快照 2026-09-15 14:00 +0800，
+  有并发会话在途写入，重测命令见下）。
+- `anylabeling/custom/model_validation/`：24 个 .py / 12902 行（关键文件：`ui/` 下的
+  `dialog.py` 1181、`results_page.py` 2205、`image_view.py` 1280，以及
+  `main_window_bridge.py` 689、`async_scan.py` 189、`multilabel.py` 360、
+  `anylabeling/custom/model_validation/ui/config_page.py` 978）；本轮新增
   `multilabel.py`（360 行：整图类无关 NMS 的合并、每类一行的展开与 IoU），
   `inference.py`（508 行）只做接线；「编辑搬到主窗口」那一轮新增
   `main_window_bridge.py`（现 689 行，跳主窗口 + 保存回写）与 `async_scan.py`（189 行，
-  异步目录扫描），删除 `label_dialog.py`（内置标签弹窗）。
-- `tests/custom/`：103 个 .py / 48487 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
+  异步目录扫描），删除 `label_dialog.py`（内置标签弹窗）；本轮（单图增强参数收敛）
+  改 `anylabeling/custom/model_validation/app_config.py`、
+  `anylabeling/custom/model_validation/augment.py` 与
+  `anylabeling/custom/model_validation/ui/config_page.py`，参数面收敛成 10 个字段，
+  候选取自 `selectable_fields`、每次尝试由 `draw_selection` 独立抽签（见 FEATURES.md
+  的「单图增强参数（本轮收敛）」）；本轮（参数面版式微调）只改
+  `anylabeling/custom/model_validation/ui/config_page.py`：参数网格是 9 项 3 列 × 3 行，
+  `select_prob`（选中概率 p）排在数量行、紧挨「比例 r」，不在网格里；
+  测试目录 47 个 .py / 22179 行，上一轮新增
+  `tests/custom/model_validation/test_mv_augment_selection.py`（7 例），本轮新增
+  `tests/custom/model_validation/test_mv_results_augment_column.py`（7 例）。
+- `tests/custom/`：106 个 .py / 51309 行（含契约自检脚本 `tests/custom/test_fork_contract.py`；
+  快照 2026-09-15 14:00 +0800，有并发会话在途写入，重测命令见下）。
+
+上面两条大目录（`anylabeling/custom/` 与 `tests/custom/`）的 2026-09-15 14:00 +0800 快照
+由并发会话在途写入，只作数量级参考；重测口径与命令：
+`find <dir> -type f -name '*.py' -not -path '*__pycache__*' | wc -l` 与
+`find <dir> -type f -name '*.py' -not -path '*__pycache__*' -print0 | xargs -0 wc -l | tail -1`。
+`model_validation` 自己的两条数字按同一口径重测过（2026-09-15 14:37 +0800，见
+FEATURES.md 的「代码与体量」）；该目录同样有并发会话在途写入，只作数量级参考。
 
 ## 想改 X 该看哪里
 
@@ -95,6 +115,8 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
 | 切换图片时画布缩放/滚动回到默认 | `anylabeling/custom/reset_view_on_switch/`（实例级包装 `load_file`，换图复位成首图初始态、同文件重载不复位、有意压过 `keep_prev_scale`；软挂载见 contract.json） |
 | 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
+| 增强参数（单图） | `anylabeling/custom/model_validation/app_config.py`（`AugmentParams` / `plan_aug_counts` / `selectable_fields` / `draw_selection`）、`anylabeling/custom/model_validation/augment.py`（`build_transforms` / `augment_sample_with_reason`）、`anylabeling/custom/model_validation/ui/config_page.py`（增强参数网格 9 项：对比度 / 亮度 / 旋转 / 平移 / 缩放 / 两个翻转 / 种子；选中概率 p 与比例 r 同处数量行） |
+| 结果页列（增强列）/ 右键预览提示行 | `anylabeling/custom/model_validation/ui/results_page.py`（`COLUMN_AUGMENT` + `AUGMENT_FIELD_LABELS`、`PreviewNoteLabel`；两者只改界面，不改报告与导出） |
 | 固定框裁图（数据集逐张裁切） | `anylabeling/custom/crop_tool/`（Tool 菜单「裁图工具」：拖入目录、W×H 固定框、右键裁切、A/D 换图、文件名即记录、Del 经确认删自己的裁切子图；默认输出 = `os.getcwd()/crop`） |
 | 按标签分类过滤文件列表 | `anylabeling/custom/label_filter/`（Tool 菜单「标签过滤」运行时追加，实例级包装 `import_image_folder` 做二道过滤） |
 | 图片目录快速预览 / 标注叠加 / 按得分·尺寸·类别筛选 / 拷到 picked 与移入 dsh-trash | `anylabeling/custom/preview_tool/`（Tool 菜单「预览工具」，QDialog 独立窗口；过滤语义见 `core.filter_images`，按图 toggle 与移除口径见 `pick_core.py` 与 FEATURES.md） |

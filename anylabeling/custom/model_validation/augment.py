@@ -10,11 +10,11 @@ Grayscale content - a single channel image, or three channels holding
 the very same value - travels through RGB: the decoded gray image is
 promoted to three channels before the stack runs and is collapsed back
 to a single channel before it is encoded, exactly like a colour image.
-The colour parameters therefore stay meaningful on gray data (hsv_h and
-hsv_s end up as a brightness change of the RGB representation) and the
-albumentations "not applicable to grayscale image" warning can never
-fire. Only pixels travel through the conversion, never a coordinate,
-so the geometry of every shape is untouched.
+The colour parameters therefore stay meaningful on gray data: the value
+shift of the stack and its contrast gain are plain per pixel operations
+on the promoted RGB representation. Only pixels travel through the
+conversion, never a coordinate, so the geometry of every shape is
+untouched.
 """
 
 from __future__ import annotations
@@ -29,7 +29,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .app_config import AugmentParams, attempt_seed
+from .app_config import (
+    AugmentParams,
+    attempt_seed,
+    draw_selection,
+    selectable_fields,
+)
 from .labelme_io import to_points
 
 # The logger of the module: a sample that no attempt could fit into the
@@ -48,6 +53,14 @@ CIRCLE_PROBE_COUNT = 8
 # attempt), so the outcome of a sample never depends on the number of
 # threads nor on the order the samples finish in.
 MAX_ATTEMPTS = 5
+
+# Why a sample produced nothing, as reported by
+# augment_sample_with_reason: every try of it drew an empty selection
+# (not a single augmentation field fired), or at least one try really
+# ran the transform stack and none of the tries kept every shape inside
+# the canvas.
+DISCARD_UNFITTABLE = "unfittable"
+DISCARD_EMPTY_SELECTION = "empty_selection"
 
 IMAGE_ENCODING = {
     ".jpg": (".jpg", cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY),
@@ -68,8 +81,9 @@ BGR_CHANNELS = 3
 # The fill of the canvas a geometric transform uncovers: pure black, a
 # fixed value that never depends on the content of the picture being
 # augmented. It is not configurable - build_transforms pins the constant
-# border mode AND this fill on Affine and on Perspective alike - and the
-# word the snapshot records for it is app_config.BORDER_FILL.
+# border mode AND this fill on Affine, the only transform of the stack
+# that can uncover canvas - and the word the snapshot records for it is
+# app_config.BORDER_FILL.
 BLACK_FILL = 0
 BLACK_FILL_RGB = (0, 0, 0)
 
@@ -176,6 +190,9 @@ class AugmentOutcome:
     attempts: int = 1
     attempt: int = 0
     seed: int = 0
+    # The fields the draw of the try that produced this copy picked, in
+    # candidate order: the copy holds exactly them.
+    selection: Tuple[str, ...] = ()
 
 
 def black_fill_tuple(channels: Any) -> Tuple[float, ...]:
@@ -238,55 +255,96 @@ def black_fill_for(image: Optional[np.ndarray] = None) -> Tuple[float, ...]:
 
 
 def build_transforms(
-    params: AugmentParams, fill: Optional[Sequence[float]] = None
+    params: AugmentParams,
+    fill: Optional[Sequence[float]] = None,
+    selection: Optional[Sequence[str]] = None,
 ) -> List[Any]:
     """Build the Albumentations transform stack from the parameters.
 
-    Every geometric transform that can uncover canvas (Affine and
-    Perspective) is pinned to the constant border mode and to the pure
-    black fill augment_sample derives with augment.black_fill_for: the
-    fill is not an option any more, therefore no mode can replicate the
-    edge pixels or mirror the picture into the uncovered band. A caller
-    that hands no fill over gets the black one all the same, so the
-    constant mode never falls back to the library default either.
+    The pixel transforms come first and the geometric ones after them: a
+    brightness or a contrast change applied on top of an uncovered band
+    would lift it away from pure black and destroy the very evidence the
+    black border contract rests on.
+
+    The two colour transforms carry the two colour parameters of the
+    tool and nothing else. RandomBrightnessContrast is given a zero
+    brightness range because brightness is the job of hsv_v above - a
+    second source of it would count the same parameter twice - and its
+    brightness_by_max switch is deliberately left at the library default:
+    beta is zero whenever the brightness range is zero, and a zero beta
+    cannot change a single pixel of the result whatever the switch says.
+    The contrast of that transform is the multiplicative gain about
+    black the implementation really applies (x * alpha), not the shift
+    around the mean its docstring describes; alpha is exactly 1.0 when
+    the contrast is zero, so the call is then a byte identical identity.
+    The affine transform is built once and every sub parameter the
+    selection did not pick is written as the identity (a zero rotation
+    range, a zero translation range, a unit scale) - splitting it into
+    several calls would apply the interpolation of each of them.
+
+    Every geometric transform that can uncover canvas is pinned to the
+    constant border mode and to the pure black fill
+    augment_sample derives with augment.black_fill_for: the fill is not
+    an option any more, therefore no mode can replicate the edge pixels
+    or mirror the picture into the uncovered band. A caller that hands
+    no fill over gets the black one all the same, so the constant mode
+    never falls back to the library default either.
+
+    The selection names the fields this try applies. A caller that hands
+    none over gets the whole candidate set of the parameters
+    (app_config.selectable_fields), which is the stack a replay is built
+    with, while the per sample path hands over the set its own draw
+    picked. A flip is applied with probability 1.0 when its name is in
+    the selection and never when it is not.
     """
 
     import albumentations as albu
 
+    chosen = (
+        selectable_fields(params) if selection is None else tuple(selection)
+    )
     values = black_fill_for(None) if fill is None else fill
     border: Dict[str, Any] = {
         "border_mode": cv2.BORDER_CONSTANT,
         "fill": tuple(float(value) for value in values),
     }
 
+    val_shift = params.hsv_v * 100.0 if "hsv_v" in chosen else 0.0
+    contrast = params.contrast if "contrast" in chosen else 0.0
+    rotate: Any = (0.0, 0.0)
+    translate: Any = {"x": (0.0, 0.0), "y": (0.0, 0.0)}
+    scale: Any = (1.0, 1.0)
+    if "degrees" in chosen:
+        rotate = (-params.degrees, params.degrees)
+    if "translate" in chosen:
+        translate = {
+            "x": (-params.translate, params.translate),
+            "y": (-params.translate, params.translate),
+        }
+    if "scale" in chosen:
+        scale = (params.scale_min, params.scale_max)
+
     return [
         albu.HueSaturationValue(
-            hue_shift_limit=params.hsv_h * 180.0,
-            sat_shift_limit=params.hsv_s * 100.0,
-            val_shift_limit=params.hsv_v * 100.0,
+            hue_shift_limit=0.0,
+            sat_shift_limit=0.0,
+            val_shift_limit=val_shift,
+            p=1.0,
+        ),
+        albu.RandomBrightnessContrast(
+            brightness_limit=(0.0, 0.0),
+            contrast_limit=contrast,
             p=1.0,
         ),
         albu.Affine(
-            rotate=(-params.degrees, params.degrees),
-            translate_percent={
-                "x": (-params.translate, params.translate),
-                "y": (-params.translate, params.translate),
-            },
-            scale=(params.scale_min, params.scale_max),
-            shear={
-                "x": (-params.shear, params.shear),
-                "y": (-params.shear, params.shear),
-            },
+            rotate=rotate,
+            translate_percent=translate,
+            scale=scale,
             p=1.0,
             **border,
         ),
-        albu.Perspective(
-            scale=(0.0, params.perspective),
-            p=1.0,
-            **border,
-        ),
-        albu.VerticalFlip(p=params.flipud),
-        albu.HorizontalFlip(p=params.fliplr),
+        albu.VerticalFlip(p=1.0 if "flipud" in chosen else 0.0),
+        albu.HorizontalFlip(p=1.0 if "fliplr" in chosen else 0.0),
     ]
 
 
@@ -298,14 +356,16 @@ def build_transforms(
 
 
 def build_replay_compose(
-    params: AugmentParams, fill: Optional[Sequence[float]] = None
+    params: AugmentParams,
+    fill: Optional[Sequence[float]] = None,
+    selection: Optional[Sequence[str]] = None,
 ):
     """Build a ReplayCompose with the keypoint channel attached."""
 
     import albumentations as albu
 
     return albu.ReplayCompose(
-        build_transforms(params, fill),
+        build_transforms(params, fill, selection),
         keypoint_params=albu.KeypointParams(
             format="xy",
             label_fields=["kp_labels"],
@@ -450,8 +510,8 @@ def replay_geometry(replay: Any) -> List[Tuple[str, Any]]:
     """Return the ordered keypoint operations a replay recorded.
 
     ReplayCompose stores, for every transform of the stack, whether it
-    was applied and the parameters it sampled: the affine matrix, the
-    perspective homography and the shape a flip mirrors the points of.
+    was applied and the parameters it sampled: the affine matrix and the
+    shape a flip mirrors the points of.
     Replaying those operations on the original points rebuilds the
     transform of the shape exactly, which is what tells the run of a
     duplicated keypoint grid that belongs to the picture from the copies.
@@ -709,14 +769,10 @@ def augment_sample(
 ) -> Optional[AugmentOutcome]:
     """Augment one image, retrying until every shape fits the canvas.
 
-    The first try uses the seed of the sample itself; a try that leaves a
-    shape outside the picture is repeated with the next derived seed of
-    the very same (base seed, sample index) pair, at most max_attempts
-    times. None comes back when no try fitted: the sample is then dropped
-    by the caller instead of being produced with a clipped or a vanished
-    defect. Every seed is a function of the pair and the attempt number
-    alone, therefore the result of a sample is the same whatever the
-    number of threads and whatever the order the samples finish in.
+    The outcome of the loop of augment_sample_with_reason without its
+    reason: None comes back when no try produced a copy at all, and the
+    caller then drops the sample instead of writing one with a clipped
+    or a vanished defect.
 
     A sample whose shapes fit already on the first try is byte identical
     with what the tool produced before the retry loop existed: attempt 0
@@ -725,16 +781,64 @@ def augment_sample(
     its own attempt number.
     """
 
+    outcome, _reason = augment_sample_with_reason(
+        image, label, params, sample_index, image_name, max_attempts
+    )
+    return outcome
+
+
+def augment_sample_with_reason(
+    image: np.ndarray,
+    label: Dict[str, Any],
+    params: AugmentParams,
+    sample_index: int,
+    image_name: str = "aug.png",
+    max_attempts: int = MAX_ATTEMPTS,
+) -> Tuple[Optional[AugmentOutcome], str]:
+    """Augment one image and report why nothing came out of it.
+
+    The first try uses the seed of the sample itself; every further try
+    folds its own attempt number into the derivation, at most
+    max_attempts times. Every try first draws the fields it applies
+    (app_config.draw_selection): a try whose draw selects no field at
+    all would change nothing, so it produces no copy, it is a wasted try
+    and the loop moves on to the next seed. A try that really ran the
+    stack and left a shape outside the picture is repeated the same way.
+
+    Returns the outcome plus the empty reason, or None plus why the
+    sample was dropped: DISCARD_EMPTY_SELECTION when every try of the
+    sample drew an empty selection, DISCARD_UNFITTABLE as soon as one
+    try really ran the stack and none of the tries fitted. Every seed is
+    a function of (base seed, sample index, attempt) alone, therefore
+    the result of a sample is the same whatever the number of threads
+    and whatever the order the samples finish in.
+    """
+
     attempts = resolve_max_attempts(max_attempts)
+    empty = 0
     for attempt in range(attempts):
         seed = attempt_seed(params.seed, sample_index, attempt)
+        selection = draw_selection(params, seed)
+        if not selection:
+            # this try selected nothing at all: it produces no copy and
+            # the sample is retried with the next derived seed
+            empty += 1
+            continue
         outcome, clipped = _augment_attempt(
-            image, label, params, seed, image_name, attempt
+            image, label, params, seed, image_name, attempt, selection
         )
         if not clipped and all_shapes_fit(
             outcome.label["shapes"], outcome.width, outcome.height
         ):
-            return outcome
+            return outcome, ""
+    if empty >= attempts:
+        LOGGER.debug(
+            "dropped sample %s: none of the %d tries selected a single "
+            "augmentation field",
+            image_name,
+            attempts,
+        )
+        return None, DISCARD_EMPTY_SELECTION
     LOGGER.debug(
         "dropped sample %s: no attempt of %d kept every shape inside the "
         "%dx%d canvas",
@@ -743,7 +847,7 @@ def augment_sample(
         int(image.shape[1]),
         int(image.shape[0]),
     )
-    return None
+    return None, DISCARD_UNFITTABLE
 
 
 def _augment_attempt(
@@ -753,8 +857,13 @@ def _augment_attempt(
     seed: int,
     image_name: str,
     attempt: int,
+    selection: Sequence[str],
 ) -> Tuple[AugmentOutcome, bool]:
     """Run one augmentation of one image with the given seed.
+
+    The selection is the set of fields the draw of this try picked: it
+    is handed to the transform stack (and to the replay) so the copy
+    holds exactly the fields that fired.
 
     Returns the outcome plus the flag telling whether rebuilding the
     label needed a single clamp: a clamped point means the transform
@@ -766,9 +875,9 @@ def _augment_attempt(
     shapes = list(label.get("shapes") or [])
 
     # A gray picture is augmented in RGB and collapsed back afterwards:
-    # albumentations refuses hue and saturation shifts on a single
-    # channel image (and warns about them), while the very same stack on
-    # the promoted copy is a plain pixel operation.
+    # the very same colour stack on the promoted copy is a plain pixel
+    # operation, while a single channel image would take a different
+    # route through the albumentations colour kernels.
     grayscale = is_grayscale_content(image)
     working_image = promote_to_bgr(image) if grayscale else image
 
@@ -791,7 +900,9 @@ def _augment_attempt(
             keypoints.append((float(point[0]), float(point[1])))
             kp_labels.append(str(index))
 
-    compose = build_replay_compose(params, black_fill_for(working_image))
+    compose = build_replay_compose(
+        params, black_fill_for(working_image), selection
+    )
     compose.set_random_seed(int(seed))
 
     payload: Dict[str, Any] = {
@@ -805,11 +916,9 @@ def _augment_attempt(
     result = compose(**payload)
 
     augmented_image = result["image"]
-    if params.bgr > 0 and compose.py_random.random() < params.bgr:
-        augmented_image = np.ascontiguousarray(augmented_image[:, :, ::-1])
     if grayscale:
-        # the channel swap above is an identity on gray content, the
-        # collapse below is what gives the dataset single channel copies
+        # the collapse below is what gives the dataset the single channel
+        # copies a gray source asks for
         augmented_image = collapse_to_grayscale(augmented_image)
 
     # The replay records the transform it really applied to the picture,
@@ -877,6 +986,7 @@ def _augment_attempt(
         attempts=int(attempt) + 1,
         attempt=int(attempt),
         seed=int(seed),
+        selection=tuple(str(name) for name in selection),
     )
     return outcome, any_clipped
 
@@ -951,6 +1061,8 @@ __all__ = [
     "BLACK_FILL",
     "BLACK_FILL_RGB",
     "CLIP_EPSILON",
+    "DISCARD_EMPTY_SELECTION",
+    "DISCARD_UNFITTABLE",
     "ENCODE_FALLBACK_EXT",
     "GRAYSCALE_DIMENSIONS",
     "GRAYSCALE_PATH_NOTE",
@@ -962,6 +1074,7 @@ __all__ = [
     "ClipReport",
     "all_shapes_fit",
     "augment_sample",
+    "augment_sample_with_reason",
     "collapse_to_grayscale",
     "is_grayscale_content",
     "promote_to_bgr",

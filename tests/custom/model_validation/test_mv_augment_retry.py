@@ -35,11 +35,15 @@ from anylabeling.custom.model_validation.app_config import (
     ValidationConfig,
     attempt_seed,
     derive_seed,
+    draw_selection,
 )
 from anylabeling.custom.model_validation.augment import (
+    DISCARD_EMPTY_SELECTION,
+    DISCARD_UNFITTABLE,
     MAX_ATTEMPTS,
     all_shapes_fit,
     augment_sample,
+    augment_sample_with_reason,
     clip_points,
     rebuild_shape,
     resolve_max_attempts,
@@ -84,20 +88,54 @@ def shifted_params(seed: int = 6) -> AugmentParams:
     "Return a forced translation that keeps the colour untouched."
 
     return AugmentParams(
-        hsv_h=0.0,
-        hsv_s=0.0,
+        contrast=0.0,
         hsv_v=0.0,
         degrees=0.0,
         translate=0.6,
         scale_min=1.0,
         scale_max=1.0,
-        shear=0.0,
-        perspective=0.0,
-        flipud=0.0,
-        fliplr=0.0,
-        bgr=0.0,
+        flipud=False,
+        fliplr=False,
+        select_prob=1.0,
         seed=seed,
     )
+
+
+def empty_draw_params(seed: int) -> AugmentParams:
+    "Return the forced shift with a selection probability of two percent."
+
+    return AugmentParams(
+        contrast=0.0,
+        hsv_v=0.0,
+        degrees=0.0,
+        translate=0.6,
+        scale_min=1.0,
+        scale_max=1.0,
+        flipud=False,
+        fliplr=False,
+        select_prob=0.02,
+        seed=seed,
+    )
+
+
+def an_empty_selection_seed(sample_index: int = 1) -> int:
+    """Return a seed whose every try of that sample draws nothing.
+
+    Both flips are disabled, so the five amplitude fields are the only
+    candidates: one try selects nothing with a probability of roughly
+    0.9, and five such tries in a row happen for about one seed in two.
+    The loop below finds the first of them deterministically.
+    """
+
+    for seed in range(1000):
+        params = empty_draw_params(seed)
+        drawn = [
+            draw_selection(params, attempt_seed(seed, sample_index, attempt))
+            for attempt in range(MAX_ATTEMPTS)
+        ]
+        if not any(drawn):
+            return seed
+    raise AssertionError("no seed drew nothing on five tries in a row")
 
 
 def image_200x100() -> np.ndarray:
@@ -337,9 +375,9 @@ def test_a_rebuilt_label_leaves_no_shape_out_of_the_picture():
         translate=0.15,
         scale_min=0.7,
         scale_max=1.3,
-        shear=8.0,
-        flipud=0.5,
-        fliplr=0.5,
+        flipud=True,
+        fliplr=True,
+        select_prob=1.0,
         seed=777,
     )
     produced = 0
@@ -386,7 +424,9 @@ def stage_original(staging: str, relpath: str, payload: dict):
     )
 
 
-def build_worker(staging: str, records, total: int) -> ValidationWorker:
+def build_worker(
+    staging: str, records, total: int, params=None
+) -> ValidationWorker:
     "Return an unstarted worker augmenting the given records."
 
     config = ValidationConfig(
@@ -396,7 +436,7 @@ def build_worker(staging: str, records, total: int) -> ValidationWorker:
         augment_enabled=True,
         augment_mode="count",
         total_count=total,
-        augment_params=shifted_params(),
+        augment_params=params or shifted_params(),
     )
     worker = ValidationWorker(config, CLASSES, staging)
     worker.records = list(records)
@@ -430,6 +470,7 @@ def test_the_stage_reports_no_clip_for_a_sample_the_loop_saved(
     assert summary["attempts_total"] >= 12 + summary["retried"]
     assert summary["clipped_shapes"] == 0
     assert summary["clipped"] == []
+    assert summary["discarded_empty_selection"] == 0
     assert len(summary["discarded"]) == 0
 
 
@@ -461,6 +502,10 @@ def test_the_stage_counts_the_attempts_retries_and_discards(
     assert {item["attempts"] for item in summary["discarded"]} == {
         MAX_ATTEMPTS
     }
+    assert {item["reason"] for item in summary["discarded"]} == {
+        DISCARD_UNFITTABLE
+    }
+    assert summary["discarded_empty_selection"] == 0
     assert [item["parent_relpath"] for item in summary["discarded"]] == [
         "a.png"
     ] * 12
@@ -504,3 +549,62 @@ def test_the_stage_counts_the_attempts_retries_and_discards(
     )
     assert report["clipped_count"] == 0
     assert report["clipped_shapes"] == []
+
+
+# ------------------------------------------------- the empty draw of a try
+@requires_albumentations
+def test_every_try_of_a_sample_may_draw_nothing_at_all():
+    """A sample whose every draw selected nothing is dropped as such.
+
+    The five amplitude fields are the whole candidate set here (both
+    flips are disabled) and the probability is two percent, so a seed
+    whose five tries all draw nothing exists and is found by the helper.
+    No try of that sample ever ran the transform stack: the drop is
+    reported as an empty selection, never as an unfittable geometry.
+    """
+
+    image = image_200x100()
+    target = label_of([rectangle(CENTRED)])
+    # the first copy of the first original of a run is sample 1 (the
+    # pipeline numbers a sample as index * 1000 + copy_index)
+    params = empty_draw_params(an_empty_selection_seed(1))
+    outcome, reason = augment_sample_with_reason(image, target, params, 1)
+    assert outcome is None
+    assert reason == DISCARD_EMPTY_SELECTION
+    assert reason != DISCARD_UNFITTABLE
+
+
+@requires_albumentations
+def test_the_stage_counts_an_empty_draw_as_its_own_discard(
+    mv_scratch, qt_app
+):
+    "The summary splits the empty draws from the unfittable samples."
+
+    staging = staging_layout(mv_scratch, "retry_empty")
+    record = stage_original(staging, "a.png", label_of([rectangle(CENTRED)]))
+    params = empty_draw_params(an_empty_selection_seed(1))
+    worker = build_worker(staging, [record], total=1, params=params)
+
+    worker._stage_augment()
+
+    summary = worker.augment_summary
+    assert summary["planned"] == 1
+    assert summary["generated"] == 0
+    assert summary["failed"] == 0
+    assert summary["discarded_empty_selection"] == 1
+    assert summary["discarded_unfittable"] == 0
+    assert summary["retried"] == 0
+    # a wasted try costs the stage its whole attempt budget, exactly like
+    # a try that ran the stack and did not fit
+    assert summary["attempts_total"] == MAX_ATTEMPTS
+    assert [item["reason"] for item in summary["discarded"]] == [
+        DISCARD_EMPTY_SELECTION
+    ]
+    assert [item["attempts"] for item in summary["discarded"]] == [
+        MAX_ATTEMPTS
+    ]
+    assert [
+        item
+        for item in worker.records
+        if item.kind == records_module.KIND_AUGMENTED
+    ] == []

@@ -173,9 +173,11 @@
 
 ### 代码与体量
 
-`anylabeling/custom/model_validation/`（24 个文件 12543 行，含 `ui/` 子包）；
-测试 `tests/custom/model_validation/`（45 个文件 20925 行）。（口径：目录内全部 `*.py`、
-排除 `__pycache__`，行数取 `wc -l`。）「编辑搬到主窗口」那一轮新增
+`anylabeling/custom/model_validation/`（24 个文件 12902 行，含 `ui/` 子包）；
+测试 `tests/custom/model_validation/`（47 个文件 22179 行）。（口径：目录内全部 `*.py`、
+排除 `__pycache__`，行数取 `wc -l`；实测命令与时间：
+`find <dir> -type f -name '*.py' -not -path '*__pycache__*' -print0 | xargs -0 wc -l`，
+2026-09-15 14:37 +0800。）「编辑搬到主窗口」那一轮新增
 `main_window_bridge.py`（跳主窗口 + 保存回写）与 `async_scan.py`（189 行：
 异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`（内置标签弹窗整个文件移除）；
 「固定 0.25 + 多标签 + 低分 NG」那一轮只改既有文件，新增测试
@@ -183,9 +185,9 @@
 NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图 NMS 的合并、每类一行
 的展开与 IoU）与 `test_mv_whole_image_nms.py`（19 例），`inference.py`（508 行）只做
 接线，`ui/` 下的 `results_page.py` 涨到 1934 行；本轮（「切换过滤卡 UI」修复）
-`anylabeling/custom/model_validation/ui/results_page.py` 2008 行、
+`anylabeling/custom/model_validation/ui/results_page.py` 2205 行、
 `anylabeling/custom/model_validation` 下的 `main_window_bridge.py` 689 行，
-`dialog.py` 仍是 1188 行（在 `ui/` 子包里；跟随闸门改非模态 + 合并式延迟重建 +
+`dialog.py` 仍是 1181 行（在 `ui/` 子包里；跟随闸门改非模态 + 合并式延迟重建 +
 重建改在隐藏状态下完成，见下节「行为级契约」）。
 
 ### 入口符号
@@ -395,6 +397,10 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   IoU 超过阈值的框现在合成一个两行的框；若 `classes.txt` 的标注惯例只标一个类
   （如 rider），这两行就会对上单类 GT 而必然 NG。缓解 = 调高「NMS IoU iou」或让标注
   惯例与该合并规则对齐，**不做代码特判**。
+- **像素变换排在几何变换之前**：`app_config` 的参数收敛把这条顺序变成硬契约——
+  `augment.build_transforms` 先给 `HueSaturationValue` / `RandomBrightnessContrast`，
+  后给 `Affine` 与两个翻转。亮度或对比度若作用在几何变换留下的黑边之上，会把
+  纯黑的未覆盖边带抬离 0，黑边契约的证据链就断了。
 - **低分判 NG**：`judge.LOW_SCORE`，原因优先级
   `CLASS_MISMATCH → LOW_SCORE → IOU_BELOW → MISS_FP`；`judge_record(..., ng_score_threshold=None)`
   是可选**尾参**，不传 = 规则关闭（与旧行为逐键相等）。detail 记 `ng_score_threshold`、
@@ -407,6 +413,88 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   未匹配的低分框仍是品红误报。图例第六项「低分」；配置页标题为「**NG 分数 score**」
   （属性名/默认 0.5/范围/步进不变），tooltip 说明「≤0.25 时不会有框低于它，
   LOW_SCORE 永不触发」。
+- **结果页「增强」列**：结果列表的第 5 列（`HEADERS = ("标记", "状态", "relpath", "kind",
+  "增强")`；`COLUMN_AUGMENT = 4`，`COLUMN_MARK` / `COLUMN_VERDICT` / `COLUMN_RELPATH` /
+  `COLUMN_KIND` 仍是 0 / 1 / 2 / 3，`COLUMN_EXPORT == COLUMN_MARK`），逐行显示该副本本次
+  实际抽中的增强项——取 `record.aug_detail["selected"]`，按记录里的顺序（即抽签的
+  **候选顺序**：对比度 / 亮度 / 旋转 / 平移 / 缩放 / 垂直翻转 / 水平翻转）映射为中文项名并以 `+` 连接（映射表
+  `AUGMENT_FIELD_LABELS`，页面不认识的字段原名显示）；原图、以及没有抽签记录的副本显示 `—`。
+  单元格 tooltip 给出副本序号、基种子、第几次尝试与尝试种子；该列只读、`ResizeToContents`
+  （`relpath` 仍独占 `Stretch`），**纯显示**：不参与过滤与导出。`aug_detail` 只活在本次运行的
+  内存里：它不写进暂存 json，只随报告文档的 `records[].aug_detail` 出现。
+- **预览提示行常驻**：右键预览的状态行（`PreviewNoteLabel`）始终占一行、行高由字体度量固定
+  （`setFixedHeight(fontMetrics().height())`、`minimumSizeHint()` 也返回一行高）、不折行
+  （`setWordWrap(False)`），超长按宽度省略绘制而 `text()` 仍是全文并把全文放进 `toolTip()`；
+  因此按住/松开右键、两种「没有父图」的提示、以及预览中切行都不会改变两块画布与列表的
+  geometry（按住右键也不再重置用户设置过的缩放与平移：`begin_parent_preview` 与
+  `end_parent_preview` 改调 `_refresh_canvases_keeping_view()`，预览前后逐一还原绝对缩放与中心；
+  切行仍按既有语义重新拟合）。
+
+### 单图增强参数（本轮收敛）
+
+单图增强只有一条官方栈：Albumentations 的 `ReplayCompose`，一次调用把整条栈作用在同一张图
+与同一批关键点上，标签跟着回放走。本轮把参数面收敛成 10 个字段（`AugmentParams`），
+其余旧参数整条删除。
+
+界面版式（本轮参数面版式微调）：参数网格只列**增强参数网格的 9 项**——对比度 / 亮度 /
+旋转 / 平移 / 缩放 min / 缩放 max / 垂直翻转 / 水平翻转 / 随机种子，正好 3 列 × 3 行；
+`select_prob`（选中概率 p）是唯一不在网格里的增强参数，它的控件排在**数量行**上、
+紧挨着「比例 r」：两者解释的是同一个抽签（比例 r 决定抽多少张、p 决定每张各项抽不抽中），
+所以同处一行。它仍然属于「勾选框关闭时整组置灰」的那组控件——由
+`ConfigPage._augment_param_widgets()` 显式返回（网格单元格 + 这一项，共 10 个），
+`_sync_augment_enabled()` 与`augment_params()` 的读值逻辑都不变。
+
+| 字段 | 界面标签 | 默认 | 范围 | 映射到的变换 |
+|---|---|---|---|---|
+| `contrast` | 对比度 contrast | 0.2 | 0-1 | `RandomBrightnessContrast` 的 `contrast_limit`，以黑为轴的乘性增益；`brightness_limit` 固定 (0,0)，亮度由 `hsv_v` 承担，不重复计数 |
+| `hsv_v` | 亮度 hsv_v | 0.4 | 0-1 | `HueSaturationValue` 的 `val_shift_limit`（未选中写 0.0） |
+| `degrees` | 旋转角度 degrees | 15.0 | 0-180 | `Affine` 的 `rotate`（未选中写 (0,0)） |
+| `translate` | 平移 translate | 0.1 | 0-1 | `Affine` 的 `translate_percent`（未选中写全 0） |
+| `scale_min` / `scale_max` | 缩放下限 / 上限 scale min·max | 0.8 / 1.5 | 各 0-10 | `Affine` 的 `scale`（两者算同一组 scale 抽签；未选中写 (1,1)） |
+| `flipud` | 垂直翻转 | 勾选（bool 启用位） | 勾选 / 不勾选 | 进入抽签即 100% 翻转；生效概率 = `select_prob`，报告的 `official_names.flipud` 写的就是它 |
+| `fliplr` | 水平翻转 | 勾选（bool 启用位） | 勾选 / 不勾选 | 同 `flipud`，报告的 `official_names.fliplr` |
+| `select_prob` | 选中概率 p | 0.1 | 0.05-1（必须 > 0） | `draw_selection` 里每个候选各自独立抽签的概率 |
+| `seed` | 随机种子 seed | 0 | 0-2147483647 | `attempt_seed` → `ReplayCompose.set_random_seed` |
+
+已删除：色调 `hsv_h`、饱和度 `hsv_s`、剪切 `shear`、透视 `perspective`、通道互换 `bgr`、
+随机擦除 `erasing`、裁剪 `crop_fraction`（后两个本来恒不生效）。
+
+三条行为契约：
+
+1. **叠加语义**：一次 `ReplayCompose` 调用把整条栈作用在同一张图与同一批关键点上；像素变换
+   （亮度 / 对比度）必须排在几何变换之前，黑边才保持纯黑（见上节最后一条契约）。
+2. **选中概率与「空选中 → 下一轮」**：每个增强项在每次尝试各自独立抽签（概率 = `select_prob`）；
+   未选中的项按恒等处理；只有被勾选的翻转进入抽签集合，候选数 K = 5 + 被勾选的翻转数 = 5 / 6 / 7。
+   某次抽签一项都没抽中就写不出副本，该次作废并自动进入下一次尝试（每样本 5 次，种子由
+   `attempt_seed` 从「基种子 + 样本下标 + 尝试号」派生）；5 次用尽仍无副本的样本被丢弃，
+   报告计入 `discarded_empty_selection`，与形状越界丢弃的 `discarded_unfittable` 分开计数，
+   `discarded` 列表逐条带 `reason`。
+3. **数量模式固定为比例 r**：先按比例从有效原图（有标签、未跳过 / 删除）中**无放回**随机挑选
+   round(有效原图数 × r) 张，每张最多 1 份；r ∈ [0, 1]，r=0 不生成任何副本、r=1 时全部原图
+   各 1 份。倍数 k 与总数 N 两种模式已取消（报告里仍留字段，便于旧数据比较）。
+   默认不开启增强：`ValidationConfig.augment_enabled` 默认 False，配置页读 `ValidationConfig()`。
+
+概率表（单次尝试全空 = (1-p)^K；5 次用尽 = (1-p)^(5K)）：
+
+| p \ K | 5 | 6 | 7 |
+|---|---|---|---|
+| 0.05 | 77.4% / 27.7% | 73.5% / 21.5% | 69.8% / 16.6% |
+| 0.1 | 59.1% / 7.18% | 53.1% / 4.24% | 47.8% / 2.50% |
+| 0.2 | 32.8% / 0.378% | 26.2% / 0.124% | 21.0% / 0.0406% |
+| 0.3 | 16.8% / 0.0134% | 11.8% / 0.00225% | 8.24% / 0.000379% |
+| 0.5 | 3.12% / 2.98e-6% | 1.56% / 9.31e-8% | 0.78% / 2.91e-9% |
+| 1.0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+出厂默认（p=0.1、两个翻转都勾选，K=7）的观感要分两种口径看。**每次尝试**：平均抽中约 0.7 项、
+约 85.0% 的尝试抽中 0 或 1 项。**实际产出的副本**（空选中那一次不产副本，故必有 ≥1 项）：
+平均约 1.3 项、约 71.3% 只带 1 项增强。计划副本的丢弃率约 2.5%，该数字只统计「空选中」那一类
+（(1-p)^(5K)），不含形状越界丢弃的 `discarded_unfittable`。
+
+报告快照口径：`official_names` 只列仍存在的官方参数（`hsv_v` / `degrees` / `translate` /
+`scale` / `flipud` / `fliplr`），其中 `flipud` / `fliplr` 写的是**实际生效概率**
+（勾选时 = `select_prob`，未勾选 = 0.0）；`non_official_names` 登记 `contrast` 与
+`select_prob`；`not_applied` 现在是空数组（`erasing` / `crop_fraction` 已随参数收敛删除）；
+`asdict` 部分的 `flipud` / `fliplr` 是 bool 启用位，与 `official_names` 里的同名键不同义。
 
 ### 上游改动（挂载点之外，需逐行审计）
 
@@ -445,7 +533,23 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 展开、pipeline 交给 judge 的每类一行、`pred_row_boxes` 的写出），并在
 `test_mv_status_colors.py` 里补上「一个框多行 → 框色取最高优先级状态」与「旧 detail
 走冻结 legacy 路径」两组像素用例。
+本轮（单图增强参数收敛）新增 `test_mv_augment_selection.py`（7 例：候选集合随两个启用位增长、
+未勾选的翻转不进候选、抽中翻转才触发、出厂 `select_prob` 为 0.1、零对比度字节恒等、
+`outcome.selection` 记录本次抽签、p=1 等价于不抽签），并在
+`test_mv_app_config.py`（22 例）、`test_mv_augment.py`（17 例）、`test_mv_augment_retry.py`
+（15 例，含空选中 → 下一轮与 `discarded_empty_selection` 两个用例）、
+`test_mv_border_modes.py`（14 例）、`test_mv_count_planner.py`（14 例）、
+`test_mv_defaults.py`（本轮起 10 例）、`test_mv_grayscale.py`（12 例）、`test_mv_augment_workers.py`
+（12 例）、`test_mv_staging_invariant.py`（7 例）与 `test_mv_ui_dialog.py`（本轮起 40 例）里改写
+参数面与报告快照的用例；本轮（参数面版式微调）在 `test_mv_ui_dialog.py` 的网格 /
+数量行 / 置灰用例里把「选中概率 p 在网格里」改成「它在数量行、不在网格」，并在
+`test_mv_defaults.py` 新增 1 例钉住同一件事；目录合计 47 个文件 **627 个用例**，
 每条例数都用 `--collect-only -q` 逐个文件核实过（口径见上）。
+本轮（结果页「增强」列 + 预览提示行常驻）新增
+`test_mv_results_augment_column.py`（7 例，`--collect-only -q` 实测：列头与列序、逐行增强项、
+原图无内容、未知字段原名显示、映射表齐全、点更新后单元格仍在、单元格 tooltip 给出副本与种子），
+在 `test_mv_results_preview.py`（本轮起 15 例）补「提示行常驻 + 几何不变 + 预览保视图」用例，
+并在 `test_mv_results_marks.py`（12 例）与 `test_mv_results_edit.py`（7 例）各改写 1 例以覆盖第 5 列。
 
 ### 已知坑
 

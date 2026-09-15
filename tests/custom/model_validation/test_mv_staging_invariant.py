@@ -116,7 +116,10 @@ def build_config(
             translate=0.1,
             scale_min=0.9,
             scale_max=1.1,
-            fliplr=0.5,
+            fliplr=True,
+            # a probability of one keeps generated equal to planned: no
+            # try of this module is wasted by an empty draw
+            select_prob=1.0,
             seed=1234,
         ),
     )

@@ -20,7 +20,9 @@ AUGMENT_MODES = (MULTIPLIER_MODE, RATIO_MODE, COUNT_MODE)
 # field and the default of the count planner read this name, and the
 # configuration page shows it in the r control, so the default is
 # changed here and nowhere else. The shipped value augments with
-# round(n * ratio) copies drawn from the n valid originals at random.
+# round(n * ratio) copies, each one picked without replacement from the
+# n valid originals: an original is copied at most once, and the ratio
+# stays within [0, 1] so the count can never exceed n.
 DEFAULT_RATIO = 0.5
 
 MULTI_IMAGE_AUGMENTATIONS = (
@@ -41,8 +43,8 @@ MULTI_IMAGE_AUGMENTATIONS = (
 # invents a structure that is not in the picture either - both are
 # exactly the artefact an anomaly detection run must not be handed,
 # therefore neither is reachable any more: augment.build_transforms
-# pins cv2.BORDER_CONSTANT plus augment.BLACK_FILL on Affine and on
-# Perspective alike.
+# pins cv2.BORDER_CONSTANT plus augment.BLACK_FILL on Affine, the only
+# transform of the stack that can uncover canvas.
 #
 # The one value that fill carries for the snapshot of a run: every channel
 # of every filled pixel is black. The spelling lives here, so that the
@@ -237,61 +239,92 @@ class ValidationConfigError(ValueError):
     """Raised when the user supplied validation options are invalid."""
 
 
+# The candidates of one draw: the five parameters that carry an
+# amplitude, plus the two flips whose enable bit is set. A disabled
+# flip is no candidate at all - it neither consumes a draw nor counts
+# towards "at least one field selected".
+AUGMENT_SELECTABLE_BASE = (
+    "contrast",
+    "hsv_v",
+    "degrees",
+    "translate",
+    "scale",
+)
+FLIP_FIELDS = ("flipud", "fliplr")
+# The index of the selection generator in the index space of make_rng.
+# A sample is numbered sample * 1000 + attempt (see ATTEMPT_INDEX_STRIDE
+# and attempt_seed), so this constant keeps the draw of one image away
+# from the seed of every sample.
+SELECTION_RNG_INDEX = 0x5EED5EED
+
+
 @dataclass
 class AugmentParams:
     """Single image augmentation parameters.
 
-    Every field name matches the official Ultralytics augmentation
-    argument name so that the configuration snapshot can be compared
-    1:1 with a training YAML.
+    The fields that are still official Ultralytics arguments carry the
+    official name - hsv_v, degrees, translate, scale (the two bounds
+    scale_min and scale_max fold into it), flipud and fliplr - so that
+    the configuration snapshot can still be compared with a training
+    YAML. The two fields this tool added, contrast and select_prob, have
+    no official counterpart.
+
+    flipud and fliplr are enable bits (bool) here, not probabilities:
+    they answer whether the flip takes part in the draw at all. The
+    chance a selected field really fires is select_prob for every one of
+    them, therefore a checked flip is applied with the probability
+    select_prob and an unchecked one is never applied (probability 0).
     """
 
-    # The shipped values: a mild geometric augmentation (a rotation and a
-    # shear of a few degrees, a zoom in, both flips at a low probability)
-    # around the constant pure black fill. The configuration page reads
-    # every one of them from this dataclass, so a default is edited here
-    # only.
-    hsv_h: float = 0.015
-    hsv_s: float = 0.7
+    # The shipped values: a mild colour and geometric augmentation (a
+    # contrast and a brightness jitter, a rotation, a zoom) around the
+    # constant pure black fill, with both flips enabled and every
+    # selected field firing with select_prob. The configuration page
+    # reads every default from this dataclass, so a default is edited
+    # here only.
+    contrast: float = 0.2
     hsv_v: float = 0.4
     degrees: float = 15.0
     translate: float = 0.1
     scale_min: float = 0.8
     scale_max: float = 1.5
-    shear: float = 10.0
-    perspective: float = 0.0
-    flipud: float = 0.2
-    fliplr: float = 0.2
-    bgr: float = 0.0
-    erasing: float = 0.4
-    crop_fraction: float = 1.0
+    # Enable bits, not probabilities: an enabled flip is a candidate of
+    # the draw and fires with select_prob, a disabled one never fires.
+    flipud: bool = True
+    fliplr: bool = True
+    # The chance every selected field fires - and therefore the chance a
+    # checked flip is really applied.
+    select_prob: float = 0.1
     seed: int = 0
-    # The fill of the canvas uncovered by Affine / Perspective is not a
-    # parameter any more: build_transforms pins the constant border mode and
-    # the black fill below on both geometric transforms. It is no official
-    # Ultralytics argument, therefore the snapshot records the one value of
-    # the run under its own border_fill key, outside official_names.
+    # The fill of the canvas uncovered by Affine is not a parameter any
+    # more: build_transforms pins the constant border mode and the black
+    # fill below on Affine, the only transform of the stack that can
+    # uncover canvas. It is no official Ultralytics argument, therefore
+    # the snapshot records the one value of the run under its own
+    # border_fill key, outside official_names.
 
     def to_official_dict(self) -> Dict[str, Any]:
-        """Return the parameters using the official argument names."""
+        """Return the parameters using the official argument names.
+
+        Only the official arguments this tool still carries are listed;
+        contrast and select_prob have no official counterpart and stay
+        out. The official flipud / fliplr of Ultralytics are
+        probabilities while the two fields here are enable bits,
+        therefore the effective chance is written instead (select_prob
+        when the bit is checked, 0.0 when it is not), which is what
+        keeps the comparison with a training YAML meaningful.
+        """
 
         scale: Any = self.scale_min
         if abs(self.scale_max - self.scale_min) > 1e-9:
             scale = [self.scale_min, self.scale_max]
         return {
-            "hsv_h": self.hsv_h,
-            "hsv_s": self.hsv_s,
             "hsv_v": self.hsv_v,
             "degrees": self.degrees,
             "translate": self.translate,
             "scale": scale,
-            "shear": self.shear,
-            "perspective": self.perspective,
-            "flipud": self.flipud,
-            "fliplr": self.fliplr,
-            "bgr": self.bgr,
-            "erasing": self.erasing,
-            "crop_fraction": self.crop_fraction,
+            "flipud": self.select_prob if self.flipud else 0.0,
+            "fliplr": self.select_prob if self.fliplr else 0.0,
         }
 
     @classmethod
@@ -311,12 +344,67 @@ class AugmentParams:
         # value the stack applies is recorded here, so a report still says
         # what the copies were built with.
         data["border_fill"] = BORDER_FILL
+        # The flipud / fliplr of the asdict above are the enable bits of
+        # this tool (bool); the same two names inside official_names are
+        # the effective chances (float). Same spelling, two meanings,
+        # and the report needs both.
         data["official_names"] = self.to_official_dict()
+        # Neither name is an official argument; the two flip enable bits
+        # are not registered here either, their effective chance lives
+        # in official_names.
+        data["non_official_names"] = {
+            "contrast": self.contrast,
+            "select_prob": self.select_prob,
+        }
         data["disabled_multi_image_augmentations"] = list(
             MULTI_IMAGE_AUGMENTATIONS
         )
-        data["not_applied"] = ["erasing", "crop_fraction"]
+        # Nothing is registered here any more: the two parameters the
+        # stack never applied were dropped together with the parameter
+        # convergence, so every remaining field really takes effect.
+        data["not_applied"] = []
         return data
+
+
+def selectable_fields(params: AugmentParams) -> Tuple[str, ...]:
+    """Return the candidates of this draw, in draw order.
+
+    The five parameters that carry an amplitude are always candidates and
+    a flip joins them only when its enable bit is set, therefore the
+    candidate count is seven with both flips checked, six with one and
+    five with neither.
+    """
+
+    flips = tuple(name for name in FLIP_FIELDS if getattr(params, name))
+    return AUGMENT_SELECTABLE_BASE + flips
+
+
+def draw_selection(params: AugmentParams, seed: int) -> Tuple[str, ...]:
+    """Return the fields one draw selects, in candidate order.
+
+    Every candidate fires independently with the selection probability
+    of the parameters. The two edge values short circuit, so they
+    consume no random number at all: a probability of one selects the
+    whole candidate set (the baseline of the tests - the same result as
+    skipping the draw) and a probability of zero selects nothing. Every
+    other value draws one number per candidate from
+    make_rng(seed, SELECTION_RNG_INDEX), therefore the same seed always
+    selects the same fields whatever the order the images happen to be
+    processed in.
+    """
+
+    fields = selectable_fields(params)
+    if params.select_prob >= 1.0:
+        return fields
+    if params.select_prob <= 0.0:
+        return ()
+    rng = make_rng(seed, SELECTION_RNG_INDEX)
+    draws = rng.random(len(fields))
+    return tuple(
+        name
+        for name, value in zip(fields, draws)
+        if value < params.select_prob
+    )
 
 
 @dataclass
@@ -335,7 +423,7 @@ class ValidationConfig:
     iou_threshold: float = 0.45
     ng_iou_threshold: float = 0.5
     judge_augmented: bool = True
-    augment_enabled: bool = True
+    augment_enabled: bool = False
     augment_mode: str = RATIO_MODE
     multiplier: int = 1
     ratio: float = DEFAULT_RATIO
@@ -368,6 +456,7 @@ class ValidationConfig:
             "judge_augmented": self.judge_augmented,
             "augment_enabled": self.augment_enabled,
             "augment_mode": self.augment_mode,
+            "augment_mode_fixed": True,
             "multiplier": self.multiplier,
             "ratio": self.ratio,
             "total_count": self.total_count,
@@ -427,12 +516,14 @@ def plan_aug_counts(
 ) -> List[int]:
     """Return how many augmented copies each original image receives.
 
-    MULTIPLIER_MODE gives every image exactly k copies, RATIO_MODE
-    keeps only the total round(n * r) and draws the sources from the
-    originals (with replacement when a generator is given) while
-    COUNT_MODE distributes the total deterministically: base, plus one
-    for the first remainder images. RATIO_MODE is the default of the
-    configuration page.
+    MULTIPLIER_MODE gives every image exactly k copies. RATIO_MODE
+    picks a subset of round(n * r) originals without replacement - a
+    random subset when a generator is given, the first count images in
+    plan order otherwise - therefore an original is copied at most once
+    and every entry is 0 or 1. COUNT_MODE distributes the total
+    deterministically: base, plus one for the first remainder images.
+    Every mode returns one entry per original image. RATIO_MODE is the
+    default of the configuration page.
     """
 
     if sample_count < 0:
@@ -449,21 +540,27 @@ def plan_aug_counts(
         return [int(multiplier)] * sample_count
     if mode == RATIO_MODE:
         value = float(ratio)
-        if not 0 <= value <= 10:
+        if not 0 <= value <= 1:
             raise ValidationConfigError(
-                f"ratio must be within [0, 10], got {value}"
+                f"ratio must be within [0, 1], got {value}"
             )
         count = int(round(sample_count * value))
         if rng is None:
-            # Without a generator the copies are spread deterministically:
-            # the result always has one entry per original image.
+            # Deterministic: the first count images in plan order get one
+            # copy each. ratio <= 1 keeps count <= sample_count, so base
+            # is always 0 and every entry is 0 or 1 - the very shape of
+            # the subset below.
             base, remainder = divmod(count, sample_count)
             return [
                 base + (1 if index < remainder else 0)
                 for index in range(sample_count)
             ]
-        indices = [int(i) for i in rng.integers(0, sample_count, size=count)]
-        return [indices.count(i) for i in range(sample_count)]
+        # Without replacement: an original is augmented at most once.
+        chosen = {
+            int(i)
+            for i in rng.choice(sample_count, size=count, replace=False)
+        }
+        return [1 if index in chosen else 0 for index in range(sample_count)]
     if mode == COUNT_MODE:
         if total < 0:
             raise ValidationConfigError(
@@ -478,23 +575,16 @@ def plan_aug_counts(
 
 
 def validate_augment_params(params: AugmentParams) -> None:
-    """Validate augmentation parameter ranges."""
+    """Validate augmentation parameter ranges and switches."""
 
     ranges = {
-        "hsv_h": (0.0, 1.0),
-        "hsv_s": (0.0, 1.0),
+        "contrast": (0.0, 1.0),
         "hsv_v": (0.0, 1.0),
         "degrees": (0.0, 180.0),
         "translate": (0.0, 1.0),
         "scale_min": (0.0, 10.0),
         "scale_max": (0.0, 10.0),
-        "shear": (0.0, 180.0),
-        "perspective": (0.0, 0.001),
-        "flipud": (0.0, 1.0),
-        "fliplr": (0.0, 1.0),
-        "bgr": (0.0, 1.0),
-        "erasing": (0.0, 1.0),
-        "crop_fraction": (0.0, 1.0),
+        "select_prob": (0.0, 1.0),
     }
     for name, (low, high) in ranges.items():
         value = float(getattr(params, name))
@@ -508,6 +598,23 @@ def validate_augment_params(params: AugmentParams) -> None:
             "scale min must not be greater than scale max "
             f"({params.scale_min} > {params.scale_max})"
         )
+    # A probability of zero would turn every draw into a no-op, which is
+    # what the augment switch of the configuration is there for.
+    if float(params.select_prob) <= 0.0:
+        raise ValidationConfigError(
+            "Augmentation parameter select_prob must be greater than 0, "
+            f"got {params.select_prob}"
+        )
+    # The two flips are enable bits: a float - even a truthy one - is
+    # the old probability contract and would silently change what a draw
+    # selects.
+    for name in FLIP_FIELDS:
+        value = getattr(params, name)
+        if isinstance(value, bool) is not True:
+            raise ValidationConfigError(
+                f"Augmentation parameter {name} must be a boolean, "
+                f"got {value!r}"
+            )
 
 
 def border_fill_value(image: Any) -> Optional[Tuple[float, ...]]:
@@ -637,6 +744,7 @@ def is_int_dimension(value: Any) -> bool:
 __all__ = [
     "ATTEMPT_INDEX_STRIDE",
     "AUGMENT_MODES",
+    "AUGMENT_SELECTABLE_BASE",
     "AUGMENT_WORKERS_LIMIT",
     "BORDER_FILL",
     "COUNT_MODE",
@@ -644,12 +752,14 @@ __all__ = [
     "DEFAULT_INFER_WORKERS",
     "DEFAULT_RATIO",
     "DEFAULT_WORKERS",
+    "FLIP_FIELDS",
     "INFERENCE_CONF_THRESHOLD",
     "INFER_WORKERS_LIMIT",
     "MULTIPLIER_MODE",
     "MULTI_IMAGE_AUGMENTATIONS",
     "OPENCV_THREADS",
     "RATIO_MODE",
+    "SELECTION_RNG_INDEX",
     "AugmentParams",
     "ValidationConfig",
     "ValidationConfigError",
@@ -657,6 +767,7 @@ __all__ = [
     "border_fill_value",
     "default_workers",
     "derive_seed",
+    "draw_selection",
     "infer_session_threads",
     "infer_threads_snapshot",
     "is_int_dimension",
@@ -669,5 +780,6 @@ __all__ = [
     "plan_aug_counts",
     "resolve_augment_workers",
     "resolve_infer_workers",
+    "selectable_fields",
     "validate_augment_params",
 ]

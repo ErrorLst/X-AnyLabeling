@@ -25,6 +25,7 @@ from anylabeling.custom.model_validation.exporter import export_zip
 from anylabeling.custom.model_validation.ui import dialog as dialog_module
 from anylabeling.custom.model_validation.ui.dialog import ModelValidationDialog
 from anylabeling.custom.model_validation.ui.results_page import (
+    COLUMN_AUGMENT,
     COLUMN_EXPORT,
     COLUMN_KIND,
     COLUMN_MARK,
@@ -205,19 +206,20 @@ def summary_of(records) -> dict:
 
 
 # ------------------------------------------------------------- the columns
-def test_the_list_shows_the_four_columns_without_a_reason_column(dialog):
-    "标记 / 状态 / relpath / kind: primary_reason left the table."
+def test_the_list_shows_the_five_columns_without_a_reason_column(dialog):
+    "标记 / 状态 / relpath / kind / 增强: primary_reason left the table."
 
     page = dialog.results_page
-    assert HEADERS == ("标记", "状态", "relpath", "kind")
+    assert HEADERS == ("标记", "状态", "relpath", "kind", "增强")
     assert "primary_reason" not in HEADERS
     assert "reason" not in HEADERS
-    assert (COLUMN_MARK, COLUMN_VERDICT, COLUMN_RELPATH, COLUMN_KIND) == (
-        0,
-        1,
-        2,
-        3,
-    )
+    assert (
+        COLUMN_MARK,
+        COLUMN_VERDICT,
+        COLUMN_RELPATH,
+        COLUMN_KIND,
+        COLUMN_AUGMENT,
+    ) == (0, 1, 2, 3, 4)
     # the mark column is the export column of the previous layout
     assert COLUMN_EXPORT == COLUMN_MARK
     assert page.table.columnCount() == len(HEADERS)

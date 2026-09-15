@@ -20,13 +20,17 @@ STAGING_REPORT_FILENAME = "validation_report.json"
 
 AUGMENT_KNOWN_LIMITATIONS: Tuple[str, ...] = (
     "circle is rebuilt from the centroid and the mean radius of the "
-    "transformed probes, therefore a circle under Perspective is "
-    "approximated instead of becoming an ellipse",
+    "transformed probes, therefore a circle under the affine transform "
+    "is approximated by a circle instead of the ellipse a non uniform "
+    "zoom or a rotation really makes of it",
     "a sample whose transform leaves a shape outside the picture is "
     "generated again with a fresh derived seed (augment.retried counts "
     "those samples) and is dropped when no attempt fits "
-    "(augment.discarded_unfittable counts those), so a planned copy may "
-    "be missing instead of being produced with a clipped defect",
+    "(augment.discarded_unfittable counts those); a sample that draws "
+    "nothing at all in every one of its attempts is dropped just the "
+    "same (augment.discarded_empty_selection counts those), so a "
+    "planned copy may be missing instead of being produced with a "
+    "clipped defect",
 )
 
 

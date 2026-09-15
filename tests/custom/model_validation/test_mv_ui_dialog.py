@@ -31,11 +31,12 @@ from anylabeling.custom.model_validation.ui.config_page import (
     SPIN_WIDTH,
     TOOLTIP_AUGMENT_ENABLED,
     TOOLTIP_AUGMENT_WORKERS,
-    TOOLTIP_COUNT,
+    TOOLTIP_FLIPLR,
+    TOOLTIP_FLIPUD,
     TOOLTIP_INFER_WORKERS,
-    TOOLTIP_MODE,
-    TOOLTIP_MULTIPLIER,
+    TOOLTIP_MODE_FIXED,
     TOOLTIP_RATIO,
+    TOOLTIP_SELECT_PROB,
     workers_note,
 )
 from anylabeling.custom.model_validation.ui.dialog import (
@@ -203,10 +204,7 @@ def test_preview_refresh_survives_the_first_configuration(dialog):
     assert dialog.records == []
     dialog.config_page.set_dataset("/does-not-exist")
     dialog.config_page.augment_check.setChecked(False)
-    dialog.config_page.mode_combo.setCurrentIndex(0)
-    dialog.config_page.multiplier_spin.setValue(4)
-    dialog.config_page.ratio_spin.setValue(2.0)
-    dialog.config_page.count_spin.setValue(10)
+    dialog.config_page.ratio_spin.setValue(0.75)
     dialog.config_page.judge_augmented_check.setChecked(False)
     dialog._refresh_preview()
     assert dialog.preview_counts(0, dialog.config_page.collect_config()) == {
@@ -243,19 +241,18 @@ def test_source_directory_is_enumerated_once(dialog, tmp_path, monkeypatch):
     assert calls == [source]
     assert dialog.source_pair_count == 2
     page.augment_check.setChecked(True)
-    # the default mode is ratio: 2 valid originals x 0.5 = 1 copy
-    assert page.mode_combo.currentData() == RATIO_MODE
+    # the mode is fixed to the ratio: 2 valid originals x 0.5 = 1 copy
+    assert page.collect_config().augment_mode == RATIO_MODE
     dialog._refresh_preview()
     assert page.preview_label.text() == (
         "有效原图 2 / 将生成增强 1 / 验证总数 3 / 预计导出 2"
     )
-    # an explicit count mode still wins over the ratio default
-    page.mode_combo.setCurrentIndex(page.mode_combo.findData(COUNT_MODE))
-    page.count_spin.setValue(5)
+    # the ratio input itself drives the preview: 2 x 1 = 2 copies
+    page.ratio_spin.setValue(1.0)
     dialog._refresh_preview()
     assert len(calls) == 1
     assert page.preview_label.text() == (
-        "有效原图 2 / 将生成增强 5 / 验证总数 7 / 预计导出 2"
+        "有效原图 2 / 将生成增强 2 / 验证总数 4 / 预计导出 2"
     )
 
 
@@ -281,7 +278,6 @@ def interactive_controls(page):
 
     control_types = (
         QtWidgets.QLineEdit,
-        QtWidgets.QComboBox,
         QtWidgets.QSpinBox,
         QtWidgets.QDoubleSpinBox,
         QtWidgets.QCheckBox,
@@ -297,18 +293,58 @@ def interactive_controls(page):
 
 
 def augment_grid_params(page):
-    """Return the (control, stays grey) pairs of the augment grid.
+    """Return the parameter controls of the augment grid, in grid order.
 
-    The two parameters the tool never applies (erasing, crop_fraction)
-    stay grey whatever the augment checkbox says; every other control of
-    the grid follows the checkbox.
+    The select probability is not one of them any more: it shares the
+    amount row with the ratio, see amount_row_widgets.
     """
 
-    grey = page.always_disabled_names
     return [
-        (widget, widget.objectName() in grey)
-        for _label, _suffix, widget, _tip in page._augment_specs()
+        widget for _label, _suffix, widget, _tip in page._augment_specs()
     ]
+
+
+def augment_param_widgets(page):
+    """Return the controls the augment checkbox gates.
+
+    The parameter grid plus the select probability, whose control lives
+    on the amount row.
+    """
+
+    return list(page._augment_param_widgets())
+
+
+def amount_row_widgets(page) -> list:
+    """Return the widgets of the amount row, in layout order.
+
+    The row is the horizontal layout that holds the fixed mode note, the
+    ratio and the select probability: it is a layout, not a widget, so
+    its widgets are collected from its items and the row is found
+    through the ratio spin box it owns.
+    """
+
+    owner = page.ratio_spin.parentWidget()
+    rows = [
+        layout
+        for layout in owner.findChildren(QtWidgets.QHBoxLayout)
+        if layout.indexOf(page.ratio_spin) >= 0
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    return [row.itemAt(index).widget() for index in range(row.count())]
+
+
+def amount_row_label(page, control):
+    """Return the row label that stands right before a row control."""
+
+    row = amount_row_widgets(page)
+    index = row.index(control)
+    if index == 0:
+        return None
+    label = row[index - 1]
+    if isinstance(label, QtWidgets.QLabel):
+        return label
+    return None
 
 
 def test_every_configuration_control_has_a_tooltip(dialog):
@@ -316,10 +352,12 @@ def test_every_configuration_control_has_a_tooltip(dialog):
 
     page = dialog.config_page
     controls = interactive_controls(page)
-    assert len(controls) >= 30
-    assert {type(control).__name__ for control in controls} >= {
+    # 3 source line edits, 3 browse buttons + the start button, 3
+    # thresholds, the judge checkbox, the augment checkbox, the ratio and
+    # the ten parameter controls of the grid
+    assert len(controls) == 23
+    assert {type(control).__name__ for control in controls} == {
         "QLineEdit",
-        "QComboBox",
         "QSpinBox",
         "QDoubleSpinBox",
         "QCheckBox",
@@ -343,8 +381,8 @@ def test_field_labels_carry_the_tooltip_of_their_control(dialog):
         if label.toolTip()
     ]
     # the source rows, the three thresholds, the amount row, the whole
-    # augment grid and the two hints all contribute a labelled tooltip.
-    assert len(labels) >= 20
+    # augment grid and the three hints all contribute a labelled tooltip.
+    assert len(labels) == 26
 
     by_text = {label.text(): label for label in labels}
     pairs = (
@@ -354,10 +392,11 @@ def test_field_labels_carry_the_tooltip_of_their_control(dialog):
         ("NG 分数 score", page.conf_spin),
         ("NMS IoU iou", page.iou_spin),
         ("判定 NG IoU", page.ng_iou_spin),
-        ("色调 hsv_h", page.hsv_h_spin),
+        ("对比度 contrast", page.contrast_spin),
+        ("垂直翻转", page.flipud_check),
+        ("水平翻转", page.fliplr_check),
         ("缩放下限 scale min", page.scale_min_spin),
         ("缩放上限 scale max", page.scale_max_spin),
-        ("剪切 shear（°）", page.shear_spin),
     )
     for text, control in pairs:
         label = by_text.get(text)
@@ -368,49 +407,52 @@ def test_field_labels_carry_the_tooltip_of_their_control(dialog):
     assert page.scale_min_spin.toolTip() == page.scale_max_spin.toolTip()
 
 
-def test_the_amount_controls_collapse_into_one_row(dialog):
-    "Only the control of the selected amount mode stays visible."
+def test_the_amount_row_states_the_fixed_ratio(dialog):
+    "The mode is a read only note; only the ratio input stays editable."
 
     page = dialog.config_page
-    pairs = (
-        (COUNT_MODE, page.count_spin),
-        (RATIO_MODE, page.ratio_spin),
-        (MULTIPLIER_MODE, page.multiplier_spin),
-    )
-    assert page.mode_combo.currentData() == RATIO_MODE
+    # the mode is fixed: no combo, no multiplier, no count input exists
+    assert not hasattr(page, "mode_combo")
+    assert not hasattr(page, "multiplier_spin")
+    assert not hasattr(page, "count_spin")
+    assert page.mode_note.text() == "数量模式：比例 r（固定）"
+    assert page.mode_note.toolTip() == TOOLTIP_MODE_FIXED
+    assert page.mode_note.isEnabled() is True
+    assert page.ratio_spin.toolTip() == TOOLTIP_RATIO
+    assert page.ratio_spin.isVisibleTo(page)
+    assert page.augment_check.isChecked() is False
+    assert not page.ratio_spin.isEnabled()
     page.augment_check.setChecked(True)
-    for mode, control in pairs:
-        page.mode_combo.setCurrentIndex(page.mode_combo.findData(mode))
-        for other_mode, other in pairs:
-            assert other.isVisibleTo(page) == (other_mode == mode)
-            assert other.isEnabled() == (other_mode == mode)
-    # the checkbox still gates the visible control
-    page.mode_combo.setCurrentIndex(page.mode_combo.findData(COUNT_MODE))
-    page.augment_check.setChecked(False)
-    assert page.count_spin.isVisibleTo(page)
-    assert not page.count_spin.isEnabled()
-    page.augment_check.setChecked(True)
-    assert page.count_spin.isEnabled()
+    assert page.ratio_spin.isEnabled()
+    # the select probability shares the amount row with the ratio: it
+    # explains the draw that turns the ratio into a copy count, so it is
+    # no cell of the parameter grid any more
+    row = amount_row_widgets(page)
+    assert page.select_prob_spin in row
+    assert page.ratio_spin in row
+    assert page.mode_note in row
+    assert page.select_prob_spin not in augment_grid_params(page)
+    assert page.select_prob_spin not in grid_cells(page)
+    # the row carries its own label for p, not only the bare control
+    p_label = amount_row_label(page, page.select_prob_spin)
+    assert p_label is not None
+    assert p_label.text() == "选中概率 p"
+    assert p_label.toolTip() == page.select_prob_spin.toolTip()
+    # the two cancelled modes are named as history, never as a choice
+    assert "倍数 k" not in page.mode_note.text()
+    assert "总数 N" not in page.mode_note.text()
+    assert "已取消" in TOOLTIP_MODE_FIXED
 
 
 def test_the_default_amount_mode_is_ratio(dialog):
     "A fresh window derives the amount with the ratio mode."
 
     page = dialog.config_page
-    assert page.mode_combo.currentData() == RATIO_MODE
     assert page.collect_config().augment_mode == RATIO_MODE
     assert page.ratio_spin.value() == DEFAULT_RATIO == 0.5
+    assert page.ratio_spin.minimum() == 0.0
+    assert page.ratio_spin.maximum() == 1.0
     assert page.ratio_spin.minimumWidth() == SPIN_WIDTH
-    # the option texts name the default instead of hard coding an index
-    texts = [
-        page.mode_combo.itemText(index)
-        for index in range(page.mode_combo.count())
-    ]
-    assert texts == [
-        "倍数 multiplier",
-        "比例 ratio（默认）",
-        "总数 count",
-    ]
 
 
 def same_path(left: str, right: str) -> bool:
@@ -493,7 +535,7 @@ def test_the_page_owns_the_drops_of_its_children(dialog):
     assert page.dataset_edit.acceptDrops() is False
     assert page.classes_edit.acceptDrops() is False
     assert page.model_edit.acceptDrops() is False
-    assert page.mode_combo.acceptDrops() is False
+    assert page.ratio_spin.acceptDrops() is False
     remaining = [
         type(child).__name__
         for child in page.findChildren(QtWidgets.QWidget)
@@ -515,8 +557,8 @@ def test_the_page_owns_the_drops_of_its_children(dialog):
         page.dataset_edit,
         page.classes_edit,
         page.model_edit,
-        page.mode_combo,
-        page.hsv_h_spin,
+        page.ratio_spin,
+        page.contrast_spin,
     ):
         assert drop_owner(target) is page
     # the supported payload is announced on the page itself
@@ -561,7 +603,14 @@ def test_dropping_a_directory_fills_the_source_and_counts_it(
     assert wait_for_source_scan(dialog, source)
     assert calls == [source]
     assert dialog.source_pair_count == 2
-    # and the preview followed the default augmentation settings
+    # the shipped default keeps the augmentation off, so the preview
+    # counts the two originals alone
+    assert page.augment_check.isChecked() is False
+    assert page.preview_label.text() == (
+        "有效原图 2 / 将生成增强 0 / 验证总数 2 / 预计导出 2"
+    )
+    # switching it on derives the copies with the fixed ratio 0.5
+    page.augment_check.setChecked(True)
     assert page.preview_label.text() == (
         "有效原图 2 / 将生成增强 1 / 验证总数 3 / 预计导出 2"
     )
@@ -694,26 +743,31 @@ def test_dropping_a_broken_classes_file_reports_the_reason(dialog, tmp_path):
     assert "empty" in page.status_label.text().lower()
 
 
-def test_the_augment_default_opens_the_amount_and_parameter_controls(dialog):
-    "生成增强副本 is on when the page opens, so its controls are usable."
+def test_the_augment_default_keeps_the_controls_grey(dialog):
+    "生成增强副本 is off when the page opens, so its controls are grey."
 
     page = dialog.config_page
-    assert page.augment_check.isChecked() is True
+    assert page.augment_check.isChecked() is False
     config = page.collect_config()
-    assert config.augment_enabled is True
+    assert config.augment_enabled is False
     assert config.augment_mode == RATIO_MODE
-    # the visible amount control and the whole parameter grid are live
-    assert page.mode_combo.isEnabled()
-    assert page.ratio_spin.isEnabled()
+    # the ratio and the whole parameter face follow the checkbox
+    assert not page.ratio_spin.isEnabled()
     assert page.ratio_spin.isVisibleTo(page)
-    params = augment_grid_params(page)
-    # the 15 grid controls minus the two parameters the tool never applies
-    assert len(params) == 15
-    for spin, stays_grey in params:
-        # the two official classification only parameters stay grey while
-        # every other control of the grid is usable out of the box
-        assert spin.isEnabled() is (not stays_grey), spin.objectName()
+    params = augment_param_widgets(page)
+    # the nine grid cells plus the select probability of the amount row
+    assert len(params) == 10
+    assert page.select_prob_spin in params
+    for control in params:
+        assert control.isEnabled() is False, type(control).__name__
     assert page.augment_check.toolTip() == TOOLTIP_AUGMENT_ENABLED
+    # switching it on makes the whole grid usable out of the box
+    page.augment_check.setChecked(True)
+    assert page.ratio_spin.isEnabled() is True
+    for control in params:
+        assert control.isEnabled() is True, type(control).__name__
+    assert page.flipud_check.isChecked() is True
+    assert page.fliplr_check.isChecked() is True
 
 
 def test_the_first_screen_previews_the_enabled_augmentation(dialog, tmp_path):
@@ -727,13 +781,22 @@ def test_the_first_screen_previews_the_enabled_augmentation(dialog, tmp_path):
     page = dialog.config_page
     page.set_dataset(source)
     assert wait_for_source_scan(dialog, source)
-    # no explicit setChecked(True) anywhere: the screen default alone counts
+    # the screen default keeps the augmentation off: no copy is planned
     dialog._refresh_preview()
     counts = dialog.preview_counts(2, page.collect_config())
     assert counts["originals"] == 2
-    assert counts["augmented"] == 1
-    assert counts["judged"] == 2 + 1
+    assert counts["augmented"] == 0
+    assert counts["judged"] == 2
     assert counts["exported"] == 2
+    assert page.preview_label.text() == (
+        "有效原图 2 / 将生成增强 0 / 验证总数 2 / 预计导出 2"
+    )
+    # and the checked checkbox alone derives them with the ratio 0.5
+    page.augment_check.setChecked(True)
+    dialog._refresh_preview()
+    counts = dialog.preview_counts(2, page.collect_config())
+    assert counts["augmented"] == 1
+    assert counts["judged"] == 3
     assert page.preview_label.text() == (
         "有效原图 2 / 将生成增强 1 / 验证总数 3 / 预计导出 2"
     )
@@ -749,19 +812,14 @@ def test_turning_the_augment_default_off_greys_the_controls(dialog, tmp_path):
     page.set_dataset(source)
     assert wait_for_source_scan(dialog, source)
     page.augment_check.setChecked(False)
-    assert page.mode_combo.isEnabled() is False
-    # the three amount inputs, hidden and visible ones alike, are grey
-    assert [control for _mode, control in page.mode_specs] == [
-        page.multiplier_spin,
-        page.ratio_spin,
-        page.count_spin,
-    ]
-    for _mode, control in page.mode_specs:
-        assert control.isEnabled() is False
-    # the parameter grid greys out as well, except the two controls the
-    # tool never applies: those were already grey and stay that way
-    for spin, stays_grey in augment_grid_params(page):
-        assert spin.isEnabled() is False, spin.objectName()
+    # the ratio is the one amount input, and it is grey as well
+    assert page.ratio_spin.isEnabled() is False
+    # the whole parameter face greys out with it, the select
+    # probability of the amount row included
+    params = augment_param_widgets(page)
+    assert page.select_prob_spin in params
+    for control in params:
+        assert control.isEnabled() is False, type(control).__name__
     dialog._refresh_preview()
     counts = dialog.preview_counts(1, page.collect_config())
     assert counts["augmented"] == 0
@@ -769,13 +827,20 @@ def test_turning_the_augment_default_off_greys_the_controls(dialog, tmp_path):
     assert page.preview_label.text() == (
         "有效原图 1 / 将生成增强 0 / 验证总数 1 / 预计导出 1"
     )
-    # switching it back on restores the amount and parameter controls
+    # switching it back on restores the ratio and parameter controls
     page.augment_check.setChecked(True)
     assert page.ratio_spin.isEnabled() is True
-    assert page.hsv_h_spin.isEnabled() is True
+    assert page.contrast_spin.isEnabled() is True
     assert page.seed_spin.isEnabled() is True
-    assert page.erasing_spin.isEnabled() is False
-    assert page.crop_fraction_spin.isEnabled() is False
+    assert page.flipud_check.isEnabled() is True
+    assert page.fliplr_check.isEnabled() is True
+    # the select probability is greyed and restored with them, and it
+    # lives on the amount row next to the ratio
+    assert page.select_prob_spin.isEnabled() is True
+    assert page.select_prob_spin in amount_row_widgets(page)
+    page.augment_check.setChecked(False)
+    assert page.select_prob_spin.isEnabled() is False
+    assert page.ratio_spin.isEnabled() is False
 
 
 def test_a_missing_mode_falls_back_to_ratio_everywhere(dialog):
@@ -796,41 +861,42 @@ def test_a_missing_mode_falls_back_to_ratio_everywhere(dialog):
     assert sum(plan) == 6
 
 
-def test_the_three_amount_modes_explain_the_difference(dialog):
-    "k, r and N document how they derive the augmented amount."
+def test_the_fixed_ratio_explains_the_amount(dialog):
+    "The read only note names the mode, r documents the count."
 
     page = dialog.config_page
-    hint = "每张有效原图各生成 k 份"
-    drawn = "来源从有效原图中随机抽取（可重复）"
-    spread = "余数分给前 N % 原图数 张"
-    assert page.multiplier_spin.toolTip() == TOOLTIP_MULTIPLIER
+    assert page.mode_note.toolTip() == TOOLTIP_MODE_FIXED
     assert page.ratio_spin.toolTip() == TOOLTIP_RATIO
-    assert page.count_spin.toolTip() == TOOLTIP_COUNT
-    assert hint in TOOLTIP_MULTIPLIER
-    assert drawn in TOOLTIP_RATIO
-    assert "r=1 与 k=1 总量相同但来源分布不同" in TOOLTIP_RATIO
-    assert spread in TOOLTIP_COUNT
-    assert "总量语义但分配确定" in TOOLTIP_COUNT
-    assert TOOLTIP_RATIO != TOOLTIP_COUNT != TOOLTIP_MULTIPLIER
-    # the inline k / r / N labels repeat the explanation of the control
+    # the note names the cancelled modes as history, not as a choice
+    assert "比例 r" in TOOLTIP_MODE_FIXED
+    assert "已取消" in TOOLTIP_MODE_FIXED
+    assert "倍数" in TOOLTIP_MODE_FIXED
+    assert "总数 N" in TOOLTIP_MODE_FIXED
+    # the ratio tooltip describes the without replacement subset
+    for phrase in ("无放回", "每张最多 1 份", "范围 0-1", "r=0"):
+        assert phrase in TOOLTIP_RATIO
+    # the wording of the repeated draw is gone for good
+    assert "被抽 0 次" not in TOOLTIP_RATIO
+    assert "被抽多次" not in TOOLTIP_RATIO
+    assert "可重复" not in TOOLTIP_RATIO
+    # the inline labels repeat the explanation of their own control
     labelled = {
         label.text(): label
         for label in page.findChildren(QtWidgets.QLabel)
         if label.toolTip()
     }
     for text, tooltip in (
-        ("倍数 k", TOOLTIP_MULTIPLIER),
         ("比例 r", TOOLTIP_RATIO),
-        ("总数 N", TOOLTIP_COUNT),
-        ("数量模式", TOOLTIP_MODE),
+        ("数量模式：比例 r（固定）", TOOLTIP_MODE_FIXED),
     ):
         assert text in labelled
         assert labelled[text].toolTip() == tooltip
-    assert "② 比例 r（默认）" in TOOLTIP_MODE
 
 
-def test_the_hidden_amount_control_does_not_feed_the_preview(dialog, tmp_path):
-    "The preview follows the visible amount control only."
+def test_the_ratio_drives_the_preview_behind_the_switch(
+    dialog, tmp_path
+):
+    "The preview follows the one amount control the page still owns."
 
     source = str(tmp_path / "source")
     write_image(osp.join(source, "a.png"))
@@ -838,18 +904,20 @@ def test_the_hidden_amount_control_does_not_feed_the_preview(dialog, tmp_path):
     page = dialog.config_page
     page.set_dataset(source)
     assert wait_for_source_scan(dialog, source)
+    # the switched off default plans no copy at all, whatever r says
+    page.ratio_spin.setValue(1.0)
+    dialog._refresh_preview()
+    assert page.preview_label.text().startswith("有效原图 1 / 将生成增强 0")
+    # switching the augmentation on makes the ratio the only driver
     page.augment_check.setChecked(True)
-    page.mode_combo.setCurrentIndex(page.mode_combo.findData(MULTIPLIER_MODE))
-    page.multiplier_spin.setValue(4)
     dialog._refresh_preview()
-    assert page.preview_label.text().startswith("有效原图 1 / 将生成增强 4")
-    page.mode_combo.setCurrentIndex(page.mode_combo.findData(COUNT_MODE))
-    page.count_spin.setValue(5)
-    dialog._refresh_preview()
-    assert not page.multiplier_spin.isVisibleTo(page)
-    # the hidden multiplier (4) must not win over the visible count (5)
     assert page.preview_label.text() == (
-        "有效原图 1 / 将生成增强 5 / 验证总数 6 / 预计导出 1"
+        "有效原图 1 / 将生成增强 1 / 验证总数 2 / 预计导出 1"
+    )
+    page.ratio_spin.setValue(0.0)
+    dialog._refresh_preview()
+    assert page.preview_label.text() == (
+        "有效原图 1 / 将生成增强 0 / 验证总数 1 / 预计导出 1"
     )
 
 
@@ -858,7 +926,8 @@ def test_every_augment_spin_uses_the_compact_width(dialog):
 
     page = dialog.config_page
     spins = page.findChildren(QtWidgets.QAbstractSpinBox)
-    assert len(spins) >= 18
+    # 3 thresholds + 7 amplitude spins + the ratio and the seed
+    assert len(spins) == 12
     for spin in spins:
         assert spin.width() == SPIN_WIDTH
         assert spin.minimumWidth() == spin.maximumWidth() == SPIN_WIDTH
@@ -931,25 +1000,37 @@ def augment_grid(page):
     grids = [
         grid
         for grid in page.findChildren(QtWidgets.QGridLayout)
-        if grid.count() >= 15
+        if grid.count() >= 9
     ]
     assert len(grids) == 1
     grid = grids[0]
-    assert (grid.rowCount(), grid.columnCount()) == (5, 3)
+    # nine parameters over three columns: three rows, the last one
+    # filled by the seed alone; the select probability is not a cell any
+    # more, it lives on the amount row
+    assert (grid.rowCount(), grid.columnCount()) == (3, 3)
+    assert grid.count() == 9
     return grid
+
+
+def grid_cells(page) -> list:
+    "Return the cells of the grid, in row major order, gaps dropped."
+
+    grid = augment_grid(page)
+    cells = []
+    for row in range(grid.rowCount()):
+        for column in range(grid.columnCount()):
+            item = grid.itemAtPosition(row, column)
+            # every position of the three rows carries a cell
+            if item is not None:
+                cells.append(item.widget())
+    return cells
 
 
 def grid_labels(page) -> list:
     "Return the parameter names of the grid, in row major order."
 
-    grid = augment_grid(page)
     return [
-        grid.itemAtPosition(row, column)
-        .widget()
-        .findChild(QtWidgets.QLabel)
-        .text()
-        for row in range(grid.rowCount())
-        for column in range(grid.columnCount())
+        cell.findChild(QtWidgets.QLabel).text() for cell in grid_cells(page)
     ]
 
 
@@ -957,20 +1038,14 @@ def grid_labels(page) -> list:
 # official Ultralytics argument name behind it, so the page stays
 # comparable 1:1 with the documentation of the augmentation arguments.
 AUGMENT_LABELS = (
-    "色调 hsv_h",
-    "饱和度 hsv_s",
+    "对比度 contrast",
     "亮度 hsv_v",
     "旋转角度 degrees（°）",
     "平移 translate",
     "缩放下限 scale min",
     "缩放上限 scale max",
-    "剪切 shear（°）",
-    "透视 perspective",
-    "垂直翻转 flipud",
-    "水平翻转 fliplr",
-    "通道互换 bgr",
-    "随机擦除 erasing",
-    "裁剪 crop_fraction",
+    "垂直翻转",
+    "水平翻转",
     "随机种子 seed",
 )
 
@@ -981,32 +1056,101 @@ def has_chinese(text: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in str(text))
 
 
-def test_the_augment_grid_labels_keep_the_official_names(dialog):
+def test_the_augment_grid_names_every_shipped_parameter(dialog):
     "Every parameter name is Chinese plus the official argument name."
 
     page = dialog.config_page
 
     assert grid_labels(page) == list(AUGMENT_LABELS)
+    # the select probability is no grid label any more: it stands on the
+    # amount row next to the ratio it explains
+    assert "选中概率 p" not in grid_labels(page)
     for label in AUGMENT_LABELS:
         assert has_chinese(label), label
+    # the six official arguments that survive keep their exact name
     for official in (
-        "hsv_h",
-        "hsv_s",
         "hsv_v",
         "degrees",
         "translate",
         "scale min",
         "scale max",
-        "shear",
-        "perspective",
-        "flipud",
-        "fliplr",
-        "bgr",
-        "erasing",
-        "crop_fraction",
         "seed",
     ):
         assert any(official in label for label in AUGMENT_LABELS), official
+    # the two flips are labelled in Chinese alone: their official name
+    # lives in the tooltip, which the next test pins
+    for label in AUGMENT_LABELS:
+        assert "flipud" not in label
+        assert "fliplr" not in label
+    # the seven dropped arguments are gone from the grid
+    for dropped in (
+        "hsv_h",
+        "hsv_s",
+        "shear",
+        "perspective",
+        "bgr",
+        "erasing",
+        "crop_fraction",
+    ):
+        assert not any(dropped in label for label in AUGMENT_LABELS), dropped
+
+
+def test_the_flip_checkboxes_carry_their_official_name(dialog):
+    "The two enable bits are check boxes keeping the official name."
+
+    page = dialog.config_page
+
+    assert isinstance(page.flipud_check, QtWidgets.QCheckBox)
+    assert isinstance(page.fliplr_check, QtWidgets.QCheckBox)
+    assert page.flipud_check.text() == ""
+    assert page.fliplr_check.text() == ""
+    assert page.flipud_check.toolTip() == TOOLTIP_FLIPUD
+    assert page.fliplr_check.toolTip() == TOOLTIP_FLIPLR
+    assert "flipud" in page.flipud_check.toolTip()
+    assert "fliplr" in page.fliplr_check.toolTip()
+    for tip in (TOOLTIP_FLIPUD, TOOLTIP_FLIPLR):
+        assert "启用位" in tip
+        assert "official_names" in tip
+    # the check boxes answer the enable bits of the form
+    params = page.augment_params()
+    assert params.flipud is True
+    assert params.fliplr is True
+    page.flipud_check.setChecked(False)
+    page.fliplr_check.setChecked(False)
+    params = page.augment_params()
+    assert params.flipud is False
+    assert params.fliplr is False
+    # an unchecked flip never fires, a checked one fires with p
+    assert params.to_official_dict()["flipud"] == 0.0
+    assert params.to_official_dict()["fliplr"] == 0.0
+    page.flipud_check.setChecked(True)
+    assert page.augment_params().to_official_dict()["flipud"] == (
+        page.select_prob_spin.value()
+    )
+
+
+def test_the_select_probability_names_the_retry(dialog):
+    "The p control explains the draw and the retry it can trigger."
+
+    page = dialog.config_page
+
+    assert page.select_prob_spin.toolTip() == TOOLTIP_SELECT_PROB
+    for phrase in ("选中概率", "独立抽签", "discarded_empty_selection"):
+        assert phrase in TOOLTIP_SELECT_PROB
+    assert page.select_prob_spin.minimum() == 0.05
+    assert page.select_prob_spin.maximum() == 1.0
+    assert page.select_prob_spin.value() == 0.1
+    # p is no cell of the parameter grid any more: it shares the amount
+    # row with the fixed ratio it explains
+    assert page.select_prob_spin not in augment_grid_params(page)
+    assert page.select_prob_spin not in grid_cells(page)
+    assert page.select_prob_spin in amount_row_widgets(page)
+    assert amount_row_label(page, page.select_prob_spin) is not None
+    # and it still follows the augment checkbox like the grid does
+    assert page.select_prob_spin.isEnabled() is False
+    assert page.select_prob_spin in augment_param_widgets(page)
+    page.augment_check.setChecked(True)
+    assert page.select_prob_spin.isEnabled() is True
 
 
 def test_the_threshold_and_amount_labels_are_chinese(dialog):
@@ -1019,13 +1163,14 @@ def test_the_threshold_and_amount_labels_are_chinese(dialog):
         "NG 分数 score",
         "NMS IoU iou",
         "判定 NG IoU",
-        "倍数 k",
         "比例 r",
-        "总数 N",
+        "数量模式：比例 r（固定）",
     ):
         assert text in labels, text
-    # the bare English names of the previous revision are gone
-    for text in ("conf", "iou", "NG IoU", "k", "r", "N"):
+    # the cancelled modes are not offered as a choice any more, and the
+    # bare English names of the previous revision are gone
+    for text in ("倍数 k", "总数 N", "数量模式", "conf", "iou", "NG IoU",
+                 "k", "r", "N"):
         assert text not in labels, text
 
 
@@ -1068,12 +1213,19 @@ def test_the_three_grid_columns_are_equal_and_aligned(dialog):
     for row in range(grid.rowCount()):
         for column in range(grid.columnCount()):
             item = grid.itemAtPosition(row, column)
-            assert item is not None, (row, column)
+            if item is None:
+                # every cell of the three rows is filled
+                continue
             cell = item.widget()
             assert cell is not None
             label = cell.findChild(QtWidgets.QLabel)
-            control = cell.findChild(QtWidgets.QAbstractSpinBox)
+            # the control is the widget the cell layout places after the
+            # name: a spin box for eight parameters, the check box of a
+            # flip for the two others (findChild would answer the label)
+            layout = cell.layout()
+            control = layout.itemAt(1).widget()
             assert label is not None and control is not None
+            assert control is not label
             widths.setdefault(column, set()).add(cell.width())
             label_x.setdefault(column, set()).add(
                 label.mapTo(page, QtCore.QPoint(0, 0)).x()
@@ -1100,14 +1252,15 @@ def test_the_window_height_follows_the_configuration_page(dialog):
 
     dialog.show()
     QtWidgets.QApplication.processEvents()
-    # the configuration page needs 563px (544px plus the drop hint line,
-    # the fill mode combo of the amount row takes no height of its own),
-    # so the window stays at the lower bound instead of the old hard coded
-    # 680px.
-    assert dialog.config_page.sizeHint().height() <= 580
+    # The configuration page hugs its own content now (the amount row is
+    # a read only note plus the one ratio input), so the upper bound the
+    # compact form was pinned to still holds and the window keeps its
+    # 600px lower bound instead of the old hard coded 680px.
+    hint = dialog.config_page.sizeHint().height()
+    assert 520 <= hint <= 660
     assert dialog.minimumHeight() == MINIMUM_HEIGHT == 600
     assert dialog.minimumWidth() == MINIMUM_WIDTH == 1024
-    assert dialog.height() <= dialog.config_page.sizeHint().height() + 56
+    assert dialog.height() <= hint + 56
     assert dialog.height() < 680
     first = dialog.size()
     assert dialog.apply_initial_size() == first
@@ -1157,19 +1310,21 @@ def test_the_page_offers_no_fill_option(dialog):
     assert "border_mode" not in snapshot
 
 
-def test_the_page_height_is_unchanged_without_the_combo(dialog):
-    """Removing the combo left the measured layout of the page alone.
+def test_the_page_height_stays_inside_the_screen_budget(dialog):
+    """The amount row is one note plus one input, no combo at all.
 
-    The fill mode combo shared the row of the amount and thread controls
-    and took no height of its own, therefore the page still needs 563px
-    and the window keeps its 600px lower bound and its 1024px width.
+    The height the page asks for is a function of the font metrics of
+    the environment, therefore the test pins the window bounds and the
+    budget of the compact form instead of one absolute pixel count.
     """
 
     dialog.show()
     QtWidgets.QApplication.processEvents()
     hint = dialog.config_page.sizeHint()
-    assert hint.height() == 563
-    assert hint.height() <= 580
+    # 563px of content on the font this form was measured with; a wider
+    # font of another environment may ask for more, never for a page
+    # that dwarfs the window budget
+    assert 520 <= hint.height() <= 660
     assert dialog.minimumHeight() == MINIMUM_HEIGHT == 600
     assert dialog.minimumWidth() == MINIMUM_WIDTH == 1024
 

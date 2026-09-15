@@ -16,7 +16,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from .. import dataset
 from .. import records as records_module
 from ..app_config import (
-    RATIO_MODE as DEFAULT_AUGMENT_MODE,
+    RATIO_MODE,
     AugmentParams,
     ValidationConfig,
     ValidationConfigError,
@@ -166,14 +166,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
             self._on_dataset_changed
         )
         self.config_page.augment_check.toggled.connect(self._refresh_preview)
-        self.config_page.mode_combo.currentIndexChanged.connect(
-            self._refresh_preview
-        )
-        self.config_page.multiplier_spin.valueChanged.connect(
-            self._refresh_preview
-        )
         self.config_page.ratio_spin.valueChanged.connect(self._refresh_preview)
-        self.config_page.count_spin.valueChanged.connect(self._refresh_preview)
         self.config_page.judge_augmented_check.toggled.connect(
             self._refresh_preview
         )
@@ -609,7 +602,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
             try:
                 plan = plan_aug_counts(
                     sample_count,
-                    config.augment_mode or DEFAULT_AUGMENT_MODE,
+                    config.augment_mode or RATIO_MODE,
                     multiplier=config.multiplier,
                     ratio=config.ratio,
                     total=config.total_count,

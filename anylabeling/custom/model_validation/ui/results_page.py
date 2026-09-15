@@ -53,7 +53,10 @@ original an augmented record was made from: the parent picture, its own
 ground truth, its own predictions and its own judgement replace the
 augmented copy until the button is released. The preview is a display
 state of this page alone - it reads the records that are already in
-memory and never runs inference again.
+memory and never runs inference again, and it moves no control either:
+the one status line of the preview keeps its reserved row while it is
+empty, so the press, the two "no parent" hints and the release only ever
+change a text and never the geometry of the pictures below it.
 
 The page itself never edits a record: a correction is made in the main
 window of the tool, which owns the annotation editor, and the results
@@ -101,12 +104,13 @@ COLUMN_MARK = 0
 COLUMN_VERDICT = 1
 COLUMN_RELPATH = 2
 COLUMN_KIND = 3
+COLUMN_AUGMENT = 4
 
 # the mark column was called the export column before both kinds grew
 # their own checkbox: the alias keeps existing callers working.
 COLUMN_EXPORT = COLUMN_MARK
 
-HEADERS = ("标记", "状态", "relpath", "kind")
+HEADERS = ("标记", "状态", "relpath", "kind", "增强")
 
 MARK_TOOLTIP_ORIGINAL = (
     "删除标记：勾选 = 该原图（连同它的 json 与全部增强子代）从导出中排除；"
@@ -116,6 +120,28 @@ MARK_TOOLTIP_AUGMENTED = "选择标记：勾选 = 该增强图加入导出；默
 COLUMN_MARK_TOOLTIP = (
     "标记列即是导出列表：原图勾选 = 删除标记（移出导出），增强图勾选 = 选择标记"
     "（加入导出）。两者互相独立，取消勾选即恢复原状。"
+)
+
+# The augmentation a copy really got: the draw records the fields it
+# selected and the column names them, so the list says what each copy is
+# instead of only that it is one. The labels live here, next to the
+# column, and a field without a label is shown under its own name.
+AUGMENT_FIELD_LABELS = {
+    "contrast": "对比度",
+    "hsv_v": "亮度",
+    "degrees": "旋转",
+    "translate": "平移",
+    "scale": "缩放",
+    "flipud": "垂直翻转",
+    "fliplr": "水平翻转",
+}
+AUGMENT_ITEM_SEPARATOR = "+"
+# U+2014 em dash, the one mark of "nothing was drawn here".
+AUGMENT_SELECTION_NONE = "—"
+COLUMN_AUGMENT_TOOLTIP = (
+    "增强列：该副本本次实际抽中的增强项（候选顺序：对比度 / 亮度 / 旋转 / "
+    "平移 / 缩放 / 垂直翻转 / 水平翻转），以 + 连接；"
+    "原图与未记录抽签结果的副本显示 —。悬停可看副本序号、基种子与尝试号。"
 )
 
 # The list follows the file name of a record, so the two blocks the
@@ -197,6 +223,53 @@ PREVIEW_NOTE_SUFFIX = "松开右键恢复当前增强图"
 # is documented by the hint line under the list instead (see
 # SHORTCUT_HINT).
 PREVIEW_NOTE_NOT_JUDGED = "（原图未判定，框保持本色）"
+
+
+class PreviewNoteLabel(QtWidgets.QLabel):
+    """The one status line of the preview: one line tall, elided.
+
+    The row this label occupies is reserved while the line is empty, so
+    holding and releasing the right button changes a text and never the
+    geometry of the pictures below it. A long text is elided at paint
+    time instead of being wrapped: the full text stays in text() and in
+    toolTip(), the stored text is never rewritten by a paint, and the
+    width of the text takes no part in the minimum width of the page.
+    """
+
+    def __init__(self, parent: Optional[Any] = None) -> None:
+        super().__init__(parent)
+        self.setWordWrap(False)
+        # the row is as tall as one line of the font of this label, never
+        # a fixed number of pixels: a bigger system font moves it with it
+        self.setFixedHeight(self.fontMetrics().height())
+
+    def minimumSizeHint(self) -> QtCore.QSize:  # noqa: N802
+        """Return one line of room, whatever the text asks for."""
+
+        return QtCore.QSize(0, self.fontMetrics().height())
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802
+        """Paint the elided text without touching the stored text.
+
+        The base paint is deliberately not called: the stored text stays
+        the full one for text() and toolTip(), while the row shows what
+        fits. Rewriting text() here would raise a fresh update() and the
+        line would repaint itself forever.
+        """
+
+        painter = QtGui.QPainter(self)
+        painter.setFont(self.font())
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.drawText(
+            self.rect(),
+            int(self.alignment()),
+            self.fontMetrics().elidedText(
+                self.text(),
+                QtCore.Qt.TextElideMode.ElideRight,
+                self.width(),
+            ),
+        )
+        painter.end()
 
 
 def legend_html() -> str:
@@ -675,6 +748,73 @@ def parent_of(
     return lookup.get(parent_id)
 
 
+def augment_field_label(name: Any) -> str:
+    """Return the label of one augmentation field of the draw.
+
+    A field this page does not know - a name a later revision added - is
+    shown as it is, so the column never swallows what the run recorded.
+    """
+
+    text = str(name)
+    return AUGMENT_FIELD_LABELS.get(text, text)
+
+
+def augment_selection_text(record: ValidationRecord) -> str:
+    """Return the augmentation column text of one record.
+
+    Only an augmented copy carries a draw: an original and a copy whose
+    aug_detail holds no usable selection both answer the dash. The names
+    keep the order the draw recorded them in - the cell never sorts and
+    never deduplicates what the run really applied - and a name without a
+    label of its own is written as it came. Nothing here raises: a record
+    of an older shape answers the dash instead.
+    """
+
+    if str(getattr(record, "kind", "")) != records_module.KIND_AUGMENTED:
+        return AUGMENT_SELECTION_NONE
+    detail = getattr(record, "aug_detail", None)
+    if not isinstance(detail, dict):
+        return AUGMENT_SELECTION_NONE
+    selected = detail.get("selected")
+    if not isinstance(selected, (list, tuple)) or not selected:
+        return AUGMENT_SELECTION_NONE
+    return AUGMENT_ITEM_SEPARATOR.join(
+        augment_field_label(name) for name in selected
+    )
+
+
+def augment_detail_tooltip(record: ValidationRecord) -> str:
+    """Return the reproducible detail of one augmented copy.
+
+    The tooltip carries what it takes to replay the very copy: the fields
+    the draw selected, its copy index, the base seed, the try that really
+    produced it and the seed of that try. A part is written only when the
+    record really holds the number - an older record keeps the parts it
+    has instead of getting a made up one - and an original always answers
+    the empty string.
+    """
+
+    if str(getattr(record, "kind", "")) != records_module.KIND_AUGMENTED:
+        return ""
+    detail = getattr(record, "aug_detail", None)
+    if not isinstance(detail, dict):
+        return ""
+    parts = ["增强项：" + augment_selection_text(record)]
+    copy_index = detail.get("copy_index")
+    if isinstance(copy_index, int):
+        parts.append("副本 #{0}".format(copy_index))
+    seed = detail.get("seed")
+    if isinstance(seed, int):
+        parts.append("基种子 {0}".format(seed))
+    attempt = detail.get("attempt")
+    if isinstance(attempt, int):
+        parts.append("第 {0} 次尝试".format(attempt + 1))
+    attempt_seed = detail.get("attempt_seed")
+    if isinstance(attempt_seed, int):
+        parts.append("尝试种子 {0}".format(attempt_seed))
+    return "；".join(parts)
+
+
 class RecordItem(QtWidgets.QTreeWidgetItem):
     """One cell item of the read only record tree.
 
@@ -714,7 +854,7 @@ class RecordItem(QtWidgets.QTreeWidgetItem):
 
 
 class RecordTree(QtWidgets.QTreeWidget):
-    """Read only, one record per row, four columns.
+    """Read only, one record per row, five columns.
 
     The export list was a QTableWidget, whose cells are editable by
     default: a stray double click or F2 let the user retype a status or a
@@ -723,10 +863,10 @@ class RecordTree(QtWidgets.QTreeWidget):
     edit trigger refused, so a row can only be selected and the checkbox
     it carries can only be toggled.
 
-    The page reads a row as (mark, verdict, relpath, kind), the very
-    shape the table exposed: item(row, column) returns the cell text
-    item, cellWidget the checkbox of the mark column and rowCount the
-    amount of shown rows.
+    The page reads a row as (mark, verdict, relpath, kind, augment),
+    the very shape the table exposed: item(row, column) returns the cell
+    text item, cellWidget the checkbox of the mark column and rowCount
+    the amount of shown rows.
     """
 
     def __init__(
@@ -760,13 +900,19 @@ class RecordTree(QtWidgets.QTreeWidget):
         header.setSectionResizeMode(
             COLUMN_RELPATH, QtWidgets.QHeaderView.ResizeMode.Stretch
         )
-        for column in (COLUMN_MARK, COLUMN_VERDICT, COLUMN_KIND):
+        for column in (
+            COLUMN_MARK,
+            COLUMN_VERDICT,
+            COLUMN_KIND,
+            COLUMN_AUGMENT,
+        ):
             header.setSectionResizeMode(
                 column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
             )
         mark_header = self.headerItem()
         if mark_header is not None:
             mark_header.setToolTip(COLUMN_MARK, COLUMN_MARK_TOOLTIP)
+            mark_header.setToolTip(COLUMN_AUGMENT, COLUMN_AUGMENT_TOOLTIP)
 
     # ------------------------------------------------- table like accessors
     def rowCount(self) -> int:  # noqa: N802
@@ -835,7 +981,7 @@ class RecordTree(QtWidgets.QTreeWidget):
         return self.headerItem()
 
     def selectedIndexes(self) -> List[QtCore.QModelIndex]:  # noqa: N802
-        """Return the four cell indexes of every selected row."""
+        """Return one cell index per column of every selected row."""
 
         indexes: List[QtCore.QModelIndex] = []
         for item in self.selectedItems():
@@ -1044,11 +1190,10 @@ class ResultsPage(QtWidgets.QWidget):
         right_layout.addLayout(legend_row)
 
         # the one line the preview of a held right button writes its
-        # state into: hidden while the current record is the one on
-        # screen, so it never takes room from a plain look at a record
-        self.preview_note = QtWidgets.QLabel("")
-        self.preview_note.setWordWrap(True)
-        self.preview_note.setVisible(False)
+        # state into: the row stays while the text is empty, so a press
+        # and a release change a word and never the room the pictures
+        # below get (see PreviewNoteLabel)
+        self.preview_note = PreviewNoteLabel()
         right_layout.addWidget(self.preview_note)
 
         canvases = QtWidgets.QHBoxLayout()
@@ -1415,7 +1560,7 @@ class ResultsPage(QtWidgets.QWidget):
         """Fill one row for a record, in place.
 
         The row is read only: the checkbox of the mark column is a widget
-        of its own and the three text cells are plain cells of the tree,
+        of its own and the four text cells are plain cells of the tree,
         none of them can be edited in place. The method is shared by the
         full rebuild of refresh() and by the point update of
         refresh_rows(), which is why it writes every attribute it owns: a
@@ -1434,8 +1579,18 @@ class ResultsPage(QtWidgets.QWidget):
         if parent_deleted:
             relpath_text += self.tr("（父图已删除，导出排除）")
 
-        texts = (verdict_text, relpath_text, record.kind)
-        columns = (COLUMN_VERDICT, COLUMN_RELPATH, COLUMN_KIND)
+        texts = (
+            verdict_text,
+            relpath_text,
+            record.kind,
+            augment_selection_text(record),
+        )
+        columns = (
+            COLUMN_VERDICT,
+            COLUMN_RELPATH,
+            COLUMN_KIND,
+            COLUMN_AUGMENT,
+        )
         for column, text in zip(columns, texts):
             item = self.table.item(row, column)
             if item is None:
@@ -1447,6 +1602,8 @@ class ResultsPage(QtWidgets.QWidget):
                     QtCore.Qt.ItemDataRole.UserRole,
                     record.record_id,
                 )
+            if column == COLUMN_AUGMENT:
+                item.setToolTip(COLUMN_AUGMENT, augment_detail_tooltip(record))
             # the flags of a row are read only, so the strike out of a
             # deleted original and the grey of an orphaned copy are
             # painted instead of being typed over; the empty brush gives
@@ -1726,7 +1883,7 @@ class ResultsPage(QtWidgets.QWidget):
         self._preview_active = True
         self._set_preview_note(self.preview_note_text(parent))
         self._apply_canvas_titles(True)
-        self._refresh_canvases()
+        self._refresh_canvases_keeping_view()
         return True
 
     def end_parent_preview(self) -> bool:
@@ -1741,7 +1898,7 @@ class ResultsPage(QtWidgets.QWidget):
         self._drop_preview()
         self._set_preview_note("")
         if active:
-            self._refresh_canvases()
+            self._refresh_canvases_keeping_view()
         return active
 
     def _drop_preview(self) -> None:
@@ -1767,15 +1924,23 @@ class ResultsPage(QtWidgets.QWidget):
     def _set_note(self, text: str) -> None:
         """Write the one status line of the right hand side.
 
-        The line carries the state of the preview; an empty text hides
-        it, which is what a page without a held button shows.
+        The line carries the state of the preview and its row is always
+        reserved: only the text changes here, so an empty line - what a
+        page without a held button shows - keeps the exact geometry of a
+        full one. The whole text is kept in the tooltip of a line that
+        may well be elided.
         """
 
-        self.preview_note.setText(str(text))
-        self.preview_note.setVisible(bool(text))
+        value = str(text)
+        self.preview_note.setText(value)
+        self.preview_note.setToolTip(value)
 
     def _set_preview_note(self, text: str) -> None:
-        """Write the one status line of the preview (empty hides it)."""
+        """Write the one status line of the preview.
+
+        The empty text is the idle line and keeps the reserved row (see
+        _set_note).
+        """
 
         self._set_note(text)
 
@@ -1919,6 +2084,28 @@ class ResultsPage(QtWidgets.QWidget):
         # canvas is the reference of a freshly loaded record.
         self._mirror_view(self.gt_canvas, self.pred_canvas)
 
+    def _refresh_canvases_keeping_view(self) -> None:
+        """Repaint both canvases without moving the view they show.
+
+        The preview swaps the picture under the two canvases while the
+        zoom and the pan of the user stay: both states are read before
+        the refresh fits the fresh pictures and written back right after,
+        silently - the write back never raises view_changed, which would
+        mirror a half restored state onto the other canvas. A view the
+        user moved by hand stays hand made, so it is never refitted by
+        the resize the restored row can trigger.
+        """
+
+        canvases = (self.gt_canvas, self.pred_canvas)
+        saved = [
+            (canvas.view_state(), canvas.user_adjusted())
+            for canvas in canvases
+        ]
+        self._refresh_canvases()
+        for canvas, (state, adjusted) in zip(canvases, saved):
+            canvas.apply_view_state(*state)
+            canvas.set_user_adjusted(adjusted)
+
     def _pixmap_for(self, record: ValidationRecord) -> Optional[QtGui.QPixmap]:
         """Return the decoded picture of a record, decoded only once."""
 
@@ -1963,6 +2150,11 @@ class ResultsPage(QtWidgets.QWidget):
 
 
 __all__ = [
+    "AUGMENT_FIELD_LABELS",
+    "AUGMENT_ITEM_SEPARATOR",
+    "AUGMENT_SELECTION_NONE",
+    "COLUMN_AUGMENT",
+    "COLUMN_AUGMENT_TOOLTIP",
     "COLUMN_EXPORT",
     "LEGEND_HTML",
     "LEGEND_TOOLTIP",
@@ -1988,11 +2180,15 @@ __all__ = [
     "PREVIEW_NOTE_SUFFIX",
     "PREVIEW_TITLE_PREFIX",
     "PREVIEW_TOOLTIP",
+    "PreviewNoteLabel",
     "RecordItem",
     "RecordTree",
     "ResultsPage",
     "SHORTCUT_HINT",
     "SHORTCUT_TOOLTIP",
+    "augment_detail_tooltip",
+    "augment_field_label",
+    "augment_selection_text",
     "edited_records",
     "gt_statuses",
     "legend_html",

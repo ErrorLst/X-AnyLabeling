@@ -27,6 +27,7 @@ from PyQt6 import QtCore, QtTest, QtWidgets
 from anylabeling.custom.model_validation import dataset
 from anylabeling.custom.model_validation import records as records_module
 from anylabeling.custom.model_validation.ui.results_page import (
+    COLUMN_AUGMENT,
     COLUMN_KIND,
     COLUMN_RELPATH,
     COLUMN_VERDICT,
@@ -303,7 +304,12 @@ def test_the_rows_still_carry_no_edit_flag(page):
 
     tree = page.table
     for row in range(tree.rowCount()):
-        for column in (COLUMN_VERDICT, COLUMN_RELPATH, COLUMN_KIND):
+        for column in (
+            COLUMN_VERDICT,
+            COLUMN_RELPATH,
+            COLUMN_KIND,
+            COLUMN_AUGMENT,
+        ):
             item = tree.item(row, column)
             assert item is not None
             flags = item.flags()

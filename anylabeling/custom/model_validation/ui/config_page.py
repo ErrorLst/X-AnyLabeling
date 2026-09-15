@@ -9,9 +9,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..app_config import (
     AUGMENT_WORKERS_LIMIT,
-    COUNT_MODE,
     INFERENCE_CONF_THRESHOLD,
-    MULTIPLIER_MODE,
     RATIO_MODE,
     AugmentParams,
     ValidationConfig,
@@ -19,10 +17,6 @@ from ..app_config import (
     default_workers,
     load_classes_file,
 )
-
-# The amount of every augmentation run is derived with the mode the
-# configuration dataclass ships unless the user picks another one.
-DEFAULT_AUGMENT_MODE = ValidationConfig().augment_mode
 
 
 def default_text(value: Any) -> str:
@@ -49,19 +43,8 @@ def config_defaults() -> ValidationConfig:
     return ValidationConfig()
 
 
-def default_marker(mode: str) -> str:
-    """Return the "default" marker of one choice, empty for the others."""
-
-    return "（默认）" if mode == DEFAULT_AUGMENT_MODE else ""
-
-
-SINGLE_IMAGE_ONLY_HINT = (
-    "仅分类任务有效；本工具 classify 已阻断，恒不生效（控件置灰保留仅为对齐"
-    "官方参数表）"
-)
-
 # The controls of the augmentation grid share one compact width so that
-# the twelve single image parameters fit into three columns.
+# the nine single image parameters of the grid fit into three columns.
 SPIN_WIDTH = 96
 
 # What the window accepts when the user drags files onto it: a folder is
@@ -120,31 +103,20 @@ TOOLTIP_JUDGE_AUGMENTED = (
     "增强图供导出，不做判定（状态记为 NOT_JUDGED）。"
 )
 TOOLTIP_AUGMENT_ENABLED = (
-    "默认开启：按下面的数量模式生成增强样本（只写入系统临时目录）；关闭后只"
-    "验证原始数据。"
+    "增强默认关闭：勾选后才会按下面的固定比例生成增强样本（只写入系统临时"
+    "目录）；不勾选则只验证原始数据。"
 )
-TOOLTIP_MODE = (
-    "三种模式只影响『增强数量』的推导方式，增强参数、判定与导出完全一致："
-    f"① 倍数 k{default_marker(MULTIPLIER_MODE)}：每张有效原图各生成 k 份；"
-    f"② 比例 r{default_marker(RATIO_MODE)}：只控制总量 "
-    "round(有效原图数 × r)，来源从有效原图中随机抽取；"
-    f"③ 总数 N{default_marker(COUNT_MODE)}：总量语义，"
-    "按 natsort 顺序确定分配。"
-)
-TOOLTIP_MULTIPLIER = (
-    "每张有效原图各生成 k 份，增强图与原图一一对应（100 张原图、k=2 → 共 "
-    "200 张，每张原图都有 2 个增强版）。默认 "
-    f"{default_text(config_defaults().multiplier)}，整数。"
+TOOLTIP_MODE_FIXED = (
+    "数量模式固定为比例 r：先按比例从有效原图中随机挑选 "
+    "round(有效原图数 x r) 张（无放回、每张最多 1 份），再逐张生成 1 个增强"
+    "副本。倍数 k 与总数 N 两种模式已取消（历史报告里可能仍记录它们）。"
 )
 TOOLTIP_RATIO = (
-    "只控制总量 = round(有效原图数 × r)，来源从有效原图中随机抽取（可重复），"
-    "因此有的原图可能被抽 0 次、有的被抽多次；r=1 与 k=1 总量相同但来源分布"
-    "不同。默认模式，范围 0-10，默认 "
-    f"{default_text(config_defaults().ratio)}。"
-)
-TOOLTIP_COUNT = (
-    "总量语义但分配确定：按 natsort 顺序每张分 N // 原图数 份，余数分给前 "
-    "N % 原图数 张。整数。"
+    "只控制总量：按比例从有效原图随机挑选 round(有效原图数 x r) 张（无放回、"
+    "每张最多 1 份），被选中的原图各生成 1 张增强副本，未被选中的不生成。"
+    "范围 0-1，默认 "
+    f"{default_text(config_defaults().ratio)}；r=1 表示全部原图各 1 份，"
+    "r=0 表示不生成任何副本。"
 )
 TOOLTIP_SEED = (
     "随机种子。相同种子 + 相同参数可完全复现同一批增强图；report 中会记录实际"
@@ -176,14 +148,12 @@ TOOLTIP_INFER_WORKERS = (
     "导出模型 batch 固定为 1，只能靠多会话并行提速；会话数只影响耗时，判定结论"
     "（OK/NG 与原因）不变。"
 )
-TOOLTIP_HSV_H = (
-    "色调抖动幅度，映射为 ±(hsv_h × 180)°（hue_shift_limit = hsv_h × 180）；"
-    f"默认 {default_text(augment_defaults().hsv_h)} 约 ±"
-    f"{augment_defaults().hsv_h * 180:.1f}°。取值 0-1。"
-)
-TOOLTIP_HSV_S = (
-    "饱和度抖动幅度，占 100% 的比例。默认 "
-    f"{default_text(augment_defaults().hsv_s)}。取值 0-1。"
+TOOLTIP_CONTRAST = (
+    "对比度抖动幅度：每个副本在 [1-c, 1+c] 内随机取一个乘性增益作用于整幅像素"
+    "（对应 albumentations RandomBrightnessContrast 的 contrast_limit，以黑为轴："
+    "增益<1 会整体压暗）。默认 "
+    f"{default_text(augment_defaults().contrast)}，范围 0-1，0 = 不改变对比度；"
+    "灰度图同样生效。"
 )
 TOOLTIP_HSV_V = (
     "亮度（明度）抖动幅度，占 100% 的比例。默认 "
@@ -206,50 +176,38 @@ TOOLTIP_SCALE = (
     f"{default_text(augment_defaults().scale_max)}]。『scale min』为最小增益、"
     "『scale max』为最大增益，两者范围均为 0-10。"
 )
-TOOLTIP_SHEAR = (
-    "随机剪切角度上限，单位：度（x/y 方向各自采样 ±该值）。范围 0-180，默认 "
-    f"{default_text(augment_defaults().shear)}。"
-)
-TOOLTIP_PERSPECTIVE = (
-    "透视扰动强度，四角随机位移幅度（相对短边比例）。默认 0.0（关闭）。典型"
-    "范围 0-0.001。"
-)
 TOOLTIP_FLIPUD = (
-    "垂直翻转概率。默认 "
-    f"{default_text(augment_defaults().flipud)}"
-    "（每张图按该概率独立决定）。取值 0-1。"
+    "勾选后本项进入抽签：每次尝试按统一概率 p 决定是否整体上下翻转——抽中即 "
+    "100% 翻转，没有幅度概念；不勾选则本项完全不参与。默认勾选。对应官方参数 "
+    "flipud（Ultralytics 里是概率，本工具是启用位，生效概率见报告 "
+    "official_names.flipud）。"
 )
 TOOLTIP_FLIPLR = (
-    "水平翻转概率。默认 "
-    f"{default_text(augment_defaults().fliplr)}。取值 0-1。"
+    "勾选后本项进入抽签：每次尝试按统一概率 p 决定是否整体左右翻转——抽中即 "
+    "100% 翻转，没有幅度概念；不勾选则本项完全不参与。默认勾选。对应官方参数 "
+    "fliplr（Ultralytics 里是概率，本工具是启用位，生效概率见报告 "
+    "official_names.fliplr）。"
 )
-TOOLTIP_BGR = (
-    "RGB↔BGR 通道互换概率。默认 "
-    f"{default_text(augment_defaults().bgr)}。用于模拟通道顺序错配的异常输入。"
-)
-TOOLTIP_ERASING = (
-    "随机擦除概率。官方仅对分类任务生效；本工具 classify 已被阻断，因此恒不"
-    "生效（控件置灰保留仅为对齐官方参数表）。默认 "
-    f"{default_text(augment_defaults().erasing)}。"
-)
-TOOLTIP_CROP_FRACTION = (
-    "分类数据集的中心裁剪比例。官方仅分类任务生效，本工具恒不生效（控件置灰"
-    "保留）。默认 "
-    f"{default_text(augment_defaults().crop_fraction)}。"
+TOOLTIP_SELECT_PROB = (
+    "每个增强项的选中概率 p：每次尝试各自独立抽签，未选中的项按恒等处理"
+    "（旋转 0 度、平移 0、缩放 1、亮度 0、对比度 0、不翻转）。只有被勾选的翻转"
+    "进入抽签；勾选即表示这一项参与抽签，抽中即整体翻转（无幅度概念）。默认 "
+    f"{default_text(augment_defaults().select_prob)}：每次尝试平均抽中约 0.7 项、"
+    "约 85% 的尝试抽中 0 或 1 项；落到实际产出的副本上（必有 ≥1 项）平均约 1.3 项、"
+    "约 71.3% 只带 1 项。若某次抽签一项都没抽中，该次不产生副本并自动"
+    "进入下一次尝试；尝试用尽仍无副本的样本会被丢弃，报告里计入 "
+    "discarded_empty_selection。范围 0.05-1（p=1 = 全部项都生效，仅作对照）。"
 )
 # Gray sources are augmented in RGB and collapsed back to one channel
 # before they are encoded: the note says so without promising anything
 # about a parameter the stack still applies.
-GRAYSCALE_HINT = (
-    "灰度图会先转 RGB 增强再转回灰度；色彩类参数对灰度数据的影响会部分体现在"
-    "明暗上"
-)
+GRAYSCALE_HINT = "灰度图会先转 RGB 增强再转回灰度；亮度与对比度都会改变灰度像素"
 TOOLTIP_GRAYSCALE_HINT = (
     "灰度内容（单通道，或三通道但 R=G=B 逐像素相等）经 灰度→RGB→增强→灰度 处理："
     "增强流水线与参数和彩色图完全相同，几何类参数与标签坐标完全不变，产物仍是"
-    "单通道灰度图。实测中只有亮度类参数（hsv_v）会改变灰度像素；hue / saturation "
-    "对饱和度恒为 0 的灰度图不产生可见变化（albumentations 会把 S=0 的像素保持为"
-    "灰色），bgr 通道互换在灰度内容上也是恒等。"
+    "单通道灰度图。实测中亮度（hsv_v）与对比度（contrast）都会改变灰度像素："
+    "亮度沿灰色轴移动明暗，对比度以黑为轴缩放全部像素；两者对灰度内容都真实"
+    "生效，产物保持单通道。"
 )
 TOOLTIP_MULTI_IMAGE_HINT = (
     "mosaic / mixup / cutmix / copy_paste / copy_paste_mode / auto_augment "
@@ -358,7 +316,7 @@ class ConfigPage(QtWidgets.QWidget):
         self.preview_label.setWordWrap(False)
         self.preview_label.setToolTip(
             self.tr(
-                "实时统计：有效原图（有同名 .json 且含标注的图片）、按当前数量模式"
+                "实时统计：有效原图（有同名 .json 且含标注的图片）、按当前固定比例"
                 "将要生成的增强数、参与判定的总数、以及按当前勾选预计导出的数量。"
             )
         )
@@ -387,8 +345,8 @@ class ConfigPage(QtWidgets.QWidget):
         outer.addLayout(buttons)
 
         # the page owns the drag and drop of the window; the read only
-        # line edits and the combo box would otherwise swallow the drag
-        # once the cursor is over them.
+        # line edits would otherwise swallow the drag once the cursor is
+        # over them.
         self.setAcceptDrops(True)
         self._release_child_drops()
 
@@ -549,16 +507,22 @@ class ConfigPage(QtWidgets.QWidget):
     ) -> Sequence[Tuple[str, str, QtWidgets.QWidget, str]]:
         """Return the (label, suffix, control, tooltip) rows of the grid.
 
-        Every label names the parameter in Chinese first and keeps the
-        official Ultralytics argument name behind it, so the page stays
-        comparable 1:1 with the documentation of the augmentation
-        arguments. The suffix carries what a name cannot spell (the unit
-        of the two angle parameters, the min / max half of the scale).
+        The order is the field order of AugmentParams, so the grid reads
+        top to bottom, left to right exactly like the parameter
+        dataclass, the configuration snapshot and the report. The two
+        flips are check boxes here: they are enable bits, not
+        probabilities, and the tooltip of each one spells out the
+        effective chance the report writes down.
+
+        The select probability is the one augment parameter that is not
+        a cell of the grid: it shares the amount row with the ratio,
+        because it is the chance of the very same draw that picks the
+        amount. It still follows the augment checkbox through
+        _augment_param_widgets, which adds it back explicitly.
         """
 
         return (
-            ("色调 hsv_h", "", self.hsv_h_spin, TOOLTIP_HSV_H),
-            ("饱和度 hsv_s", "", self.hsv_s_spin, TOOLTIP_HSV_S),
+            ("对比度 contrast", "", self.contrast_spin, TOOLTIP_CONTRAST),
             ("亮度 hsv_v", "", self.hsv_v_spin, TOOLTIP_HSV_V),
             (
                 "旋转角度 degrees",
@@ -569,23 +533,8 @@ class ConfigPage(QtWidgets.QWidget):
             ("平移 translate", "", self.translate_spin, TOOLTIP_TRANSLATE),
             ("缩放下限 scale", " min", self.scale_min_spin, TOOLTIP_SCALE),
             ("缩放上限 scale", " max", self.scale_max_spin, TOOLTIP_SCALE),
-            ("剪切 shear", "（°）", self.shear_spin, TOOLTIP_SHEAR),
-            (
-                "透视 perspective",
-                "",
-                self.perspective_spin,
-                TOOLTIP_PERSPECTIVE,
-            ),
-            ("垂直翻转 flipud", "", self.flipud_spin, TOOLTIP_FLIPUD),
-            ("水平翻转 fliplr", "", self.fliplr_spin, TOOLTIP_FLIPLR),
-            ("通道互换 bgr", "", self.bgr_spin, TOOLTIP_BGR),
-            ("随机擦除 erasing", "", self.erasing_spin, TOOLTIP_ERASING),
-            (
-                "裁剪 crop_fraction",
-                "",
-                self.crop_fraction_spin,
-                TOOLTIP_CROP_FRACTION,
-            ),
+            ("垂直翻转", "", self.flipud_check, TOOLTIP_FLIPUD),
+            ("水平翻转", "", self.fliplr_check, TOOLTIP_FLIPLR),
             ("随机种子 seed", "", self.seed_spin, TOOLTIP_SEED),
         )
 
@@ -649,72 +598,48 @@ class ConfigPage(QtWidgets.QWidget):
         augment_row.addStretch(1)
         form.addRow(augment_row)
 
-        self.hsv_h_spin = _double_spin(0.0, 1.0, params.hsv_h, 0.001)
-        self.hsv_s_spin = _double_spin(0.0, 1.0, params.hsv_s, 0.05)
+        self.contrast_spin = _double_spin(0.0, 1.0, params.contrast, 0.05)
         self.hsv_v_spin = _double_spin(0.0, 1.0, params.hsv_v, 0.05)
         self.degrees_spin = _double_spin(0.0, 180.0, params.degrees, 1.0)
         self.translate_spin = _double_spin(0.0, 1.0, params.translate, 0.05)
         self.scale_min_spin = _double_spin(0.0, 10.0, params.scale_min, 0.05)
         self.scale_max_spin = _double_spin(0.0, 10.0, params.scale_max, 0.05)
-        self.shear_spin = _double_spin(0.0, 180.0, params.shear, 1.0)
-        self.perspective_spin = _double_spin(
-            0.0, 0.001, params.perspective, 0.0001
-        )
-        self.flipud_spin = _double_spin(0.0, 1.0, params.flipud, 0.05)
-        self.fliplr_spin = _double_spin(0.0, 1.0, params.fliplr, 0.05)
-        self.bgr_spin = _double_spin(0.0, 1.0, params.bgr, 0.05)
-        self.erasing_spin = _double_spin(0.0, 1.0, params.erasing, 0.05)
-        self.crop_fraction_spin = _double_spin(
-            0.0, 1.0, params.crop_fraction, 0.05
+        # the two flips are enable bits: a check box answers whether the
+        # flip takes part in the draw at all, the chance it really fires
+        # is select_prob like for every other selected field
+        self.flipud_check = QtWidgets.QCheckBox()
+        self.flipud_check.setChecked(params.flipud)
+        self.flipud_check.setToolTip(self.tr(TOOLTIP_FLIPUD))
+        self.fliplr_check = QtWidgets.QCheckBox()
+        self.fliplr_check.setChecked(params.fliplr)
+        self.fliplr_check.setToolTip(self.tr(TOOLTIP_FLIPLR))
+        self.select_prob_spin = _double_spin(
+            0.05, 1.0, params.select_prob, 0.05
         )
         self.seed_spin = _int_spin(0, 2147483647, params.seed)
-        # the parameters the tool never applies are identified by name: the
-        # same C++ widget can be wrapped in more than one python object, so
-        # identity comparisons over these controls are not reliable.
-        self.erasing_spin.setObjectName("erasing")
-        self.crop_fraction_spin.setObjectName("crop_fraction")
 
-        self.mode_combo = QtWidgets.QComboBox()
-        for mode, label in (
-            (MULTIPLIER_MODE, "倍数 multiplier"),
-            (RATIO_MODE, "比例 ratio"),
-            (COUNT_MODE, "总数 count"),
-        ):
-            self.mode_combo.addItem(
-                self.tr(label + default_marker(mode)), mode
-            )
-        self.mode_combo.setCurrentIndex(
-            self.mode_combo.findData(DEFAULT_AUGMENT_MODE)
-        )
-        self.mode_combo.setToolTip(self.tr(TOOLTIP_MODE))
-        self.multiplier_spin = _int_spin(0, 1000, defaults.multiplier)
-        self.ratio_spin = _double_spin(0.0, 10.0, defaults.ratio, 0.1)
-        self.count_spin = _int_spin(0, 100000, defaults.total_count)
+        # the amount mode is not a choice any more: the page states the
+        # one mode every run uses and keeps the ratio editable, so the
+        # collected configuration always carries RATIO_MODE
+        self.ratio_spin = _double_spin(0.0, 1.0, defaults.ratio, 0.1)
 
         amount = QtWidgets.QHBoxLayout()
         amount.setContentsMargins(0, 0, 0, 0)
         amount.setSpacing(6)
-        amount_label = self._titled("数量模式", TOOLTIP_MODE)
-        amount.addWidget(amount_label)
-        amount.addWidget(self.mode_combo)
-        for label, text, spin in (
-            ("倍数 k", TOOLTIP_MULTIPLIER, self.multiplier_spin),
-            ("比例 r", TOOLTIP_RATIO, self.ratio_spin),
-            ("总数 N", TOOLTIP_COUNT, self.count_spin),
-        ):
-            spin.setToolTip(self.tr(text))
-            name = QtWidgets.QLabel(self.tr(label))
-            name.setToolTip(self.tr(text))
-            amount.addWidget(name)
-            amount.addWidget(spin)
+        self.mode_note = QtWidgets.QLabel(self.tr("数量模式：比例 r（固定）"))
+        self.mode_note.setToolTip(self.tr(TOOLTIP_MODE_FIXED))
+        amount.addWidget(self.mode_note)
+        amount.addWidget(self._titled("比例 r", TOOLTIP_RATIO))
+        self.ratio_spin.setToolTip(self.tr(TOOLTIP_RATIO))
+        amount.addWidget(self.ratio_spin)
+        # the select probability is the chance of the very draw that
+        # turns the ratio into a copy count, so it sits next to it on
+        # the amount row instead of inside the parameter grid
+        amount.addWidget(self._titled("选中概率 p", TOOLTIP_SELECT_PROB))
+        self.select_prob_spin.setToolTip(self.tr(TOOLTIP_SELECT_PROB))
+        amount.addWidget(self.select_prob_spin)
         amount.addStretch(1)
         form.addRow(amount)
-
-        self.mode_specs: Sequence[Tuple[str, QtWidgets.QWidget]] = (
-            (MULTIPLIER_MODE, self.multiplier_spin),
-            (RATIO_MODE, self.ratio_spin),
-            (COUNT_MODE, self.count_spin),
-        )
 
         form.addRow(self._build_grid())
 
@@ -727,15 +652,6 @@ class ConfigPage(QtWidgets.QWidget):
         self.grayscale_hint.setFont(hint_font)
         self.grayscale_hint.setToolTip(self.tr(TOOLTIP_GRAYSCALE_HINT))
         form.addRow(self.grayscale_hint)
-
-        # the two parameters the tool never applies keep their grey state
-        # no matter what the augment checkbox says
-        self.always_disabled_names: Sequence[str] = (
-            self.erasing_spin.objectName(),
-            self.crop_fraction_spin.objectName(),
-        )
-        self.erasing_spin.setEnabled(False)
-        self.crop_fraction_spin.setEnabled(False)
 
         self.multi_image_hint = QtWidgets.QLabel(
             self.tr(
@@ -752,8 +668,6 @@ class ConfigPage(QtWidgets.QWidget):
         form.addRow(self.multi_image_hint)
 
         self.augment_check.toggled.connect(self._sync_augment_enabled)
-        self.mode_combo.currentIndexChanged.connect(self._sync_mode)
-        self._sync_mode()
         default_augment = self.augment_check.isChecked()
         self._sync_augment_enabled(default_augment)
         return box
@@ -762,10 +676,10 @@ class ConfigPage(QtWidgets.QWidget):
     def _release_child_drops(self) -> None:
         """Let the page handle every drag that lands on one of its children.
 
-        The read only line edits and the combo box accept drops on their
-        own and would swallow the drag as soon as the cursor hovers over
-        them. Turning the flag off for every descendant hands the event
-        back to the page, which is the widget owning the drop targets.
+        The read only line edits accept drops on their own and would
+        swallow the drag as soon as the cursor hovers over them. Turning
+        the flag off for every descendant hands the event back to the
+        page, which is the widget owning the drop targets.
         """
 
         for child in self.findChildren(QtWidgets.QWidget):
@@ -911,31 +825,31 @@ class ConfigPage(QtWidgets.QWidget):
         else:
             event.ignore()
 
+    def _augment_param_widgets(self) -> Sequence[QtWidgets.QWidget]:
+        """Return every augment parameter control the checkbox gates.
+
+        The grid mixes spin boxes and the two flip check boxes: those
+        controls are read from the very specs the grid was built from,
+        so a cell can never be missing here. The select probability is
+        the one parameter whose control lives on the amount row instead
+        of a grid cell, therefore it is added explicitly: it belongs to
+        this group all the same, because the augment checkbox gates the
+        whole parameter face of the page.
+        """
+
+        widgets = [widget for _l, _s, widget, _t in self._augment_specs()]
+        widgets.append(self.select_prob_spin)
+        return widgets
+
     def _sync_augment_enabled(self, enabled: bool) -> None:
         """Enable or grey the augmentation amount and parameter controls."""
 
-        self.mode_combo.setEnabled(bool(enabled))
-        self._sync_mode()
-        grey = self.always_disabled_names
-        for spin in self._augment_param_spins():
-            if spin.objectName() in grey:
-                continue
-            spin.setEnabled(bool(enabled))
-
-    def _augment_param_spins(self) -> Sequence[QtWidgets.QAbstractSpinBox]:
-        """Return the single image parameter controls of the grid."""
-
-        return [widget for _l, _s, widget, _t in self._augment_specs()]
-
-    def _sync_mode(self) -> None:
-        """Show only the input of the selected amount mode."""
-
-        enabled = self.augment_check.isChecked()
-        mode = self.mode_combo.currentData()
-        for name, widget in self.mode_specs:
-            visible = name == mode
-            widget.setEnabled(enabled and visible)
-            widget.setVisible(visible)
+        on = bool(enabled)
+        # the amount mode is fixed: only the ratio stays editable, and it
+        # follows the augment checkbox like the parameter grid does
+        self.ratio_spin.setEnabled(on)
+        for widget in self._augment_param_widgets():
+            widget.setEnabled(on)
 
     def load_classes(self, path: str) -> Optional[list]:
         """Load a classes file into the page and return the parsed names.
@@ -986,29 +900,27 @@ class ConfigPage(QtWidgets.QWidget):
         """Read the augmentation parameters from the form."""
 
         return AugmentParams(
-            hsv_h=self.hsv_h_spin.value(),
-            hsv_s=self.hsv_s_spin.value(),
+            contrast=self.contrast_spin.value(),
             hsv_v=self.hsv_v_spin.value(),
             degrees=self.degrees_spin.value(),
             translate=self.translate_spin.value(),
             scale_min=self.scale_min_spin.value(),
             scale_max=self.scale_max_spin.value(),
-            shear=self.shear_spin.value(),
-            perspective=self.perspective_spin.value(),
-            flipud=self.flipud_spin.value(),
-            fliplr=self.fliplr_spin.value(),
-            bgr=self.bgr_spin.value(),
-            erasing=self.erasing_spin.value(),
-            crop_fraction=self.crop_fraction_spin.value(),
+            flipud=self.flipud_check.isChecked(),
+            fliplr=self.fliplr_check.isChecked(),
+            select_prob=self.select_prob_spin.value(),
             seed=self.seed_spin.value(),
         )
 
     def collect_config(self) -> ValidationConfig:
         """Build the validation configuration from the current form state.
 
-        The concurrency of the two CPU bound stages is not collected:
-        the page owns no control for it any more, so both fields keep
-        the fixed value every run derives from this machine.
+        Neither the amount mode nor the concurrency of the two CPU bound
+        stages is collected: the mode is fixed to RATIO_MODE and the page
+        owns no control for the workers any more, so both amount fields
+        the ratio mode does not use (multiplier, total_count) keep the
+        default of the dataclass and every worker field keeps the fixed
+        value a run derives from this machine.
         """
 
         return ValidationConfig(
@@ -1020,10 +932,8 @@ class ConfigPage(QtWidgets.QWidget):
             ng_iou_threshold=self.ng_iou_spin.value(),
             judge_augmented=self.judge_augmented_check.isChecked(),
             augment_enabled=self.augment_check.isChecked(),
-            augment_mode=self.mode_combo.currentData() or DEFAULT_AUGMENT_MODE,
-            multiplier=self.multiplier_spin.value(),
+            augment_mode=RATIO_MODE,
             ratio=self.ratio_spin.value(),
-            total_count=self.count_spin.value(),
             augment_params=self.augment_params(),
         )
 
@@ -1063,7 +973,6 @@ class ConfigPage(QtWidgets.QWidget):
 
 __all__ = [
     "GRAYSCALE_HINT",
-    "SINGLE_IMAGE_ONLY_HINT",
     "TOOLTIP_GRAYSCALE_HINT",
     "ConfigPage",
 ]

@@ -142,18 +142,15 @@ def strong_params(seed: int = CORNER_SEED, **overrides) -> AugmentParams:
     "Return the strong geometry of the report, colour untouched."
 
     values = {
-        "hsv_h": 0.0,
-        "hsv_s": 0.0,
+        "contrast": 0.0,
         "hsv_v": 0.0,
         "degrees": STRONG_DEGREES,
         "translate": STRONG_TRANSLATE,
         "scale_min": STRONG_SCALE_MIN,
         "scale_max": STRONG_SCALE_MAX,
-        "shear": 0.0,
-        "perspective": 0.0,
-        "flipud": 0.0,
-        "fliplr": 0.0,
-        "bgr": 0.0,
+        "flipud": False,
+        "fliplr": False,
+        "select_prob": 1.0,
         "seed": seed,
     }
     values.update(overrides)
@@ -204,18 +201,15 @@ def shifted(seed: int = 7) -> np.ndarray:
         gradient_image(),
         {"shapes": []},
         AugmentParams(
-            hsv_h=0.0,
-            hsv_s=0.0,
+            contrast=0.0,
             hsv_v=0.0,
             degrees=0.0,
             translate=TRANSLATE,
             scale_min=1.0,
             scale_max=1.0,
-            shear=0.0,
-            perspective=0.0,
-            flipud=0.0,
-            fliplr=0.0,
-            bgr=0.0,
+            flipud=False,
+            fliplr=False,
+            select_prob=1.0,
             seed=seed,
         ),
         0,
@@ -290,8 +284,21 @@ def test_the_channel_count_follows_the_picture():
     assert image_channels(np.zeros((4, 4, 4), dtype=np.uint8)) == 4
 
 
-def test_both_geometric_transforms_are_pinned_to_black():
-    "Affine and Perspective share the constant mode and the black fill."
+def affine_of(transforms):
+    "Return the single affine transform of the stack."
+
+    import albumentations as albu
+
+    found = [item for item in transforms if isinstance(item, albu.Affine)]
+    assert len(found) == 1
+    return found[0]
+
+
+@requires_albumentations
+def test_the_geometric_transform_is_pinned_to_black():
+    "The affine transform carries the constant mode and the black fill."
+
+    import albumentations as albu
 
     image = bright_image()
     assert black_fill_for(image) == (0.0, 0.0, 0.0)
@@ -299,18 +306,20 @@ def test_both_geometric_transforms_are_pinned_to_black():
     assert black_fill_for(gradient_image()[:, :, 0]) == (0.0,)
     assert black_fill_for(bright_image()) != border_fill_value(bright_image())
     transforms = build_transforms(AugmentParams(), black_fill_for(image))
-    affine = transforms[1]
-    perspective = transforms[2]
+    affine = affine_of(transforms)
     assert affine.border_mode == cv2.BORDER_CONSTANT
-    assert perspective.border_mode == cv2.BORDER_CONSTANT
     assert tuple(affine.fill) == (0.0, 0.0, 0.0)
-    assert tuple(perspective.fill) == (0.0, 0.0, 0.0)
+    # the perspective transform was removed together with its parameter:
+    # the affine one is the only transform that can uncover canvas now
+    perspective = [
+        item for item in transforms if isinstance(item, albu.Perspective)
+    ]
+    assert perspective == []
     # a caller that hands no fill over still gets the black one: the
     # constant border mode never falls back to the library default
     default = build_transforms(AugmentParams())
-    assert default[1].border_mode == cv2.BORDER_CONSTANT
-    assert tuple(default[1].fill) == (0.0, 0.0, 0.0)
-    assert tuple(default[2].fill) == (0.0, 0.0, 0.0)
+    assert affine_of(default).border_mode == cv2.BORDER_CONSTANT
+    assert tuple(affine_of(default).fill) == (0.0, 0.0, 0.0)
     assert build_replay_compose(AugmentParams(), black_fill_for(image))
 
 
@@ -491,7 +500,7 @@ def test_a_gray_picture_is_filled_with_black_too():
 def test_the_same_seed_still_reproduces_the_very_same_bytes():
     "Pinning the fill never changed the determinism of a sample."
 
-    params = AugmentParams(seed=11)
+    params = AugmentParams(select_prob=1.0, seed=11)
     first = augment_sample(gradient_image(), {"shapes": []}, params, 5)
     second = augment_sample(gradient_image(), {"shapes": []}, params, 5)
     assert np.array_equal(first.image, second.image)
@@ -653,8 +662,9 @@ def run_augment(staging: str) -> ValidationWorker:
                 translate=0.1,
                 scale_min=0.9,
                 scale_max=1.1,
-                flipud=0.0,
-                fliplr=0.0,
+                flipud=False,
+                fliplr=False,
+                select_prob=1.0,
                 seed=4321,
             ),
         ),

@@ -38,6 +38,7 @@ from anylabeling.custom.model_validation.ui.results_page import (
     PREVIEW_NOTE_NOT_JUDGED,
     PREVIEW_TITLE_PREFIX,
     PREVIEW_TOOLTIP,
+    PreviewNoteLabel,
     ResultsPage,
 )
 
@@ -378,7 +379,8 @@ def test_the_release_brings_the_augmented_copy_back(page_pair):
     assert page.gt_canvas.title == GT_CANVAS_TITLE
     assert page.pred_canvas.title == PRED_CANVAS_TITLE
     assert page.preview_note.text() == ""
-    assert page.preview_note.isHidden() is True
+    # the row of the line stays: only the text went away
+    assert page.preview_note.isVisibleTo(page) is True
     assert canvas_stroke(page.gt_canvas, GT_COLOR) > 0
     assert canvas_stroke(page.gt_canvas, MISS_COLOR) == 0
     assert canvas_stroke(page.pred_canvas, PRED_COLOR) > 0
@@ -434,7 +436,7 @@ def test_a_plain_original_never_enters_the_preview(page_pair):
     # the line belongs to the press and goes away with the release
     release_right(page.gt_canvas)
     assert page.preview_note.text() == ""
-    assert page.preview_note.isHidden() is True
+    assert page.preview_note.isVisibleTo(page) is True
 
 
 def test_an_augmented_record_without_its_parent_gets_one_status_line(
@@ -495,3 +497,179 @@ def test_the_canvases_own_no_menu_and_document_the_gesture(page_pair):
             QtCore.Qt.ContextMenuPolicy.NoContextMenu
         )
         assert canvas.toolTip() == PREVIEW_TOOLTIP
+
+
+# ------------------------------------------- the reserved status line
+def geometry_of(page) -> list:
+    "Return the place and the size of the four controls under test."
+
+    widgets = (
+        page.gt_canvas,
+        page.pred_canvas,
+        page.table,
+        page.preview_note,
+    )
+    return [
+        (
+            widget.mapTo(page, QtCore.QPoint(0, 0)).x(),
+            widget.mapTo(page, QtCore.QPoint(0, 0)).y(),
+            widget.width(),
+            widget.height(),
+        )
+        for widget in widgets
+    ]
+
+
+def test_the_preview_note_reserves_its_row_while_it_is_empty(page_pair):
+    "The status line keeps its one reserved row while it carries no text."
+
+    page, _parent, _child = page_pair
+    note = page.preview_note
+
+    assert note.text() == ""
+    assert note.toolTip() == ""
+    assert note.isVisibleTo(page) is True
+    assert isinstance(note, PreviewNoteLabel)
+    assert note.wordWrap() is False
+    assert note.height() == note.fontMetrics().height()
+    assert note.height() > 0
+
+
+def test_the_preview_never_moves_the_canvases_or_the_table(page_pair):
+    "Holding and releasing the right button change a text, no geometry."
+
+    page, _parent, _child = page_pair
+    before = geometry_of(page)
+
+    # a collapsed layout would make the two comparisons below true at
+    # once: every control they measure has to have a size of its own
+    for _x, _y, width, height in before:
+        assert width > 0
+        assert height > 0
+    # the size of the loaded picture, not a collapsed one: the canvas
+    # really holds one of the two fixture pictures of this file
+    shown = page.gt_canvas.image_size()
+    assert (int(shown.width()), int(shown.height())) in (
+        PARENT_SIZE,
+        CHILD_SIZE,
+    )
+
+    press_right(page.gt_canvas)
+
+    assert page.preview_active() is True
+    assert page.preview_note.isVisibleTo(page) is True
+    assert geometry_of(page) == before
+
+    release_right(page.gt_canvas)
+
+    assert page.preview_active() is False
+    assert page.preview_note.text() == ""
+    assert geometry_of(page) == before
+
+
+def test_a_long_note_neither_wraps_nor_widens_the_page(page_pair):
+    "A very long parent path is one elided line, never a wider page."
+
+    page, parent, _child = page_pair
+    note = page.preview_note
+    baseline = geometry_of(page)
+    line_height = note.height()
+    minimum_width = page.minimumSizeHint().width()
+    parent.relpath = "a" * 400
+
+    press_right(page.gt_canvas)
+
+    assert page.preview_active() is True
+    assert note.height() == line_height
+    assert page.minimumSizeHint().width() <= minimum_width
+    assert geometry_of(page) == baseline
+    assert parent.relpath in note.text()
+    assert note.toolTip() == note.text()
+
+
+def test_the_two_hint_lines_keep_the_layout_as_well(
+    page_pair, qt_app, tmp_path
+):
+    "Both no-parent hints change a text and nothing else."
+
+    page, parent, _child = page_pair
+    page.table.selectRow(row_of(page, parent.record_id))
+    QtWidgets.QApplication.processEvents()
+    before = geometry_of(page)
+
+    press_right(page.gt_canvas)
+
+    assert page.preview_note.text() == PREVIEW_HINT_ORIGINAL
+    assert page.preview_note.isVisibleTo(page) is True
+    assert geometry_of(page) == before
+
+    release_right(page.gt_canvas)
+
+    assert page.preview_note.text() == ""
+    assert geometry_of(page) == before
+
+    # the same for a copy whose original is not part of the list
+    staging = staging_layout(str(tmp_path), "preview_hint_layout")
+    orphan = staged_child(staging, "a_aug1.png", "original::missing.png")
+    orphan_page = show_page(staging, [orphan], orphan.record_id)
+    try:
+        orphan_before = geometry_of(orphan_page)
+
+        press_right(orphan_page.gt_canvas)
+
+        assert orphan_page.preview_note.text() == PREVIEW_HINT_MISSING
+        assert orphan_page.preview_note.isVisibleTo(orphan_page) is True
+        assert geometry_of(orphan_page) == orphan_before
+
+        release_right(orphan_page.gt_canvas)
+
+        assert orphan_page.preview_note.text() == ""
+        assert geometry_of(orphan_page) == orphan_before
+    finally:
+        orphan_page.close()
+
+
+def test_the_note_row_survives_a_row_switch(page_pair):
+    "A row switch during the preview keeps the reserved line in place."
+
+    page, parent, _child = page_pair
+    press_right(page.gt_canvas)
+    assert page.preview_active() is True
+    before = geometry_of(page)
+
+    page.table.selectRow(row_of(page, parent.record_id))
+    QtWidgets.QApplication.processEvents()
+
+    assert page.preview_active() is False
+    assert page.preview_note.text() == ""
+    assert page.preview_note.isVisibleTo(page) is True
+    assert geometry_of(page) == before
+
+
+def test_the_preview_keeps_the_view_the_user_set(page_pair):
+    "The zoom and the pan of the user survive the press and the release."
+
+    page, _parent, _child = page_pair
+    canvases = (page.gt_canvas, page.pred_canvas)
+    for canvas in canvases:
+        scale, center_x, center_y = canvas.view_state()
+        canvas.apply_view_state(scale * 1.5, center_x + 2.0, center_y + 3.0)
+        canvas.set_user_adjusted(True)
+
+    def snapshot():
+        return [
+            (canvas.view_state(), canvas.user_adjusted())
+            for canvas in canvases
+        ]
+
+    before = snapshot()
+
+    press_right(page.gt_canvas)
+
+    assert page.preview_active() is True
+    assert snapshot() == before
+
+    release_right(page.gt_canvas)
+
+    assert page.preview_active() is False
+    assert snapshot() == before

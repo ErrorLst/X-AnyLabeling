@@ -186,8 +186,8 @@ def compact_label() -> dict:
     """Return the label of every shape type, kept inside the frame.
 
     The shipped test transforms are strong (a rotation of 25 degrees, a
-    zoom of 0.7 to 1.3, a shear of 8 degrees and a translation of 0.15),
-    so a shape hugging a border would leave the picture: augment_sample
+    zoom of 0.7 to 1.3 and a translation of 0.15), so a shape hugging a
+    border would leave the picture: augment_sample
     then retries the sample and never hands back a clipped label. These
     shapes are laid out around the middle of a 200x100 canvas and stay
     small enough that every one of them survives the transform, which is
@@ -270,23 +270,20 @@ def shifted_params(seed: int = 6) -> AugmentParams:
     """Return a forced translation that leaves the colour untouched.
 
     The shift alone is enough to push a box out of the picture, which is
-    the geometry the retry loop is asserted on: no rotation, no zoom and
-    no shear, so only the sampled direction of the shift decides.
+    the geometry the retry loop is asserted on: no rotation and no zoom,
+    so only the sampled direction of the shift decides.
     """
 
     return AugmentParams(
-        hsv_h=0.0,
-        hsv_s=0.0,
+        contrast=0.0,
         hsv_v=0.0,
         degrees=0.0,
         translate=0.6,
         scale_min=1.0,
         scale_max=1.0,
-        shear=0.0,
-        perspective=0.0,
-        flipud=0.0,
-        fliplr=0.0,
-        bgr=0.0,
+        flipud=False,
+        fliplr=False,
+        select_prob=1.0,
         seed=seed,
     )
 
@@ -295,8 +292,8 @@ def centred_box_label(width: int = 120, height: int = 80) -> dict:
     """Return one rectangle around the middle of a small canvas.
 
     Used by the extreme parameter test: a box whose centre is the centre
-    of the picture survives even a 180 degree rotation, a 45 degree
-    shear and a ten times zoom, while a box hugging the border does not.
+    of the picture survives even a 180 degree rotation and a ten times
+    zoom, while a box hugging the border does not.
     """
 
     centre_x = float(width) / 2.0
@@ -330,16 +327,21 @@ def centred_box_label(width: int = 120, height: int = 80) -> dict:
 
 
 def strong_params(**overrides) -> AugmentParams:
+    """Return a strong geometry whose draw always picks every field.
+
+    Both flips are checked and the selection probability is 1.0, so the
+    draw of every try is the whole candidate set and the produced bytes
+    and counts of these tests never depend on a lucky draw.
+    """
+
     data = {
         "degrees": 25.0,
         "translate": 0.15,
         "scale_min": 0.7,
         "scale_max": 1.3,
-        "shear": 8.0,
-        "perspective": 0.0008,
-        "flipud": 0.5,
-        "fliplr": 0.5,
-        "bgr": 0.0,
+        "flipud": True,
+        "fliplr": True,
+        "select_prob": 1.0,
         "seed": 2024,
     }
     data.update(overrides)
@@ -348,8 +350,11 @@ def strong_params(**overrides) -> AugmentParams:
 
 @requires_albumentations
 def test_same_seed_is_reproducible():
+    # the compact label is the fixture laid out to survive the strong
+    # transform, so the assertion below measures the seed and not the
+    # drop of a sample hugging a border
     image = base_image()
-    label = base_label()
+    label = compact_label()
     first = augment_sample(image, label, strong_params(), 7)
     second = augment_sample(image, label, strong_params(), 7)
     assert np.array_equal(first.image, second.image)
@@ -466,33 +471,29 @@ def test_flip_probability_one_and_zero():
     image = base_image()
     label = base_label()
     params = AugmentParams(
+        contrast=0.0,
+        hsv_v=0.0,
         degrees=0.0,
         translate=0.0,
         scale_min=1.0,
         scale_max=1.0,
-        shear=0.0,
-        perspective=0.0,
-        hsv_h=0.0,
-        hsv_s=0.0,
-        hsv_v=0.0,
-        flipud=0.0,
-        fliplr=1.0,
+        flipud=False,
+        fliplr=True,
+        select_prob=1.0,
         seed=99,
     )
     flipped = augment_sample(image, label, params, 0)
     assert np.array_equal(flipped.image, image[:, ::-1])
     identity = AugmentParams(
+        contrast=0.0,
+        hsv_v=0.0,
         degrees=0.0,
         translate=0.0,
         scale_min=1.0,
         scale_max=1.0,
-        shear=0.0,
-        perspective=0.0,
-        hsv_h=0.0,
-        hsv_s=0.0,
-        hsv_v=0.0,
-        flipud=0.0,
-        fliplr=0.0,
+        flipud=False,
+        fliplr=False,
+        select_prob=1.0,
         seed=99,
     )
     same = augment_sample(image, label, identity, 0)
@@ -513,8 +514,7 @@ def test_extreme_parameters_do_not_crash():
     label = centred_box_label(120, 80)
     for overrides in (
         {"degrees": 180.0},
-        {"shear": 45.0},
-        {"perspective": 0.001},
+        {"contrast": 1.0},
         {"translate": 0.5},
         {"scale_min": 0.1, "scale_max": 3.0},
     ):
@@ -629,35 +629,66 @@ def test_augmented_relpath_mirrors_folders():
     assert augmented_relpath("train/a.png", 2, ".jpg") == "train/a_aug2.jpg"
 
 
+def find_transform(transforms, kind):
+    "Return the single transform of the stack that is of that class."
+
+    matches = [item for item in transforms if isinstance(item, kind)]
+    assert len(matches) == 1, kind.__name__
+    return matches[0]
+
+
 @requires_albumentations
 def test_transforms_follow_the_official_mapping():
+    import albumentations as albu
+
     params = AugmentParams(
-        hsv_h=0.02,
-        hsv_s=0.5,
+        contrast=0.3,
         hsv_v=0.3,
         degrees=10.0,
         translate=0.2,
         scale_min=0.4,
         scale_max=1.6,
-        shear=5.0,
-        perspective=0.0005,
-        flipud=0.25,
-        fliplr=0.75,
+        flipud=True,
+        fliplr=True,
+        select_prob=1.0,
         seed=1,
     )
     transforms = build_transforms(params)
-    hue = transforms[0]
-    assert hue.hue_shift_limit == pytest.approx((-3.6, 3.6))
-    assert hue.sat_shift_limit == pytest.approx((-50.0, 50.0))
-    assert hue.val_shift_limit == pytest.approx((-30.0, 30.0))
-    affine = transforms[1]
+    # the pixel transforms come first: a colour change applied after a
+    # geometric one would lift the uncovered black band off zero
+    colour = find_transform(transforms, albu.HueSaturationValue)
+    assert transforms[0] is colour
+    assert colour.hue_shift_limit == pytest.approx((0.0, 0.0))
+    assert colour.sat_shift_limit == pytest.approx((0.0, 0.0))
+    assert colour.val_shift_limit == pytest.approx((-30.0, 30.0))
+    contrast = find_transform(transforms, albu.RandomBrightnessContrast)
+    assert transforms[1] is contrast
+    # brightness belongs to hsv_v alone: the range of this transform is
+    # pinned to zero whatever the parameters say
+    assert contrast.brightness_limit == pytest.approx((0.0, 0.0))
+    assert contrast.contrast_limit == pytest.approx((-0.3, 0.3))
+    affine = find_transform(transforms, albu.Affine)
     assert affine.rotate == pytest.approx((-10.0, 10.0))
+    assert affine.translate_percent == {
+        "x": pytest.approx((-0.2, 0.2)),
+        "y": pytest.approx((-0.2, 0.2)),
+    }
     assert affine.scale == {
         "x": pytest.approx((0.4, 1.6)),
         "y": pytest.approx((0.4, 1.6)),
     }
-    assert transforms[3].p == 0.25
-    assert transforms[4].p == 0.75
+    # the shear parameter is gone: the library default (no shear) stays
+    assert affine.shear == {
+        "x": pytest.approx((0.0, 0.0)),
+        "y": pytest.approx((0.0, 0.0)),
+    }
+    assert find_transform(transforms, albu.VerticalFlip).p == 1.0
+    assert find_transform(transforms, albu.HorizontalFlip).p == 1.0
+    # the perspective transform was removed with its parameter
+    perspective = [
+        item for item in transforms if isinstance(item, albu.Perspective)
+    ]
+    assert perspective == []
     compose = build_replay_compose(params)
     assert compose is not None
 

@@ -83,18 +83,17 @@ def base_params(**overrides) -> AugmentParams:
     "Return parameters that change nothing unless told otherwise."
 
     data = {
-        "hsv_h": 0.0,
-        "hsv_s": 0.0,
+        "contrast": 0.0,
         "hsv_v": 0.0,
         "degrees": 0.0,
         "translate": 0.0,
         "scale_min": 1.0,
         "scale_max": 1.0,
-        "shear": 0.0,
-        "perspective": 0.0,
-        "flipud": 0.0,
-        "fliplr": 0.0,
-        "bgr": 0.0,
+        "flipud": False,
+        "fliplr": False,
+        # a probability of one is the frame a fixture that asserts pixels
+        # or counts needs: the draw always picks the whole candidate set
+        "select_prob": 1.0,
         "seed": 4242,
     }
     data.update(overrides)
@@ -198,7 +197,7 @@ def build_worker(staging: str, records, total: int):
         augment_enabled=True,
         augment_mode="count",
         total_count=total,
-        augment_params=AugmentParams(seed=2024),
+        augment_params=AugmentParams(select_prob=1.0, seed=2024),
     )
     worker = ValidationWorker(config, CLASSES, staging)
     worker.records = list(records)
@@ -275,7 +274,7 @@ def test_the_gray_copy_is_the_promoted_run_collapsed_back():
     from anylabeling.custom.model_validation.app_config import derive_seed
 
     gray = gray_image()
-    params = base_params(hsv_v=0.4, fliplr=1.0, degrees=12.0)
+    params = base_params(hsv_v=0.4, fliplr=True, degrees=12.0)
     outcome, raised = run(gray, params, 3)
 
     # the contract of the route, whatever the sampled geometry is
@@ -308,33 +307,6 @@ def test_a_colour_picture_keeps_the_colour_route():
 
 
 @requires_albumentations
-def test_the_gray_warning_is_gone():
-    """The stack alone warns, the augmented gray picture does not.
-
-    The comparison is what makes the test meaningful: the very same
-    single channel array handed to the raw stack raises the warning,
-    while augment_sample never does, because it promotes the picture
-    before the stack runs.
-    """
-
-    gray = gray_image()
-    params = base_params(hsv_h=0.5, hsv_s=0.9, hsv_v=0.4)
-    compose = build_replay_compose(params)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        compose(image=gray, keypoints=[], kp_labels=[])
-    assert [
-        text
-        for text in (str(w.message) for w in caught)
-        if GRAYSCALE_WARNING in text
-    ]
-
-    _outcome, raised = run(gray, params, 1)
-    assert [text for text in raised if GRAYSCALE_WARNING in text] == []
-    assert raised == []
-
-
-@requires_albumentations
 def test_all_zero_parameters_stay_within_the_round_trip_error():
     "An all zero parameter set only pays the gray -> RGB -> gray rounding."
 
@@ -344,16 +316,6 @@ def test_all_zero_parameters_stay_within_the_round_trip_error():
     # cv2 rounds the two conversions; the measurement on real data is 0
     # and the tolerance documents the worst case of that rounding
     assert int(difference.max()) <= 2
-
-
-@requires_albumentations
-def test_bgr_is_an_identity_on_the_gray_path():
-    "Swapping the channels cannot change the luminance of a gray copy."
-
-    gray = gray_image()
-    swapped, _warnings = run(gray, base_params(bgr=1.0), 2)
-    kept, _warnings = run(gray, base_params(bgr=0.0), 2)
-    assert np.array_equal(swapped.image, kept.image)
 
 
 @requires_albumentations
@@ -370,23 +332,27 @@ def test_hsv_v_still_changes_a_gray_image():
 
 
 @requires_albumentations
-def test_hsv_h_and_hsv_s_are_inert_on_gray_content():
-    """The measured truth about hue and saturation on a gray picture.
+def test_the_contrast_gain_changes_a_gray_copy():
+    """Contrast is the second colour parameter a gray copy feels.
 
-    albumentations 2.0.8 masks every pixel whose saturation is zero
-    (shift_hsv: "sat[grayscale_mask] = 0") and a promoted gray picture
-    has S == 0 everywhere, so both shifts leave the pixels untouched.
-    Only the value shift survives, whatever route the picture takes.
+    The gain of RandomBrightnessContrast runs on the promoted RGB
+    representation before the picture is collapsed back, so it changes
+    the pixels of a gray source like it changes the pixels of a colour
+    one, and the copy stays single channel.
     """
 
     gray = gray_image()
-    for overrides in ({"hsv_h": 0.5}, {"hsv_s": 0.9}):
-        outcome, _warnings = run(gray, base_params(**overrides), 6)
-        difference = np.abs(
-            outcome.image.astype(np.int16) - gray.astype(np.int16)
-        )
-        assert int(difference.max()) == 0, overrides
-        assert float(difference.mean()) == 0.0, overrides
+    outcome, raised = run(gray, base_params(contrast=0.5), 9)
+    assert outcome.grayscale is True
+    assert outcome.image.ndim == 2
+    assert outcome.image.shape == gray.shape
+    assert raised == []
+    difference = np.abs(
+        outcome.image.astype(np.int16) - gray.astype(np.int16)
+    )
+    assert not np.array_equal(outcome.image, gray)
+    assert difference.mean() > 1.0
+    assert (difference > 0).mean() > 0.5
 
 
 # ----------------------------------------------------------- the encoding
@@ -429,7 +395,7 @@ def test_the_label_geometry_survives_the_gray_path():
 def test_the_same_seed_reproduces_the_gray_copy():
     "Determinism is untouched: one seed, one picture."
 
-    params = AugmentParams(degrees=15.0, hsv_v=0.4, seed=99)
+    params = AugmentParams(degrees=15.0, hsv_v=0.4, select_prob=1.0, seed=99)
     first, _warnings = run(gray_image(), params, 11)
     second, _warnings = run(gray_image(), params, 11)
     assert np.array_equal(first.image, second.image)

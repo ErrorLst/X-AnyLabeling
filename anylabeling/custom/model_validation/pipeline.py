@@ -55,8 +55,12 @@ DISCARDED_SAMPLE_LIMIT = 50
 DISCARDED_NOTE = (
     "one sample per planned copy is generated again with a fresh derived "
     "seed while a transform leaves a shape outside the picture and is "
-    "dropped when no attempt fits; discarded_unfittable is the count of "
-    "the dropped ones, the discarded list names at most "
+    "dropped when no attempt fits; a try whose draw selects no "
+    "augmentation field at all writes no copy either and is wasted, so a "
+    "sample whose every try was such an empty draw is dropped as well. "
+    "discarded_unfittable counts the samples no try could fit, "
+    "discarded_empty_selection the samples whose every try drew nothing, "
+    "and the discarded list names at most "
     f"{DISCARDED_SAMPLE_LIMIT} of them"
 )
 
@@ -135,6 +139,9 @@ class _AugmentJobResult:
     # stage spent: a dropped sample reports its spent attempts as well
     attempts: int = 0
     discarded: bool = False
+    # why the sample produced nothing, one of augment.DISCARD_*: empty
+    # unless discarded is set
+    discard_reason: str = ""
 
 
 class ValidationWorker(QThread):
@@ -300,6 +307,10 @@ class ValidationWorker(QThread):
         if mode == DEFAULT_AUGMENT_MODE:
             from .app_config import make_rng
 
+            # The subset of the round is drawn once, without replacement:
+            # an original is picked at most once, therefore every entry
+            # of the plan is 0 or 1 and an original that was not picked
+            # receives no copy at all.
             rng = make_rng(config.augment_params.seed, 0)
         return plan_aug_counts(
             len(sources),
@@ -319,6 +330,12 @@ class ValidationWorker(QThread):
         sample comes from its sample index and its file names from the
         source relpath plus the copy index, so neither of them depends on
         the order in which the worker threads happen to run.
+
+        In RATIO_MODE the plan holds nothing but 0 and 1, therefore count
+        is 0 or 1 and copy_index is always 1: a ratio run names its
+        copies _aug1 and never _aug2. The loop stays general so that
+        MULTIPLIER_MODE and COUNT_MODE can still ask for more than one
+        copy of an original.
         """
 
         ordinal = 0
@@ -347,7 +364,7 @@ class ValidationWorker(QThread):
 
         from .augment import (
             MAX_ATTEMPTS,
-            augment_sample,
+            augment_sample_with_reason,
             augmented_relpath,
             decode_image,
             encode_image,
@@ -378,7 +395,7 @@ class ValidationWorker(QThread):
 
         try:
             label = records_module.read_staging_label(record) or {}
-            outcome = augment_sample(
+            outcome, discard_reason = augment_sample_with_reason(
                 image,
                 label,
                 self.config.augment_params,
@@ -386,14 +403,16 @@ class ValidationWorker(QThread):
                 image_name=job.image_name,
             )
             if outcome is None:
-                # no seed of this sample kept every shape inside the
-                # canvas: the sample is dropped instead of being written
-                # with a clipped or a vanished defect, and the whole
-                # attempt budget of it is what it cost the stage
+                # nothing came out of this sample: either no try kept
+                # every shape inside the canvas, or every try drew an
+                # empty selection. The sample is dropped instead of being
+                # written with a clipped or a vanished defect, and the
+                # whole attempt budget of it is what it cost the stage.
                 return _AugmentJobResult(
                     job=job,
                     attempts=MAX_ATTEMPTS,
                     discarded=True,
+                    discard_reason=discard_reason,
                 )
             data, target_ext, fallback = encode_image(
                 outcome.image, job.source_ext
@@ -439,6 +458,10 @@ class ValidationWorker(QThread):
             "attempt": int(outcome.attempt),
             "attempt_seed": int(outcome.seed),
             "attempts": int(outcome.attempts),
+            # The fields the draw of the producing try selected, in
+            # candidate order: the copy applies exactly them. The chance
+            # of the draw itself travels in augment.params.select_prob.
+            "selected": list(outcome.selection),
             # The fill of the uncovered canvas really used by this copy:
             # the fill has no option any more, so the fixed name is
             # recorded next to the seed (it is no official argument).
@@ -556,7 +579,7 @@ class ValidationWorker(QThread):
 
         # imported here like every other augment symbol of the module:
         # the stack is only paid for by a run that really augments
-        from .augment import GRAYSCALE_PATH_NOTE
+        from .augment import DISCARD_EMPTY_SELECTION, GRAYSCALE_PATH_NOTE
 
         sources = self._augment_sources()
         plan = self._augment_plan(sources)
@@ -578,14 +601,18 @@ class ValidationWorker(QThread):
             "skipped_no_label": len(self._originals()) - len(sources),
             "generated": 0,
             "failed": 0,
-            # How many times a sample had to be generated again because a
-            # try left a shape outside the canvas (a retry is a produced
-            # sample that needed more than one attempt) and how many
-            # samples no attempt could fit at all: a dropped sample is
-            # neither written nor recorded.
+            # retried counts the produced copies that needed more than one
+            # try, whatever made a try repeat itself: a transform that
+            # left a shape outside the canvas, or a draw that selected no
+            # field at all. attempts_total is the sum of the tries the
+            # stage really spent. The two discarded counters split the
+            # samples that produced nothing at all: the ones no try could
+            # fit, and the ones whose every try drew an empty selection. A
+            # dropped sample is neither written nor recorded.
             "retried": 0,
             "attempts_total": 0,
             "discarded_unfittable": 0,
+            "discarded_empty_selection": 0,
             "discarded": [],
             "discarded_note": DISCARDED_NOTE,
             "encode_fallback": 0,
@@ -624,13 +651,17 @@ class ValidationWorker(QThread):
             child = result.child
             if child is None:
                 if result.discarded:
-                    summary["discarded_unfittable"] += 1
+                    if result.discard_reason == DISCARD_EMPTY_SELECTION:
+                        summary["discarded_empty_selection"] += 1
+                    else:
+                        summary["discarded_unfittable"] += 1
                     if len(summary["discarded"]) < DISCARDED_SAMPLE_LIMIT:
                         summary["discarded"].append(
                             {
                                 "parent_relpath": result.job.record.relpath,
                                 "copy_index": result.job.copy_index,
                                 "attempts": int(result.attempts),
+                                "reason": result.discard_reason,
                             }
                         )
                 else:
