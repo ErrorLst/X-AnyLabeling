@@ -1464,8 +1464,8 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 
 ### 测试
 
-`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/crop_tool -v`
-（需 PyQt6）。目录里实际落地 **200 个用例**：`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
+`QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/crop_tool -v`
+（用仓库根下的 .venv/bin/python 跑；需 PyQt6）。目录里实际落地 **222 个用例**：`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
 （扫描与自然序、命名与解析、跳号与原子写、格式与 mode 收敛、越界补齐与内边距、上限与
 `DecompressionBombError`），`test_ct_viewer.py` 覆盖缩放/平移/裁切框跟随与快捷键冒泡，
 `test_ct_dialog.py` 覆盖确认框与白名单删除、标记与徽标、输出目录切换，`test_ct_settings.py` 覆盖
