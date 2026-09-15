@@ -385,14 +385,35 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   `detail["predictions"]` **仍是框级**（每框一条，带平行的 `labels`/`scores`，
   schema 不变）；**新增加性键** `detail["pred_row_boxes"]`（`List[int]`，行 → payload
   框下标）。**单类记录**的 payload 与 verdict 与改动前**逐键相等**。
-- **结果页框色 = 该框各行状态的最高优先级**：`PRED_STATE_PRIORITY` 的顺序是
-  `(FALSE_POSITIVE, CLASS_MISMATCH, LOW_SCORE, IOU_BELOW)`，一个框取它各行里最靠前的
-  状态。judge 的 `pred_index` 是 **valid_pred（可匹配行）内下标**，实现按
+- **结果页框色是绿 / 蓝 / 红三色**：`MATCH_COLOR = GT_COLOR`、`STATE_*` 状态串、
+  `gt_statuses` / `pred_statuses` / `matched_pair_state` /
+  `PRED_STATE_PRIORITY` 一律未动，只有**颜色**收敛：异常状态（`MISS` /
+  `FALSE_POSITIVE` / `CLASS_MISMATCH` / `IOU_BELOW` / `LOW_SCORE`）全部落红
+  `ERROR_COLOR`，其余状态（`None` / `""` / `OK_PAIR` / 未知串）保持该侧本色
+  ——GT 绿 `#2ecc71`、Pred 蓝 `#3498db`。
+  `shape_color(status, normal=None)` 就是这个口径：异常→`ERROR_COLOR`，其余→传入的
+  `normal`（`shape_colors` 传自己的 `default`）。逐条语义：GT 匹配上且类别一致、IoU ≥
+  阈值、分数 ≥ NG 阈值 → 绿；GT 匹配上但类别不一致 / IoU 低于阈值 / 分数低于 NG 阈值
+  → 红；GT 漏检 → 红；预测匹配上且正常 → 蓝；预测误报 → 红；预测类别错 / 低分 /
+  IoU 低 → 红。**一框多行只要有一行异常，整框红**：judge 的 `pred_index` 是
+  **valid_pred（可匹配行）内下标**，实现按
   `valid[index]` 换回行位置，再经 `pred_row_boxes` 落到框上。没有 `pred_row_boxes`
   的旧 detail 走**冻结的 legacy 路径**（着色与改动前逐键相等）；map 本身读不出来
   （不是列表、长度与 `pred_total` 不符、下标越界）或按显示 payload 重建出来的行与它
   不相等时，同样回落到这条 legacy 路径。只有**可匹配行数与 `pred_valid` 不符**这一道
   护栏在重建之后触发**整单本色**（不半着色、不抛异常）。
+- **五个旧颜色常量是历史别名**：`MISS_COLOR` / `FALSE_POSITIVE_COLOR` /
+  `CLASS_MISMATCH_COLOR` / `IOU_BELOW_COLOR` / `LOW_SCORE_COLOR` 仍是模块常量、
+  仍在 `__all__`（`__all__` 只追加了 `"ERROR_COLOR"`），但都改成 `ERROR_COLOR` 的
+  兼容别名——旧调用方照旧导得进、比得动，画上去却只有一种红，不再各占一色。
+  文件第一行新增 `ERROR_COLOR = QColor(231, 76, 60)`；颜色是纯显示量：报告、
+  导出 zip、导出汇总、`records.py` / `report.py` / `exporter.py` 与所有 schema
+  键**零影响**。
+- **图例收成单行三色**：`LEGEND_HTML` 从两行六项改成一行三项，实测
+  `sizeHint` 323×16（旧版 428×32），页面因此不再为图例多留一行；`legend_html()`
+  仍是唯一的组装入口，只余 `{gt}` / `{pred}` / `{err}` 三个色值占位符（读的仍是
+  `GT_COLOR.name()` / `PRED_COLOR.name()` / `ERROR_COLOR.name()`）；
+  `LEGEND_TOOLTIP` 同步改成三色口径。图例与画布共用同一批常量，所以它不会漂移。
 - **风险：高 IoU 的跨类框会被并成一框多行**。骑行者这类 person + bicycle 同时出现、
   IoU 超过阈值的框现在合成一个两行的框；若 `classes.txt` 的标注惯例只标一个类
   （如 rider），这两行就会对上单类 GT 而必然 NG。缓解 = 调高「NMS IoU iou」或让标注
@@ -408,11 +429,60 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   matched pair 的 `pred_index` 同坐标系，都是 **valid_pred（可匹配行）内下标**：
   `detect` / `segment` / `obb` 下与画布行位置重合；`pose` 需按上文「结果页框色」
   一条的 `valid[index]` 换算）与每个 matched pair 的 `low_score` 布尔。
-  画布上匹配对里低分的框为**青绿** `LOW_SCORE_COLOR`：`matched_pair_state` 的判定
+  画布上匹配对里低分的框与本轮其它异常一样是**红色**：`matched_pair_state` 的判定
   顺序是 `mismatch → low_score → iou_below → OK_PAIR`，**低分不论 IoU 是否达标都算**；
-  未匹配的低分框仍是品红误报。图例第六项「低分」；配置页标题为「**NG 分数 score**」
+  未匹配的低分框按误报同样落红，不再各占一色（见「结果页框色」一条）。图例
+  （`LEGEND_HTML` / `legend_html()` / `LEGEND_TOOLTIP`）由两行 6 项改成**单行三色**
+  「绿色 = 原始标记正常 / 蓝色 = 推理结果正常 / 红色 = 异常」，`legend_html()` 保留，
+  只余三个色值占位符；配置页标题为「**NG 分数 score**」
   （属性名/默认 0.5/范围/步进不变），tooltip 说明「≤0.25 时不会有框低于它，
   LOW_SCORE 永不触发」。
+- **标签像素图缓存的契约**：`ImageCanvas._label_band(glyphs, corner, width, height)`
+  把 `_draw_label` 原有的测量 + 水平夹取 + 翻转 + band 垂直夹取**整段搬进来、语义逐字
+  不变**，返回 `(origin_x, origin_y, ink_left, ink_top, ink_right, ink_bottom)`；
+  `_draw_label` 只调它，自己的早退分支（无 ink、band 超宽高、夹取后仍出右缘）逐条保留。
+  新增两个**实例级**缓存：`_glyph_cache`（字形路径，键 = 文本 + 字体 + 字号 + 行距）
+  与 `_label_cache`（标签像素图，键 = `(id(glyphs), anchor_left, anchor_top, 设备像素比)`），
+  都在 `__init__` 建立、在 `clear()` 清空。只能缓存在实例上：测试里有大量
+  `ImageCanvas._stacked_glyphs(font, text)` 这类**类级调用**，字形路径本身不得被缓存
+  改写或变形。`_draw_label_at(painter, glyphs, left, top)` 先把 `left` / `top`
+  **取整**再当锚点（本方案唯一的视觉变化），命中就 `drawPixmap` 直接 blit；未命中则在
+  **同样的 QPainter 栈、字体、DPI、抗锯齿设置**下把描边 + 填充渲染进一张透明
+  `QPixmap` 再 blit（这正是旧版逐帧重做的那一遍）。像素图必须按**设备像素**分配
+  （`max(round(width * ratio), 1)` × `max(round(height * ratio), 1)`，再
+  `setDevicePixelRatio(ratio)`）：`QPixmap(w, h)` 的 w/h 是设备像素，配
+  `setDevicePixelRatio(ratio)` 后逻辑尺寸只有 `w / ratio`，而字形坐标是 widget 的
+  **逻辑**像素，按逻辑尺寸分配会把标签裁到 `1 / ratio`（DPR 2 上只有一半大、
+  不可读）；设备像素比同时是 `_label_cache` 键的一部分，换到另一种缩放的屏幕
+  不会拿旧几何 blit。`QPixmap` 尺寸为 0 或 painter
+  启动失败时**退回旧版直接 `strokePath` / `fillPath`**：缓存是纯加速，绝不改变
+  正确性。有界：`_LABEL_CACHE_LIMIT = 256`（像素图）与
+  `_GLYPH_CACHE_LIMIT = 256`（字形路径），任一超限都走 `_drop_label_caches()`
+  把**两张表一起清空**（`_label_cache` 以 `id(glyphs)` 为键，只清字形表会制造
+  id 复用、串到别的文本的像素图）。命中 / 未命中分别记
+  `_label_cache_hits` / `_label_cache_misses`（只给测试与探针读，绘制不看）。
+  **唯一的视觉差异**是锚点取整，每个标签最多 **0.5 px** 位移（实测 100 个标签
+  `max |origin − round(origin)|` = 0.4844 px、均值 0.3164 px）；分数原点会让
+  `drawPixmap` 插值糊字，所以必须取整。标签带几何契约（`corner.y() - LABEL_GAP`
+  上沿、左缘对齐、整块丢弃、band 夹取）逐条保留，30 框左右采样对比中只有抗锯齿边缘
+  像素有差异——不要写成「与旧版逐像素全等」。实测（主会话探针，900×600 widget +
+  1280×960 图，中位数）：10 / 30 / 50 / 100 框单画布一次重绘 **1.14 / 1.55 / 2.03 /
+  2.97 ms**，改前（同进程旁路缓存 + 每帧重建字形路径）**4.90 / 12.73 / 20.64 /
+  40.46 ms** ⇒ **4.3× / 8.2× / 10.2× / 13.6×**。
+- **空格 = 标记 / 取消标记当前图片**：`_install_shortcuts()` 里除 A / D 外新增第三个
+  `QShortcut`（`Qt.Key.Key_Space`，上下文同样是
+  `Qt.ShortcutContext.WidgetWithChildrenShortcut`），`activated` 接
+  `ResultsPage.toggle_current_mark() -> bool`。语义：`current_record()` 为 None
+  （列表空 / 过滤后无选中行）→ 返回 `False`、不动任何标记；否则
+  `target = not mark_state(record)`，按 kind 发**既有信号**（原图 `toggle_deleted`、
+  增强图 `toggle_export`），表格复选框、`refresh_rows()`、`refresh_export_summary()`
+  全走 dialog 既有处理，**没有第二条状态更新路径**；取消标记就是取反，与鼠标点复选框
+  完全等价。标记仍不写暂存 json、仍随新一轮验证清空。空格由页面级快捷方式在焦点控件
+  **之前**处理：焦点在表格 / 页面本体 / 某行的标记复选框 / 「导出 Zip...」按钮 /
+  过滤器下拉框 / 只读路径框上，都只切换**当前行**的标记，复选框自身不会被翻，
+  导出按钮也不再被空格触发（可接受副作用）；下拉弹窗打开时不抢键。
+  文案：`SHORTCUT_HINT` 现含「空格 标记 / 取消标记当前图片」，
+  `SHORTCUT_TOOLTIP` 增加了同一句说明。
 - **结果页「增强」列**：结果列表的第 5 列（`HEADERS = ("标记", "状态", "relpath", "kind",
   "增强")`；`COLUMN_AUGMENT = 4`，`COLUMN_MARK` / `COLUMN_VERDICT` / `COLUMN_RELPATH` /
   `COLUMN_KIND` 仍是 0 / 1 / 2 / 3，`COLUMN_EXPORT == COLUMN_MARK`），逐行显示该副本本次
@@ -545,17 +615,34 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 数量行 / 置灰用例里把「选中概率 p 在网格里」改成「它在数量行、不在网格」，并在
 `test_mv_defaults.py` 新增 1 例钉住同一件事；目录合计 47 个文件 **627 个用例**，
 每条例数都用 `--collect-only -q` 逐个文件核实过（口径见上）。
+以上一轮的 627 例为基数，本轮三处新增（空格 6 + 标签成本 3）把目录合计推到
+**636 例**（627 + 6 + 3；navigation 只改断言、不增例），本轮相关文件的
+`--collect-only -q` 实测：`test_mv_status_colors.py` 26、
+`test_mv_results_space_mark.py` 6、`test_mv_label_render_cost.py` 3、
+`test_mv_results_navigation.py` 16。
 本轮（结果页「增强」列 + 预览提示行常驻）新增
 `test_mv_results_augment_column.py`（7 例，`--collect-only -q` 实测：列头与列序、逐行增强项、
 原图无内容、未知字段原名显示、映射表齐全、点更新后单元格仍在、单元格 tooltip 给出副本与种子），
 在 `test_mv_results_preview.py`（本轮起 15 例）补「提示行常驻 + 几何不变 + 预览保视图」用例，
 并在 `test_mv_results_marks.py`（12 例）与 `test_mv_results_edit.py`（7 例）各改写 1 例以覆盖第 5 列。
+本轮（框色三色收敛 + 多框卡顿优化 + 空格标记）在 `test_mv_status_colors.py`（26 例）里把
+7 处旧颜色常量断言更名成 `ERROR_COLOR`、把口径改写成三色（异常→红，正常 / 未知 /
+无判定记录→该侧本色，一个框多行→整框红，旧 detail 走冻结 legacy 路径两组像素用例保留），
+新增 `test_mv_results_space_mark.py`（6 例：快捷方式属于页面与其子控件、空格切换原图的
+删除标记、空格切换增强图的选择标记、空列表上按空格什么都没变、**焦点在复选框与导出
+按钮上按空格只翻转一次**的防双触发、标记与表格行和导出汇总同步），新增
+`test_mv_label_render_cost.py`（3 例：一百个标签的整条 pass 不超过同一视图不带标签的
+2.5 倍、同一画布第二次渲染不慢于第一次且命中数 ≥ 10 倍未命中数、十个框的视图稳在
+40 ms 一帧内），并改 `test_mv_results_navigation.py`（16 例，把「提示里有 A / D」
+的最小断言改成**同一行再断言「空格」**，不新增用例）。本轮实测：
+`test_mv_status_colors.py` 26 passed、`test_mv_results_space_mark.py` 6 passed、
+`test_mv_label_render_cost.py` 3 passed、`test_mv_results_navigation.py` 16 passed。
 
 本轮把 3 个测试文件里 11 条「按作者机器绝对像素写死」的断言改成按平台字体度量推导
 （`test_mv_label_placement.py` 7 条、`test_mv_image_view.py` 3 条、
 `test_mv_border_modes.py` 1 条）：口径是亮像素盒 ≠ 几何 ink 盒（见「已知坑」）。
-**目录合计 627 例全绿带一个前提**：带 `HOME`（fontconfig 命中 Microsoft YaHei、
-`config_page.sizeHint()` 571）时 627 全绿；剥离 `HOME`（DejaVu Sans、`sizeHint()`
+**目录合计 636 例全绿带一个前提**：带 `HOME`（fontconfig 命中 Microsoft YaHei、
+`config_page.sizeHint()` 571）时 636 全绿；剥离 `HOME`（DejaVu Sans、`sizeHint()`
 532）时 `test_mv_ui_dialog.py` 的
 `test_the_window_height_follows_the_configuration_page` 会红
 （`dialog.height()` 600 落不进 `hint + 56` = 588），这是既有现象、超出本轮改动
@@ -602,6 +689,22 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 - 页面 `sizeHint()` 与标签宽度随字体度量变化，同一容器里 fontconfig 命中哪套字体
   由 `HOME` 决定：带 HOME → Microsoft YaHei，无 HOME → DejaVu Sans，
   页面高度 571/532。
+- **标签像素图缓存会让标签最多位移 0.5 px**：`_draw_label_at` 必须把锚点取整，
+  否则 `drawPixmap` 会插值糊字（见「标签像素图缓存」一条），所以任何按绝对像素
+  钉标签位置的用例都要按这半像素留余量，别写「与旧版逐像素全等」；这半像素就是
+  本轮唯一的视觉差异，除此之外几何与绘制次序逐条不变。
+- **五个旧颜色常量已是 `ERROR_COLOR` 的历史别名**：`MISS_COLOR` /
+  `FALSE_POSITIVE_COLOR` / `CLASS_MISMATCH_COLOR` / `IOU_BELOW_COLOR` /
+  `LOW_SCORE_COLOR` 现在互相相等、也都等于 `ERROR_COLOR`，
+  `test_mv_results_preview.py` 里「漏报红 vs 误报红」这类**组合**断言因此不再能
+  区分两者（拿两色互比会变成永真）；该文件现有的 `canvas_stroke(...) == 0` 一条
+  仍然成立、不空转，但后来者要按新的三色口径写断言（拿红与绿 / 蓝比，而不是拿
+  两个异常色互比）。
+- **空格被页面级快捷方式接管**：`WidgetWithChildrenShortcut` 的 `Space` 在焦点
+  控件**之前**吃掉按键——焦点在「导出 Zip...」按钮上时空格**不再触发导出**（改成
+  切换当前行标记），挂在页面里的其它按钮同理；`QComboBox` 下拉弹窗打开时由
+  弹窗自己拿键，页面快捷方式不抢。这是有意的作用域取舍，不是缺陷；要改回按钮的
+  空格行为就得给该按钮更高的短路优先级。
 
 ## smudge_tool
 

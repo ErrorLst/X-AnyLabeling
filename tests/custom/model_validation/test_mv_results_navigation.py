@@ -385,12 +385,13 @@ def test_the_shortcuts_belong_to_the_page_and_its_children(qt_app):
                 QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
             )
         # the list keeps them while it holds the focus, and the page says
-        # so in its two hints
+        # so in its two hints, the space mark included
         assert "A" in page.shortcut_hint.text()
         assert "D" in page.shortcut_hint.text()
+        assert "空格" in page.shortcut_hint.text()
         assert page.shortcut_hint.text() == SHORTCUT_HINT
         assert "A" in page.table.toolTip() and "D" in page.table.toolTip()
-        assert page.shortcut_hint.toolTip()
+        assert "空格" in page.shortcut_hint.toolTip()
         # the handover of the record needs no key any more: the E shortcut
         # and its request signal are gone, and both hints describe the
         # automatic follow instead

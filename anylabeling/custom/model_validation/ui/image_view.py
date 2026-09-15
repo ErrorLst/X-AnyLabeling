@@ -31,16 +31,17 @@ picture.
 The colour of an outline is the judgement of the box it belongs to. A
 canvas is handed the verdict of the matching that produced its shapes
 (see shape_colors) and paints every box with the colour of its own
-state: a matched GT stays GT_COLOR and a matched prediction stays
-PRED_COLOR, a GT no prediction met - a miss, the false negative of the
-run - turns MISS_COLOR, a prediction no GT met - a false positive -
-turns FALSE_POSITIVE_COLOR, a matched pair of two different classes
-turns CLASS_MISMATCH_COLOR and a pair whose IoU stayed under the
-threshold turns IOU_BELOW_COLOR. Both canvases read those states from
-the one matching of the record, so a defect keeps its colour on both
-sides. A record without a judgement - an augmented copy that was never
-judged, a skipped record - carries no state at all and keeps the plain
-GT / Pred colour of every box.
+state, and that colour is one of three: a matched GT stays GT_COLOR and
+a matched prediction stays PRED_COLOR, while every error of the run
+turns ERROR_COLOR - a GT no prediction met (a miss, the false negative
+of the run), a prediction no GT met (a false positive), a matched pair
+of two different classes, a pair whose IoU stayed under the threshold
+and a pair whose prediction scored under the NG score threshold of the
+run are all the one red. Both canvases read those states from the one
+matching of the record, so a defect is red on both sides. A record
+without a judgement - an augmented copy that was never judged, a
+skipped record - carries no state at all and keeps the plain GT / Pred
+colour of every box.
 
 The canvas is a viewer and nothing else: it owns no edit state, no
 selection and no handle, and it never writes an annotation. A box is
@@ -60,24 +61,26 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 GT_COLOR = QtGui.QColor(46, 204, 113)
 PRED_COLOR = QtGui.QColor(52, 152, 219)
 BOX_COLOR = QtGui.QColor(241, 196, 15)
-# The judgement colours. A box the matching left on its own outline is
-# punched out of the crowd: a GT no prediction met (a miss, the false
-# negative of the run) is orange red, a prediction no GT met (a false
-# positive) is magenta, while a matched pair of two different classes is
-# orange, a pair whose IoU stayed under the threshold is dark yellow and
-# a matched prediction whose score stayed under the NG score threshold of
-# the run is teal. A box whose state is unknown - a matched pair, a
-# record nobody judged - keeps the plain GT / Pred colour above.
-MISS_COLOR = QtGui.QColor(231, 76, 60)
-FALSE_POSITIVE_COLOR = QtGui.QColor(155, 89, 182)
-CLASS_MISMATCH_COLOR = QtGui.QColor(230, 126, 34)
-IOU_BELOW_COLOR = QtGui.QColor(241, 196, 15)
-# The colour of a low score prediction: the box of a matched pair whose
-# prediction score stayed under the NG score threshold of the run. It is
-# a teal green, chosen to sit beside the other six colours above without
-# being mistaken for the plain GT green, the blue of a prediction or the
-# dark yellow of a pair under the IoU threshold.
-LOW_SCORE_COLOR = QtGui.QColor(26, 188, 156)
+# The one colour of every error of the run. A box the matching left on
+# its own outline is punched out of the crowd with it: a GT no prediction
+# met (a miss, the false negative of the run), a prediction no GT met (a
+# false positive), a matched pair of two different classes, a pair whose
+# IoU stayed under the threshold and a matched prediction whose score
+# stayed under the NG score threshold of the run are all of them red. A
+# box whose state is unknown - a matched pair of two labels that are not
+# even known, a record nobody judged - keeps the plain GT / Pred colour
+# above and is never mislabelled as an error.
+ERROR_COLOR = QtGui.QColor(231, 76, 60)
+# The old per state names survive as aliases of the one error colour, so
+# a caller of an earlier revision keeps importing and comparing them: the
+# colour a box is painted with is ERROR_COLOR, whatever name it is read
+# under. Nothing but the paint reads them any more, which is what turned
+# the six colours of the previous revision into the three of this one.
+MISS_COLOR = ERROR_COLOR
+FALSE_POSITIVE_COLOR = ERROR_COLOR
+CLASS_MISMATCH_COLOR = ERROR_COLOR
+IOU_BELOW_COLOR = ERROR_COLOR
+LOW_SCORE_COLOR = ERROR_COLOR
 # The states a box can carry. Three of them are the states a matched
 # pair of the judge detail is written with (a class mismatch, an IoU
 # under the threshold, a score under the NG score threshold); the other
@@ -86,7 +89,9 @@ LOW_SCORE_COLOR = QtGui.QColor(26, 188, 156)
 # from its missed and false positive indexes. The state of a matched
 # pair that is fine keeps the plain colour of its canvas, and so does a
 # pair of two labels that are not even known (see
-# results_page.matched_pair_state).
+# results_page.matched_pair_state). The states themselves are unchanged:
+# they are the strings a report and an export are written with, and only
+# their colour collapsed into the one error colour.
 MATCH_COLOR = GT_COLOR
 STATE_OK_PAIR = "OK_PAIR"
 STATE_MISS = "MISS"
@@ -95,17 +100,18 @@ STATE_CLASS_MISMATCH = "CLASS_MISMATCH"
 STATE_IOU_BELOW = "IOU_BELOW"
 STATE_LOW_SCORE = "LOW_SCORE"
 
-# The colour of the six judgement states. The map is keyed by the state
-# of a shape; a state it does not carry - OK_PAIR, an empty state, a
+# The colour of the five judgement states: the one error colour. The map
+# is keyed by the state of a shape and every state it carries is an error
+# of the run; a state it does not carry - OK_PAIR, an empty state, a
 # state of a later revision - has no colour of its own and keeps the
-# plain colour of the canvas it is drawn on. The states of a canvas are
-# a display side copy: the record itself is never written to.
+# plain colour of the canvas it is drawn on. The states of a canvas are a
+# display side copy: the record itself is never written to.
 STATE_TO_COLOR = {
-    STATE_MISS: MISS_COLOR,
-    STATE_FALSE_POSITIVE: FALSE_POSITIVE_COLOR,
-    STATE_CLASS_MISMATCH: CLASS_MISMATCH_COLOR,
-    STATE_IOU_BELOW: IOU_BELOW_COLOR,
-    STATE_LOW_SCORE: LOW_SCORE_COLOR,
+    STATE_MISS: ERROR_COLOR,
+    STATE_FALSE_POSITIVE: ERROR_COLOR,
+    STATE_CLASS_MISMATCH: ERROR_COLOR,
+    STATE_IOU_BELOW: ERROR_COLOR,
+    STATE_LOW_SCORE: ERROR_COLOR,
 }
 TEXT_COLOR = QtGui.QColor(255, 255, 255)
 BACKGROUND_COLOR = QtGui.QColor(24, 26, 30)
@@ -145,6 +151,26 @@ LABEL_VERTICAL_MARGIN = 0.0
 # hairline outline is covered by the fill of its own text.
 LABEL_OUTLINE = QtGui.QColor(0, 0, 0, 200)
 LABEL_OUTLINE_WIDTH = 3.0
+# How many rendered labels a canvas keeps at once. The cache of a label
+# is the pixmap of its glyphs, about 4 KiB for one short text (100 of
+# them measured ~397 KiB), so the whole table stays around one megabyte
+# and a repaint of a crowded view never re-shapes the very same rows
+# twice. A picture holding more boxes than that - a merge may hand one
+# canvas hundreds of them - clears the table as a whole when the limit
+# is crossed: a bounded cache costs one re-render of the first labels
+# and never the memory of an unbounded one.
+_LABEL_CACHE_LIMIT = 256
+# How many shaped label texts a canvas keeps at once. A glyph path is
+# small next to the pixmap above, but its table needs a bound of its
+# own: the text of a prediction carries its score (SCORE_FORMAT), so a
+# canvas walking a long list of records meets an almost new text on
+# every one of them. The two tables are dropped together whenever
+# either bound is crossed, never one of them alone: the label cache is
+# keyed by the identity of a path of the glyph cache (see
+# _draw_label_at), so dropping the glyphs while their pixmaps stay
+# would let a later path be handed the id of a dead one and paint the
+# pixmap of another text.
+_GLYPH_CACHE_LIMIT = 256
 
 # A detection box is drawn with its outline alone: the inside of a box is
 # never filled, neither with a plate nor with a tint, so the picture under
@@ -321,18 +347,26 @@ def shape_label_text(shape: Any) -> str:
     return "\n".join(rows)
 
 
-def shape_color(status: Any) -> Optional[QtGui.QColor]:
-    """Return the colour of a judgement status, None when it has none.
+def shape_color(
+    status: Any, normal: Optional[QtGui.QColor] = None
+) -> Optional[QtGui.QColor]:
+    """Return the colour of a judgement status, the plain one otherwise.
 
-    A status that is not one of the known states - an empty string, a
-    state a later revision added - has no colour of its own and is drawn
-    with the plain colour of its canvas instead of being mislabelled as
-    a miss or a false positive.
+    A status of an error - a miss, a false positive, a class mismatch,
+    an IoU under the threshold, a score under the NG score threshold -
+    is ERROR_COLOR. Every other status is not an error of this record
+    and answers `normal`, the plain colour the caller paints that canvas
+    with: the call without the tail argument of the previous revision
+    answers exactly what it always did, because None is the "no colour
+    of its own" it returns for an empty status, an OK pair and a state a
+    later revision added. A box is never mislabelled as an error by a
+    state the map does not carry.
     """
 
     if status is None:
-        return None
-    return STATE_TO_COLOR.get(str(status))
+        return normal
+    color = STATE_TO_COLOR.get(str(status))
+    return color if color is not None else normal
 
 
 def shape_colors(
@@ -357,7 +391,10 @@ def shape_colors(
     )
     colors: List[QtGui.QColor] = []
     for index, _shape in enumerate(shapes):
-        color = shape_color(statuses[index]) if aligned else None
+        # an error state comes back as ERROR_COLOR and every other state
+        # as the plain colour of this canvas, so the tail argument is the
+        # colour a box no error touched is drawn with (see shape_color)
+        color = shape_color(statuses[index], default) if aligned else None
         colors.append(color if color is not None else default)
     return colors
 
@@ -389,6 +426,21 @@ class ImageCanvas(QtWidgets.QWidget):
         # builder of set_shapes and reused by the repaint instead of
         # walking the list twice (see paintEvent)
         self._gt_colors: List[QtGui.QColor] = []
+        # the rendered glyphs of a label text and the rendered label
+        # pixmaps (see _cached_glyphs and _draw_label_at): a repaint of
+        # the same view - a pan, a zoom step, the other canvas of the
+        # pair - re-blits them instead of stroking and filling the glyph
+        # paths of every box once more
+        self._glyph_cache: Dict[
+            Tuple[str, str, float, float], QtGui.QPainterPath
+        ] = {}
+        self._label_cache: Dict[
+            Tuple[int, float, float, float], QtGui.QPixmap
+        ] = {}
+        # the two counters of that cache, for the tests and for a probe:
+        # they are read by nobody in the paint
+        self._label_cache_hits = 0
+        self._label_cache_misses = 0
         self.matches: List[Dict[str, Any]] = []
         self.show_ground_truth = True
         self.show_predictions = True
@@ -480,6 +532,12 @@ class ImageCanvas(QtWidgets.QWidget):
         self._pred_statuses = []
         # an emptied canvas has no ground truth left to colour either
         self._gt_colors = []
+        # the caches hold the glyphs of another picture and another
+        # record: an emptied canvas drops both of them, and it drops
+        # them together (see _drop_label_caches)
+        self._drop_label_caches()
+        self._label_cache_hits = 0
+        self._label_cache_misses = 0
         self.matches = []
         self._fit_scale = 1.0
         self._zoom = 1.0
@@ -488,6 +546,22 @@ class ImageCanvas(QtWidgets.QWidget):
         self._user_adjusted = False
         self._stop_zoom_animation()
         self.update()
+
+    def _drop_label_caches(self) -> None:
+        """Drop both label tables of the canvas at once.
+
+        The label pixmaps are keyed by the identity of the glyph paths
+        (see _draw_label_at), so the two tables are two halves of one
+        cache and are never dropped apart: emptying the glyph table
+        while its pixmaps stay would leave them keyed by the id of a
+        freed path, and a path built later can be handed that very id
+        again - the canvas would then blit the pixmap of another text.
+        Every reset and every overflow of either bound goes through
+        this one method.
+        """
+
+        self._glyph_cache = {}
+        self._label_cache = {}
 
     # ---------------------------------------------------------- view state
     def image_size(self) -> QtCore.QSizeF:
@@ -900,7 +974,7 @@ class ImageCanvas(QtWidgets.QWidget):
 
         The colour of a box is the one its status maps to, the canvas
         colour for a shape without a state: a matched GT therefore stays
-        green, a missed one turns orange red (see shape_colors). A
+        green, a missed one turns red (see shape_colors). A
         single pen is not enough any more, because a miss may sit right
         next to a match on the very same canvas.
 
@@ -1124,6 +1198,134 @@ class ImageCanvas(QtWidgets.QWidget):
             path.addPath(stacked)
         return path
 
+    def _cached_glyphs(
+        self, font: QtGui.QFont, text: str
+    ) -> QtGui.QPainterPath:
+        """Return the stacked glyphs of one label text, built once.
+
+        The path of a label is a pure function of its text and of the
+        font, so the canvas keeps it: shaping a text is work every frame
+        of a pan or of a zoom would repeat for nothing. The key carries
+        the font itself (its key, which holds its family, style, point
+        size and DPI) so a canvas whose label font changed never paints
+        the glyphs of the old one; the point size and the line spacing
+        are constants and are named in the key for the same reason.
+
+        The cache is per instance, never per class: the class level
+        _stacked_glyphs stays the plain builder it always was - the
+        tests compare its elements one by one - and nothing but the
+        paint of this canvas ever reads what is cached here. The table
+        is bounded like the label pixmaps and is dropped together with
+        them (see _drop_label_caches).
+        """
+
+        key = (
+            str(text),
+            font.key(),
+            LABEL_POINT_SIZE,
+            LABEL_LINE_SPACING,
+        )
+        glyphs = self._glyph_cache.get(key)
+        if glyphs is None:
+            glyphs = self._stacked_glyphs(font, str(text))
+            if len(self._glyph_cache) >= _GLYPH_CACHE_LIMIT:
+                # the text of a prediction carries its score, so a
+                # canvas walking a list of records would keep an almost
+                # new path per record: past the limit both label tables
+                # are dropped at once (see _drop_label_caches)
+                self._drop_label_caches()
+            self._glyph_cache[key] = glyphs
+        return glyphs
+
+    def _label_band(
+        self,
+        glyphs: QtGui.QPainterPath,
+        corner: QtCore.QPointF,
+        width: float,
+        height: float,
+    ) -> Optional[Tuple[float, float, float, float, float, float]]:
+        """Measure one label and place it next to its own anchor.
+
+        This is the whole placement of a label, moved here unchanged
+        from the paint of the previous revision: the ink box of the
+        glyphs, the room the outline adds to it, the one text origin the
+        block and its rows share, the horizontal clamp, the flip below
+        the corner and the vertical clamp of the band. The paint only
+        needs the last word - the origin and the ink box - so the
+        measurement and the rendering are one call apart and never
+        drift.
+
+        The answer is None when the label is refused: a text without ink
+        is never painted, a band wider or taller than the widget is
+        dropped whole (a box filling the view has no room for a label
+        anywhere) and so is an origin that would run off the right
+        border even after the clamp. The caller paints exactly the bands
+        this method answers, so the early returns are the ones of the
+        previous revision, to the pixel.
+
+        The answer is
+        (origin_x, origin_y, ink_left, ink_top, ink_right, ink_bottom):
+        the origin is the point the glyphs are translated to and the ink
+        box is the one the rendering is measured on.
+        """
+
+        ink = glyphs.boundingRect()
+        text_width = float(ink.width())
+        if text_width <= 0:
+            return None
+        # The outline of a label is centred on the border of the glyphs,
+        # so only half of it grows them: the room the label needs is
+        # measured on that half, exactly as the glyphs are measured.
+        outline = LABEL_OUTLINE_WIDTH / 2.0
+        ink_left = float(ink.left()) - outline
+        ink_top = float(ink.top()) - outline
+        ink_right = float(ink.right()) + outline
+        ink_bottom = float(ink.bottom()) + outline
+        ink_width = ink_right - ink_left
+        ink_height = max(ink_bottom - ink_top, 1.0)
+        # the band a label occupies is the measured glyphs plus the label
+        # padding; it is what has to fit the widget
+        band_width = ink_width + 2.0 * LABEL_PADDING
+        band_height = ink_height + 2.0 * LABEL_PADDING
+        if band_width > width or band_height > height:
+            return None
+        # one text origin, so the block and the lines never drift apart:
+        # the glyphs are painted at (origin + ink.left, origin + ink.top)
+        origin_x = corner.x() - ink_left
+        if origin_x + ink_right > width - LABEL_MARGIN:
+            origin_x = width - LABEL_MARGIN - ink_right
+        origin_x = max(origin_x, LABEL_MARGIN - ink_left)
+        if origin_x + ink_right > width:
+            return None
+        # above the corner by default; when the room above is missing the
+        # label flips below the corner instead of drifting away from it
+        if corner.y() - LABEL_GAP - ink_bottom >= LABEL_VERTICAL_MARGIN:
+            origin_y = corner.y() - LABEL_GAP - ink_bottom
+        else:
+            # no room above: flip below, unless that would leave the
+            # widget as well - the label of a box the pan pushed off the
+            # view is clamped inside instead of being dropped
+            under = corner.y() + LABEL_GAP - ink_top
+            if under + ink_bottom > height - LABEL_VERTICAL_MARGIN:
+                above = corner.y() - LABEL_GAP - ink_bottom
+                if above >= LABEL_VERTICAL_MARGIN:
+                    under = above
+            origin_y = under
+        band_top = origin_y + ink_top - LABEL_PADDING
+        band_top = min(
+            max(band_top, LABEL_VERTICAL_MARGIN),
+            height - LABEL_VERTICAL_MARGIN - band_height,
+        )
+        origin_y = band_top + LABEL_PADDING - ink_top
+        return (
+            origin_x,
+            origin_y,
+            ink_left,
+            ink_top,
+            ink_right,
+            ink_bottom,
+        )
+
     def _draw_label(
         self,
         painter: QtGui.QPainter,
@@ -1151,72 +1353,34 @@ class ImageCanvas(QtWidgets.QWidget):
         the way the single line of the previous revision was anchored on
         its own ink. The lines of the block keep the left edge of their
         first row and the line step of their own stacking.
+
+        The glyphs come from the cache of the canvas and the placement
+        from _label_band, which is the same measurement this method used
+        to carry itself; the paint is _draw_label_at.
         """
 
-        glyphs = self._stacked_glyphs(font, text)
-        ink = glyphs.boundingRect()
-        text_width = float(ink.width())
-        if text_width <= 0:
+        glyphs = self._cached_glyphs(font, text)
+        band = self._label_band(glyphs, corner, width, height)
+        if band is None:
             return
-        # The outline of a label is centred on the border of the glyphs,
-        # so only half of it grows them: the room the label needs is
-        # measured on that half, exactly as the glyphs are measured.
-        outline = LABEL_OUTLINE_WIDTH / 2.0
-        ink_left = float(ink.left()) - outline
-        ink_top = float(ink.top()) - outline
-        ink_right = float(ink.right()) + outline
-        ink_bottom = float(ink.bottom()) + outline
-        ink_width = ink_right - ink_left
-        ink_height = max(ink_bottom - ink_top, 1.0)
-        # the band a label occupies is the measured glyphs plus the label
-        # padding; it is what has to fit the widget
-        band_width = ink_width + 2.0 * LABEL_PADDING
-        band_height = ink_height + 2.0 * LABEL_PADDING
-        if band_width > width or band_height > height:
-            return
-        # one text origin, so the block and the lines never drift apart:
-        # the glyphs are painted at (origin + ink.left, origin + ink.top)
-        origin_x = corner.x() - ink_left
-        if origin_x + ink_right > width - LABEL_MARGIN:
-            origin_x = width - LABEL_MARGIN - ink_right
-        origin_x = max(origin_x, LABEL_MARGIN - ink_left)
-        if origin_x + ink_right > width:
-            return
-        # above the corner by default; when the room above is missing the
-        # label flips below the corner instead of drifting away from it
-        if corner.y() - LABEL_GAP - ink_bottom >= LABEL_VERTICAL_MARGIN:
-            origin_y = corner.y() - LABEL_GAP - ink_bottom
-        else:
-            # no room above: flip below, unless that would leave the
-            # widget as well - the label of a box the pan pushed off the
-            # view is clamped inside instead of being dropped
-            under = corner.y() + LABEL_GAP - ink_top
-            if under + ink_bottom > height - LABEL_VERTICAL_MARGIN:
-                above = corner.y() - LABEL_GAP - ink_bottom
-                if above >= LABEL_VERTICAL_MARGIN:
-                    under = above
-            origin_y = under
-        band_top = origin_y + ink_top - LABEL_PADDING
-        band_top = min(
-            max(band_top, LABEL_VERTICAL_MARGIN),
-            height - LABEL_VERTICAL_MARGIN - band_height,
-        )
-        origin_y = band_top + LABEL_PADDING - ink_top
+        origin_x, origin_y, _left, _top, _right, _bottom = band
         self._draw_label_at(painter, glyphs, origin_x, origin_y)
 
-    def _draw_label_at(
+    def _draw_label_path(
         self,
         painter: QtGui.QPainter,
         glyphs: QtGui.QPainterPath,
         left: float,
         top: float,
     ) -> None:
-        """Write one label at a widget space position.
+        """Stroke and fill one glyph path at a widget space position.
 
         A label never carries a background plate: the white glyphs are
         stroked with the dark outline first and filled on top of it, so
         the text stays readable on a bright as well as on a dark picture
-        and the picture around it is left untouched.
+        and the picture around it is left untouched. This is the paint
+        of the previous revision, kept unchanged as the fallback of the
+        cached one below.
         """
 
         painter.save()
@@ -1231,10 +1395,175 @@ class ImageCanvas(QtWidgets.QWidget):
         painter.drawPath(glyphs)
         painter.restore()
 
+    @staticmethod
+    def _device_ratio(painter: QtGui.QPainter) -> float:
+        """Return the device pixel ratio of one paint, never under one.
+
+        The band of a label is rendered into a table allocated from this
+        number (see _render_label_pixmap) and keyed by it, so the ratio
+        has to be a usable one: a device answers zero only before it was
+        given a ratio, and a zero would be an empty table - or a
+        division by zero in the blit - instead of a one to one paint.
+        """
+
+        ratio = float(painter.device().devicePixelRatioF())
+        return ratio if ratio > 0 else 1.0
+
+    def _draw_label_at(
+        self,
+        painter: QtGui.QPainter,
+        glyphs: QtGui.QPainterPath,
+        left: float,
+        top: float,
+    ) -> None:
+        """Blit one label at a widget space position, rendering it once.
+
+        The two paints of a label - the dark stroke of its glyphs and the
+        white fill on top of them - are the ones of the previous
+        revision, run on the very same QPainter stack: the font, the DPI
+        and the antialiasing setting of the label pass are the ones of
+        the paint they replace, only the destination is a transparent
+        pixmap instead of the widget. The pixmap is then drawn at the
+        integer origin nearest to the one the placement measured, which
+        is blitted pixel for pixel; a fractional origin would make
+        drawPixmap interpolate and would blur the text, so the origin is
+        rounded and a label can therefore move by at most half a pixel
+        from where the path paint put it (the placement itself is
+        unchanged and so is every other pixel of the geometry).
+
+        The table of a label is a device pixel one and the blit below
+        divides its device size by its own ratio to get the widget band
+        back (see _render_label_pixmap), so the ratio of the screen a
+        table was rendered for belongs to its key: a view moved to a
+        screen of another ratio renders its labels again instead of
+        blitting the band of the first one at the wrong size.
+
+        Hence the cache is a pure accelerator: a miss renders exactly the
+        band the path paint would have drawn, a hit re-blits it, and a
+        label whose pixmap could not be built - a zero sized one, a
+        painter the platform refused to start - falls back to the path
+        paint of the previous revision instead of losing its text.
+        """
+
+        anchor_left = float(round(left))
+        anchor_top = float(round(top))
+        # the band of the glyphs, measured once, is the rectangle the
+        # rendering covers around them (see _render_label_pixmap)
+        ink = glyphs.boundingRect()
+        pad = LABEL_OUTLINE_WIDTH + 1.0
+        offset_x = math.floor(float(ink.left()) - pad)
+        offset_y = math.floor(float(ink.top()) - pad)
+        ratio = self._device_ratio(painter)
+        key = (id(glyphs), anchor_left, anchor_top, ratio)
+        pixmap = self._label_cache.get(key)
+        if pixmap is None:
+            self._label_cache_misses += 1
+            pixmap = self._render_label_pixmap(
+                painter, glyphs, offset_x, offset_y
+            )
+            if pixmap is not None:
+                if len(self._label_cache) >= _LABEL_CACHE_LIMIT:
+                    # an unbounded table would keep the pixmap of every
+                    # text this canvas ever drew: past the limit both
+                    # label tables are dropped, which costs one render
+                    # of the labels of the next frame and nothing else
+                    self._drop_label_caches()
+                self._label_cache[key] = pixmap
+        else:
+            self._label_cache_hits += 1
+        if pixmap is None:
+            self._draw_label_path(painter, glyphs, left, top)
+            return
+        # the pixmap is blitted at the position the glyphs would have
+        # been translated to: the anchor the band was rendered from is
+        # put back, so the glyphs land on the widget pixel they belong
+        # to. Its device size over its own ratio is the widget band the
+        # placement measured (see _render_label_pixmap), so the blit
+        # stays one to one whatever the ratio of the screen
+        pixmap_ratio = float(pixmap.devicePixelRatio())
+        if pixmap_ratio <= 0:
+            pixmap_ratio = 1.0
+        painter.drawPixmap(
+            QtCore.QRectF(
+                anchor_left + float(offset_x),
+                anchor_top + float(offset_y),
+                pixmap.width() / pixmap_ratio,
+                pixmap.height() / pixmap_ratio,
+            ),
+            pixmap,
+            QtCore.QRectF(pixmap.rect()),
+        )
+
+    def _render_label_pixmap(
+        self,
+        painter: QtGui.QPainter,
+        glyphs: QtGui.QPainterPath,
+        offset_x: float,
+        offset_y: float,
+    ) -> Optional[QtGui.QPixmap]:
+        """Render one label band onto a transparent pixmap.
+
+        The band is the ink box of the glyphs widened by the stroke of
+        the outline - and by one pixel of slack, because the rasterizer
+        of a stroke is free to light a pixel just outside the geometric
+        border - so the pixmap holds the whole painted band and never
+        clips an edge of it. That band is measured in the logical
+        (widget) pixels of the paint, while a QPixmap is allocated in
+        DEVICE pixels: the table is therefore sized by the device pixel
+        ratio of the paint and then handed that ratio back, so that its
+        own logical size is the band again. Sizing it with the logical
+        numbers instead would give the table a logical size of
+        width / ratio, and the glyphs - whose coordinates are the
+        logical ones of the widget - would be clipped to that fraction:
+        the label would come out at 1 / ratio of its size, half size and
+        unreadable on a 2x screen. The stroke and the fill run under the
+        very same pen and brush of the path paint, at a translation that
+        puts the glyphs at the origin of the pixmap; the two offsets are
+        the widget point that origin stands for, which is what lets the
+        caller blit the pixmap at the position it belongs to.
+        """
+
+        ink = glyphs.boundingRect()
+        pad = LABEL_OUTLINE_WIDTH + 1.0
+        width = max(int(math.ceil(float(ink.right()) + pad) - offset_x), 0)
+        height = max(int(math.ceil(float(ink.bottom()) + pad) - offset_y), 0)
+        if width <= 0 or height <= 0:
+            return None
+        ratio = self._device_ratio(painter)
+        pixmap = QtGui.QPixmap(
+            max(int(round(width * ratio)), 1),
+            max(int(round(height * ratio)), 1),
+        )
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        pixmap_painter = QtGui.QPainter()
+        if not pixmap_painter.begin(pixmap):
+            return None
+        try:
+            pixmap_painter.setRenderHint(
+                QtGui.QPainter.RenderHint.Antialiasing,
+                painter.testRenderHint(
+                    QtGui.QPainter.RenderHint.Antialiasing
+                ),
+            )
+            pixmap_painter.translate(-offset_x, -offset_y)
+            pen = QtGui.QPen(LABEL_OUTLINE)
+            pen.setWidthF(LABEL_OUTLINE_WIDTH)
+            pixmap_painter.setPen(pen)
+            pixmap_painter.setBrush(QtGui.QBrush())
+            pixmap_painter.drawPath(glyphs)
+            pixmap_painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            pixmap_painter.setBrush(QtGui.QBrush(TEXT_COLOR))
+            pixmap_painter.drawPath(glyphs)
+        finally:
+            pixmap_painter.end()
+        return pixmap
+
 
 __all__ = [
     "BOX_COLOR",
     "CLASS_MISMATCH_COLOR",
+    "ERROR_COLOR",
     "FALSE_POSITIVE_COLOR",
     "FIT_PADDING",
     "GT_COLOR",

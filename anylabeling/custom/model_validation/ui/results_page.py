@@ -12,8 +12,8 @@ The list itself is a *tree*, not an editable table: nothing in it may be
 typed over. A double click, F2 and every edit trigger are refused by the
 widget (RecordTree sets NoEditTriggers, keeps the read only item flags
 and refuses the non virtual editItem), the only interactive control of a
-row is its own checkbox and the only keyboard interaction is the row
-selection.
+row is its own checkbox and the keyboard only selects a row or marks the
+current one (see SHORTCUT_HINT).
 
 The right hand side is read only and shows pictures only: the two
 canvases display the ground truth and the predictions of the current row,
@@ -23,19 +23,20 @@ predicted box, the ground truth canvas writes the label of each GT box. A
 label never carries a background plate: it is white text with a thin dark
 outline, and a box is never filled either - only its outline is painted.
 
-The colour of that outline is the verdict of the box. The page reads the
-judgement detail of the displayed record once and hands each canvas the
-states of its own shapes - the states of the very same matching, so a
-defect keeps one colour on both pictures: a matched GT stays green and a
-matched prediction stays blue, a GT no prediction met (a miss) is drawn
-orange red, a prediction no GT met (a false positive) is drawn magenta, a
-matched pair of two different classes is drawn orange and a pair whose
-IoU stayed under the threshold is drawn dark yellow. The states travel as
-a display side copy: the detail of the record is only read, never
-written. A record without a judgement - an augmented copy nobody judged, a
-skipped record - colours no box and keeps the plain GT / Pred colour. The
-legend under the display row writes those five colours next to the state
-each of them means.
+The colour of that outline is the verdict of the box, and it is one of
+three: a matched GT stays green and a matched prediction stays blue,
+while every error of the run is drawn red - a GT no prediction met (a
+miss), a prediction no GT met (a false positive), a matched pair of two
+different classes, a pair whose IoU stayed under the threshold and a
+matched prediction whose score stayed under the NG score threshold of
+the run are all the one red. The page reads the judgement detail of the
+displayed record once and hands each canvas the states of its own
+shapes, the states of the very same matching, so a defect is red on
+both pictures. The states travel as a display side copy: the detail of
+the record is only read, never written. A record without a judgement -
+an augmented copy nobody judged, a skipped record - colours no box and
+keeps the plain GT / Pred colour. The legend under the display row
+writes those three colours next to the state each of them means.
 
 Ticking a mark never rebuilds the list. The checkbox of a mark is the
 flag itself, so a toggle is answered by rewriting the rows that really
@@ -84,6 +85,7 @@ from ..multilabel import expand_multilabel_rows
 from . import image_view as image_view_module
 from .image_view import (
     CLASS_MISMATCH_COLOR,
+    ERROR_COLOR,
     FALSE_POSITIVE_COLOR,
     GT_COLOR,
     IOU_BELOW_COLOR,
@@ -157,41 +159,39 @@ KIND_SORT_ORDER = {
 GREY_TEXT_COLOR = QtGui.QColor(140, 140, 140)
 
 # The keyboard navigation of the list: one letter per direction, so the
-# two hands never leave the mouse row. The follow of the current record
-# in the main window costs no letter at all, so the hint only says that
-# it happens by itself.
+# two hands never leave the mouse row, and the space bar marks the row
+# the user is on. The follow of the current record in the main window
+# costs no key at all, so the hint only says that it happens by itself.
 SHORTCUT_HINT = (
     "快捷键：A 上一张 / D 下一张（到首尾停住，选中行自动滚动到可见）；"
-    "主窗口跟随当前记录自动打开。"
+    "空格 标记 / 取消标记当前图片；主窗口跟随当前记录自动打开。"
 )
 SHORTCUT_TOOLTIP = (
     "结果页快捷键：A = 上一张，D = 下一张；"
+    "空格 = 标记 / 取消标记当前图片"
+    "（原图 = 删除标记，增强图 = 选择标记）；"
     "焦点在本页（含列表内）时生效，到首尾即停，不循环；"
     "当前记录一变，主窗口自动打开该记录，无需按键。"
 )
 
 # The legend of the judgement colours, on its own line under the display
-# controls. Every entry writes the colour of the canvas constants next to
-# the state it means, so the legend can never drift away from what the
-# boxes really use. The hint names the source of the states: both
-# canvases are coloured by the one matching of the displayed record, so a
-# single defect carries a single colour on the left and on the right.
+# controls. It is one line of the three colours the boxes really use -
+# green for a normal original mark, blue for a normal inference result
+# and the one red for every error - and every entry writes the colour of
+# the canvas constants next to what it means, so the legend can never
+# drift away from what the boxes use. The hint names the source of the
+# states: both canvases are coloured by the one matching of the displayed
+# record, so a single defect is red on the left and on the right.
 LEGEND_HTML = (
     "<b>图例</b> "
-    "<span style='color:{gt}'>匹配</span>=框本色 "
-    "<span style='color:{miss}'>漏报 GT</span> "
-    "<span style='color:{fp}'>误报 Pred</span> "
-    "<span style='color:{cls}'>类别不一致</span> "
-    "<span style='color:{iou}'>IoU 低</span> "
-    "<span style='color:{low}'>低分</span>"
-    "<br/>两侧同源判定：左侧按 GT 状态、右侧按 Pred 状态着色；"
-    "无判定的记录不改色。"
+    "<span style='color:{gt}'>绿色 = 原始标记正常</span> "
+    "<span style='color:{pred}'>蓝色 = 推理结果正常</span> "
+    "<span style='color:{err}'>红色 = 异常</span>"
 )
 LEGEND_TOOLTIP = (
-    "框色即判定：匹配对保持 GT 绿 / Pred 蓝；漏报（GT 未匹配到预测）橙红；"
-    "误报（预测未匹配到 GT）品红；类别不一致橙；IoU 低于阈值黄；"
-    "匹配对中预测分数低于 NG 分数阈值青绿。"
-    "两侧状态来自同一次匹配，无判定明细的记录保持默认框色。"
+    "绿色 = 原始标记正常；蓝色 = 推理结果正常；红色 = 异常，含漏报 "
+    "GT / 误报 Pred / 类别不一致 / IoU 低于阈值 / 分数低于 NG 阈值；"
+    "左右两侧同源判定，无判定记录保持本色"
 )
 
 # The filters of the list: an empty key shows every record, a verdict of
@@ -277,11 +277,8 @@ def legend_html() -> str:
 
     return LEGEND_HTML.format(
         gt=GT_COLOR.name(),
-        miss=MISS_COLOR.name(),
-        fp=FALSE_POSITIVE_COLOR.name(),
-        cls=CLASS_MISMATCH_COLOR.name(),
-        iou=IOU_BELOW_COLOR.name(),
-        low=LOW_SCORE_COLOR.name(),
+        pred=PRED_COLOR.name(),
+        err=ERROR_COLOR.name(),
     )
 
 
@@ -1176,9 +1173,9 @@ class ResultsPage(QtWidgets.QWidget):
 
         # The legend of the judgement colours closes the display controls:
         # the display row shares its width with the two canvases below it,
-        # where the five entries of the legend do not fit, so the legend
-        # gets the line of its own under the row. It is rich text of a few
-        # words and never pushes the window wider than the width the two
+        # where the three entries of the legend do not fit, so the legend
+        # gets the line of its own under the row. It is one line of rich
+        # text and never pushes the window wider than the width the two
         # canvases need: a label only ever shrinks.
         self.legend_label = QtWidgets.QLabel(legend_html())
         self.legend_label.setToolTip(self.tr(LEGEND_TOOLTIP))
@@ -1260,13 +1257,16 @@ class ResultsPage(QtWidgets.QWidget):
         self._install_shortcuts()
 
     def _install_shortcuts(self) -> None:
-        """Install the A / D navigation of the list.
+        """Install the A / D navigation and the space mark of the list.
 
-        Both shortcuts belong to this page *and to its children*, so they
-        fire while the list (or any other control of the page) holds the
-        focus and they never fire while the user works in another window.
-        A single letter is no shortcut of the tree itself, so the list
-        never swallows the key.
+        The three shortcuts belong to this page *and to its children*, so
+        they fire while the list (or any other control of the page) holds
+        the focus and they never fire while the user works in another
+        window. A single letter is no shortcut of the tree itself, so the
+        list never swallows the key. The space belongs to this page as
+        well and is answered before the focused control sees it, so a
+        press marks the *current row* once and never the checkbox or the
+        button that happens to hold the focus.
         """
 
         self.previous_shortcut = QtGui.QShortcut(
@@ -1283,6 +1283,13 @@ class ResultsPage(QtWidgets.QWidget):
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
         self.next_shortcut.activated.connect(self.select_next_record)
+        self.mark_shortcut = QtGui.QShortcut(
+            QtGui.QKeySequence(QtCore.Qt.Key.Key_Space), self
+        )
+        self.mark_shortcut.setContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self.mark_shortcut.activated.connect(self.toggle_current_mark)
 
     # ---------------------------------------------------------- navigation
     def select_relative_row(self, step: int) -> bool:
@@ -1757,6 +1764,32 @@ class ResultsPage(QtWidgets.QWidget):
         return None
 
     # ------------------------------------------------------------- marking
+    def toggle_current_mark(self) -> bool:
+        """Toggle the mark of the current record (the space shortcut).
+
+        The mark of a row is the very flag the export formula reads, so
+        the key only picks the target state of that flag and emits the
+        signals the checkbox of the row emits: an original moves
+        records.deleted, an augmented copy records.include_in_export.
+        The dialog answers both with its point update and its counters
+        (see on_toggle_deleted / on_toggle_export), which is why this
+        page keeps no second state path of its own.
+
+        A page without a current record - an empty list, a filter that
+        left no row selected - marks nothing and answers False instead
+        of raising.
+        """
+
+        record = self.current_record()
+        if record is None:
+            return False
+        target = not self.mark_state(record)
+        if record.kind == records_module.KIND_AUGMENTED:
+            self.toggle_export.emit([record.record_id], target)
+        else:
+            self.toggle_deleted.emit([record.record_id], target)
+        return True
+
     # The three batch commands below own no button of the page any more:
     # they are the slots of the context menu of the list (see
     # _show_context_menu). A single row is marked through its own

@@ -1,14 +1,15 @@
 """Judgement colours of the two canvases and the colour legend.
 
 A box of the results page is coloured by what the matching of its record
-did to it: a matched GT stays green and a matched prediction stays blue,
-a GT no prediction met is orange red, a prediction no GT met is magenta,
-a matched pair of two different classes is orange, a pair under the
-IoU threshold is dark yellow and a matched pair whose prediction scored
-under the NG score threshold is teal. Every assertion of this file
-reads the rendered pixels of a real canvas - the RGBA the painter really
-wrote - and the sizes of the real page, so the rule is checked as the
-user sees it and not as the code intends it.
+did to it, and that colour is one of three: a matched GT stays green and
+a matched prediction stays blue, while every error of the run is red - a
+GT no prediction met (a miss), a prediction no GT met (a false
+positive), a matched pair of two different classes, a pair under the IoU
+threshold and a matched pair whose prediction scored under the NG score
+threshold of the run all carry the one ERROR_COLOR. Every assertion of
+this file reads the rendered pixels of a real canvas - the RGBA the
+painter really wrote - and the sizes of the real page, so the rule is
+checked as the user sees it and not as the code intends it.
 
 The record of the pixel tests carries one defect of every kind:
 a GT no prediction reaches (a miss), a prediction no GT reaches (a false
@@ -53,12 +54,8 @@ from anylabeling.custom.model_validation.ui.dialog import (
     ModelValidationDialog,
 )
 from anylabeling.custom.model_validation.ui.image_view import (
-    CLASS_MISMATCH_COLOR,
-    FALSE_POSITIVE_COLOR,
+    ERROR_COLOR,
     GT_COLOR,
-    IOU_BELOW_COLOR,
-    LOW_SCORE_COLOR,
-    MISS_COLOR,
     PRED_COLOR,
     STATE_CLASS_MISMATCH,
     STATE_FALSE_POSITIVE,
@@ -198,9 +195,9 @@ def judged_record() -> records_module.ValidationRecord:
 # The NG score threshold the low score rule is judged with. It sits
 # over every prediction score of the record (0.91, 0.77, 0.64), so all
 # three predictions carry the judge's low score flag. The two matched
-# pairs turn teal; the unmatched one keeps the magenta of its own side,
-# because a false positive is the more important signal of its box (see
-# test_an_unmatched_low_score_box_stays_magenta below).
+# pairs turn red, and so does the unmatched one, because a false
+# positive is the more important signal of its box (see
+# test_an_unmatched_low_score_box_stays_red below).
 LOW_SCORE_THRESHOLD = 0.95
 
 
@@ -210,8 +207,8 @@ def low_score_record() -> records_module.ValidationRecord:
     The predictions and the matching of the record are the ones above;
     only the NG score threshold is part of the judgement, so every
     prediction carries a True low score flag. The unmatched prediction -
-    the pair no match points at - keeps its magenta all the same,
-    however low its score is.
+    the pair no match points at - is red all the same, however low its
+    score is.
     """
 
     record = judged_record()
@@ -436,7 +433,7 @@ def test_a_matched_row_beside_an_ignored_shape_keeps_its_own_box(qt_app):
     The row list of the record is [point, rectangle] while the verdict
     was handed the rectangle alone, so its pred_index 0 points at the
     row 1 of the screen. The matched row is the one of another class, so
-    its box is the orange of a class mismatch, and the point keeps the
+    its box is the red of a class mismatch, and the point keeps the
     plain colour of an ignored shape (see pred_valid). A reader of that
     index that skipped the mapping back to the row position would flag
     the matched row as a false positive instead.
@@ -467,17 +464,12 @@ def test_a_matched_row_beside_an_ignored_shape_keeps_its_own_box(qt_app):
     canvas.set_shapes([], payload, (), states)
     rendered = render_rgba(canvas)
     assert (
-        stroke_pixels(canvas, rendered, CLASS_MISMATCH_COLOR, *TWO_LEFT_A)
+        stroke_pixels(canvas, rendered, ERROR_COLOR, *TWO_LEFT_A)
         > MIN_STROKE_PIXELS
     )
-    # the matched row is never painted as the false positive of another
-    # row of the list
-    assert (
-        stroke_pixels(
-            canvas, rendered, FALSE_POSITIVE_COLOR, *TWO_LEFT_A
-        )
-        == 0
-    )
+    # the matched row is red for the mismatch of its own class and never
+    # the plain blue of the ignored point of the very same list
+    assert stroke_pixels(canvas, rendered, PRED_COLOR, *TWO_LEFT_A) == 0
 
 
 def test_a_box_takes_the_highest_state_of_its_rows(qt_app):
@@ -535,9 +527,7 @@ def test_a_box_takes_the_highest_state_of_its_rows(qt_app):
     rendered = render_rgba(canvas)
     for start, end in (TWO_LEFT_A, TWO_RIGHT):
         assert (
-            stroke_pixels(
-                canvas, rendered, FALSE_POSITIVE_COLOR, start, end
-            )
+            stroke_pixels(canvas, rendered, ERROR_COLOR, start, end)
             > MIN_STROKE_PIXELS
         )
     # the matched row of the left box does not repaint it blue
@@ -551,7 +541,8 @@ def test_the_state_of_a_matched_row_reaches_its_own_box(qt_app):
     score threshold of the run, so its own row is the low score state;
     the anchor below it is a matchable row the judge never pairs, so it
     is the false positive of its own box. Each box therefore shows the
-    state of its own row and the two colours coexist on the one card.
+    state of its own row - the low score of one and the false positive
+    of the other - and both of them are the one red on the one card.
     """
 
     record = low_score_row_record()
@@ -575,21 +566,19 @@ def test_the_state_of_a_matched_row_reaches_its_own_box(qt_app):
     canvas.set_shapes([], payload, (), states)
     rendered = render_rgba(canvas)
     assert (
-        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *LOW_SCORE_BOX)
+        stroke_pixels(canvas, rendered, ERROR_COLOR, *LOW_SCORE_BOX)
         > MIN_STROKE_PIXELS
     )
     assert (
-        stroke_pixels(
-            canvas, rendered, FALSE_POSITIVE_COLOR, *FREE_ROW_BOX
-        )
+        stroke_pixels(canvas, rendered, ERROR_COLOR, *FREE_ROW_BOX)
         > MIN_STROKE_PIXELS
     )
-    # neither the plain colour of the matched row nor a colour of the
-    # other box reached the box under test
+    # neither box kept the plain colour of a prediction: the low score
+    # of the first row and the false positive of the second one reddened
+    # the box each of them belongs to, so a state that reached the other
+    # box - or no state at all - would leave the plain colour behind
     assert stroke_pixels(canvas, rendered, PRED_COLOR, *LOW_SCORE_BOX) == 0
-    assert (
-        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *FREE_ROW_BOX) == 0
-    )
+    assert stroke_pixels(canvas, rendered, PRED_COLOR, *FREE_ROW_BOX) == 0
 
 
 def test_the_class_mismatch_of_a_row_wins_over_its_low_score(qt_app):
@@ -602,8 +591,8 @@ def test_the_class_mismatch_of_a_row_wins_over_its_low_score(qt_app):
     Both scores of the record sit under
     the NG score threshold, therefore the mismatched pair carries a
     class mismatch AND a low score at once: the class mismatch is the
-    reason the judge ranks in front of the low score, so the box is
-    orange and never teal.
+    reason the judge ranks in front of the low score, so the box shows
+    the mismatch and never the score.
     """
 
     record = pair_palette_record()
@@ -638,14 +627,12 @@ def test_the_class_mismatch_of_a_row_wins_over_its_low_score(qt_app):
     canvas.set_shapes([], payload, (), states)
     rendered = render_rgba(canvas)
     assert (
-        stroke_pixels(canvas, rendered, CLASS_MISMATCH_COLOR, *TWO_LEFT_A)
+        stroke_pixels(canvas, rendered, ERROR_COLOR, *TWO_LEFT_A)
         > MIN_STROKE_PIXELS
     )
-    # neither the low score of the very same pair nor the plain colour
-    # of the matched row is what the box shows
-    assert (
-        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *TWO_LEFT_A) == 0
-    )
+    # the class mismatch of the very same row is the state the box
+    # shows, and the box it painted is red and never the plain blue of
+    # the matched row
     assert stroke_pixels(canvas, rendered, PRED_COLOR, *TWO_LEFT_A) == 0
 
 
@@ -677,8 +664,8 @@ def test_a_detail_without_the_row_map_keeps_the_legacy_colours(qt_app):
     payload = detail["predictions"]
     colors = shape_colors(payload, PRED_COLOR, expected)
     assert rgba(colors[0]) == rgba(PRED_COLOR)
-    assert rgba(colors[1]) == rgba(IOU_BELOW_COLOR)
-    assert rgba(colors[2]) == rgba(FALSE_POSITIVE_COLOR)
+    assert rgba(colors[1]) == rgba(ERROR_COLOR)
+    assert rgba(colors[2]) == rgba(ERROR_COLOR)
 
 
 def test_a_row_map_that_does_not_line_up_keeps_every_box_plain(qt_app):
@@ -972,12 +959,12 @@ def test_the_status_lists_never_write_into_the_record_detail(qt_app):
     )
 
 
-def test_every_box_of_the_ground_truth_canvas_has_its_own_colour(qt_app):
+def test_every_box_of_the_ground_truth_is_green_or_red(qt_app):
     """Pixel evidence: the RGBA of every stroke of the GT canvas.
 
     The canvas is handed the states of the real judgement, so the three
-    strokes have to be the green of a matched GT, the dark yellow of a
-    pair under the threshold and the orange red of a miss.
+    strokes have to be the green of a matched GT and the red of the two
+    errors of the record: the pair under the IoU threshold and the miss.
     """
 
     record = judged_record()
@@ -989,22 +976,23 @@ def test_every_box_of_the_ground_truth_canvas_has_its_own_colour(qt_app):
     rendered = render_rgba(canvas)
 
     matched = stroke_pixels(canvas, rendered, GT_COLOR, *MATCHED)
-    below = stroke_pixels(canvas, rendered, IOU_BELOW_COLOR, *LOW_IOU)
-    missed = stroke_pixels(canvas, rendered, MISS_COLOR, *MISSED)
+    below = stroke_pixels(canvas, rendered, ERROR_COLOR, *LOW_IOU)
+    missed = stroke_pixels(canvas, rendered, ERROR_COLOR, *MISSED)
     assert matched > MIN_STROKE_PIXELS
     assert below > MIN_STROKE_PIXELS
     assert missed > MIN_STROKE_PIXELS
-    # every stroke is opaque and beside the two others: the colours are
-    # really the ones the constants name, at the RGBA level
+    # the two errors of the list paint the one red and the box that
+    # carries no error keeps the green: the two colours are really the
+    # ones the constants name, at the RGBA level
     assert GT_COLOR == QtGui.QColor(46, 204, 113)
-    assert MISS_COLOR == QtGui.QColor(231, 76, 60)
-    assert IOU_BELOW_COLOR == QtGui.QColor(241, 196, 15)
-    for color in (GT_COLOR, IOU_BELOW_COLOR, MISS_COLOR):
+    assert ERROR_COLOR == QtGui.QColor(231, 76, 60)
+    assert PRED_COLOR == QtGui.QColor(52, 152, 219)
+    for color in (GT_COLOR, ERROR_COLOR, PRED_COLOR):
         assert color.alpha() == 255
 
 
-def test_every_box_of_the_prediction_canvas_has_its_own_colour(qt_app):
-    "Pixel evidence: the blue, the yellow and the magenta of a prediction."
+def test_every_box_of_the_prediction_canvas_is_blue_or_red(qt_app):
+    "Pixel evidence: a prediction box is blue and an error is red."
 
     record = judged_record()
     predictions = record.detail["predictions"]
@@ -1015,21 +1003,23 @@ def test_every_box_of_the_prediction_canvas_has_its_own_colour(qt_app):
     rendered = render_rgba(canvas)
 
     matched = stroke_pixels(canvas, rendered, PRED_COLOR, *MATCHED)
-    below = stroke_pixels(canvas, rendered, IOU_BELOW_COLOR, *LOW_IOU_PRED)
+    below = stroke_pixels(canvas, rendered, ERROR_COLOR, *LOW_IOU_PRED)
     false_positive = stroke_pixels(
-        canvas, rendered, FALSE_POSITIVE_COLOR, *FALSE_POSITIVE
+        canvas, rendered, ERROR_COLOR, *FALSE_POSITIVE
     )
     assert matched > MIN_STROKE_PIXELS
     assert below > MIN_STROKE_PIXELS
     assert false_positive > MIN_STROKE_PIXELS
+    # the two errors of the record are the one red and the box that
+    # matched well keeps the blue of a prediction
     assert PRED_COLOR == QtGui.QColor(52, 152, 219)
-    assert FALSE_POSITIVE_COLOR == QtGui.QColor(155, 89, 182)
+    assert ERROR_COLOR == QtGui.QColor(231, 76, 60)
     assert PRED_COLOR.alpha() == 255
-    assert FALSE_POSITIVE_COLOR.alpha() == 255
+    assert ERROR_COLOR.alpha() == 255
 
 
-def test_a_class_mismatch_is_painted_orange_on_both_sides(qt_app):
-    "A matched pair of two classes: orange on the GT and on the Pred box."
+def test_a_class_mismatch_is_painted_red_on_both_sides(qt_app):
+    "A matched pair of two classes: red on the GT and on the Pred box."
 
     ground_truth = [rect(*MATCHED, label="a0_dian")]
     predictions = [rect(*MATCHED, label="a1_xian", score=0.88)]
@@ -1039,8 +1029,8 @@ def test_a_class_mismatch_is_painted_orange_on_both_sides(qt_app):
 
     assert gt_statuses(detail, ground_truth) == [STATE_CLASS_MISMATCH]
     assert pred_statuses(detail, predictions) == [STATE_CLASS_MISMATCH]
-    assert shape_color(STATE_CLASS_MISMATCH) == CLASS_MISMATCH_COLOR
-    assert CLASS_MISMATCH_COLOR == QtGui.QColor(230, 126, 34)
+    assert shape_color(STATE_CLASS_MISMATCH) == ERROR_COLOR
+    assert ERROR_COLOR == QtGui.QColor(231, 76, 60)
 
     for side, shapes, statuses in (
         ("gt", ground_truth, gt_statuses(detail, ground_truth)),
@@ -1054,7 +1044,7 @@ def test_a_class_mismatch_is_painted_orange_on_both_sides(qt_app):
             () if side == "gt" else statuses,
         )
         painted = stroke_pixels(
-            canvas, render_rgba(canvas), CLASS_MISMATCH_COLOR, *MATCHED
+            canvas, render_rgba(canvas), ERROR_COLOR, *MATCHED
         )
         assert painted > MIN_STROKE_PIXELS, side
 
@@ -1090,23 +1080,29 @@ def test_a_record_without_a_judgement_keeps_the_plain_colours(qt_app):
             )
             > MIN_STROKE_PIXELS
         )
-    # not one box was flagged
-    for flagged in (MISS_COLOR, FALSE_POSITIVE_COLOR, CLASS_MISMATCH_COLOR):
-        assert (
-            stroke_pixels(
-                ground_truth_canvas, ground_truth_render, flagged, *MISSED
-            )
-            == 0
+    # not one box was flagged: the red of an error is absent from both
+    # canvases, on the box the record never met and on the prediction it
+    # never matched
+    for canvas, rendered, box in (
+        (ground_truth_canvas, ground_truth_render, MISSED),
+        (prediction_canvas, prediction_render, FALSE_POSITIVE),
+    ):
+        assert stroke_pixels(canvas, rendered, ERROR_COLOR, *box) == 0
+    # and each box keeps the plain colour of its own side: the blue of
+    # the prediction canvas is there on the box no ground truth met
+    assert (
+        stroke_pixels(
+            prediction_canvas, prediction_render, PRED_COLOR, *FALSE_POSITIVE
         )
-        assert (
-            stroke_pixels(
-                prediction_canvas,
-                prediction_render,
-                flagged,
-                *FALSE_POSITIVE,
-            )
-            == 0
+        > MIN_STROKE_PIXELS
+    )
+    # and the blue of a prediction never reaches the left canvas
+    assert (
+        stroke_pixels(
+            ground_truth_canvas, ground_truth_render, PRED_COLOR, *MISSED
         )
+        == 0
+    )
 
 
 def test_a_status_list_that_does_not_line_up_is_refused_as_a_whole(qt_app):
@@ -1129,7 +1125,7 @@ def test_a_status_list_that_does_not_line_up_is_refused_as_a_whole(qt_app):
     assert rgba(shape_colors(shapes, GT_COLOR, None)) == [rgba(GT_COLOR)] * 3
     assert (
         rgba(shape_colors(shapes, GT_COLOR, [STATE_MISS] * 3))
-        == [rgba(MISS_COLOR)] * 3
+        == [rgba(ERROR_COLOR)] * 3
     )
     # an unknown state is a box of its own canvas, never a miss
     assert (
@@ -1140,7 +1136,7 @@ def test_a_status_list_that_does_not_line_up_is_refused_as_a_whole(qt_app):
     canvas = make_canvas()
     canvas.set_shapes(shapes, [], [STATE_MISS])
     rendered = render_rgba(canvas)
-    assert stroke_pixels(canvas, rendered, MISS_COLOR, *MISSED) == 0
+    assert stroke_pixels(canvas, rendered, ERROR_COLOR, *MISSED) == 0
     assert (
         stroke_pixels(canvas, rendered, GT_COLOR, *MISSED) > MIN_STROKE_PIXELS
     )
@@ -1153,13 +1149,14 @@ def test_a_status_list_that_does_not_line_up_is_refused_as_a_whole(qt_app):
 
 
 # ------------------------------------------------------------ low score
-def test_a_low_score_pair_is_teal_on_both_sides(qt_app):
+def test_a_low_score_pair_is_red_on_both_sides(qt_app):
     """Pixel evidence: the pair whose score is under the NG score threshold.
 
     The matched pairs of the record are judged with a NG score threshold
     over their own prediction scores, so both of them carry the low
-    score flag of the judge. Their strokes therefore turn the teal of
-    the low score state on the GT canvas as well as on the Pred one.
+    score flag of the judge. The strokes of the two are therefore the
+    red of an error on the GT canvas as well as on the Pred one, and
+    neither of them keeps the plain colour of its own side.
     """
 
     record = low_score_record()
@@ -1169,7 +1166,7 @@ def test_a_low_score_pair_is_teal_on_both_sides(qt_app):
     pred_states = pred_statuses(record.detail, predictions)
 
     # both matched pairs carry the flag of the judge, and a flagged pair
-    # is teal whatever its IoU is: the perfectly matched pair is NOT
+    # is red whatever its IoU is: the perfectly matched pair is NOT
     # hidden behind the plain colour of a valid pair, only a class
     # mismatch wins over the score (see matched_pair_state)
     assert [pair["low_score"] for pair in record.detail["matched"]] == [
@@ -1199,28 +1196,28 @@ def test_a_low_score_pair_is_teal_on_both_sides(qt_app):
         )
         rendered = render_rgba(canvas)
         # the pair under the IoU threshold and the perfect pair are both
-        # teal: the score rule is not gated on the IoU rule
+        # red: the score rule is not gated on the IoU rule
         assert (
-            stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *LOW_IOU)
+            stroke_pixels(canvas, rendered, ERROR_COLOR, *LOW_IOU)
             > MIN_STROKE_PIXELS
         ), side
         assert (
-            stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *MATCHED)
+            stroke_pixels(canvas, rendered, ERROR_COLOR, *MATCHED)
             > MIN_STROKE_PIXELS
         ), side
-        # and the teal replaced the dark yellow of the plain IoU rule
-        assert (
-            stroke_pixels(canvas, rendered, IOU_BELOW_COLOR, *LOW_IOU) == 0
-        ), side
+        # and the red replaced the plain colour of the own side of the
+        # box: the perfectly matched pair is not painted blue any more,
+        # however fine its own colour would be
+        assert stroke_pixels(canvas, rendered, PRED_COLOR, *MATCHED) == 0
 
 
-def test_an_unmatched_low_score_box_stays_magenta(qt_app):
+def test_an_unmatched_low_score_box_stays_red(qt_app):
     """The false positive signal wins over the score of the same box.
 
     The prediction no GT met scores under the NG score threshold as
     well, but the miss signal of its own side is the more important one:
-    the box keeps the magenta of a false positive instead of carrying
-    two meanings at once.
+    the box is then the red of a false positive, which is the colour of
+    the low score too, so the two never fight over the pixels.
     """
 
     record = low_score_record()
@@ -1244,15 +1241,13 @@ def test_an_unmatched_low_score_box_stays_magenta(qt_app):
     )
     rendered = render_rgba(canvas)
     assert (
-        stroke_pixels(
-            canvas, rendered, FALSE_POSITIVE_COLOR, *FALSE_POSITIVE
-        )
+        stroke_pixels(canvas, rendered, ERROR_COLOR, *FALSE_POSITIVE)
         > MIN_STROKE_PIXELS
     )
-    # the stroke right around that box is the magenta one and never teal
+    # the stroke right around that box is the red of its own state and
+    # never the plain blue of a prediction the run accepted
     assert (
-        stroke_pixels(canvas, rendered, LOW_SCORE_COLOR, *FALSE_POSITIVE)
-        == 0
+        stroke_pixels(canvas, rendered, PRED_COLOR, *FALSE_POSITIVE) == 0
     )
 
 
@@ -1334,53 +1329,66 @@ def test_the_matched_pair_state_reads_the_low_score_flag(qt_app):
     ]
 
 
-def test_the_low_score_state_has_its_own_colour(qt_app):
-    "The teal of the low score state is a named constant of the canvas."
+def test_the_error_state_has_one_colour(qt_app):
+    "All five error states are painted with the one ERROR_COLOR."
 
     assert image_view_module.STATE_LOW_SCORE == "LOW_SCORE"
-    assert LOW_SCORE_COLOR == QtGui.QColor(26, 188, 156)
-    assert shape_color(STATE_LOW_SCORE) == LOW_SCORE_COLOR
-    assert image_view_module.STATE_TO_COLOR[STATE_LOW_SCORE] == LOW_SCORE_COLOR
-    # and it is not one of the six colours already in use
-    used = {
-        name: getattr(image_view_module, name)
-        for name in (
-            "GT_COLOR",
-            "PRED_COLOR",
-            "MISS_COLOR",
-            "FALSE_POSITIVE_COLOR",
-            "CLASS_MISMATCH_COLOR",
-            "IOU_BELOW_COLOR",
-        )
-    }
-    for name, color in used.items():
-        assert rgba(color) != rgba(LOW_SCORE_COLOR), name
-    for name in ("STATE_LOW_SCORE", "LOW_SCORE_COLOR"):
+    # the red is a named constant of the canvas, and it is the colour of
+    # every error of the map, the low score state included
+    assert ERROR_COLOR == QtGui.QColor(231, 76, 60)
+    assert ERROR_COLOR.alpha() == 255
+    assert image_view_module.ERROR_COLOR == ERROR_COLOR
+    for state in (
+        STATE_MISS,
+        STATE_FALSE_POSITIVE,
+        STATE_CLASS_MISMATCH,
+        STATE_IOU_BELOW,
+        STATE_LOW_SCORE,
+    ):
+        assert shape_color(state) == ERROR_COLOR, state
+        assert image_view_module.STATE_TO_COLOR[state] == ERROR_COLOR, state
+    # and the red is neither of the two colours a plain box carries
+    for plain in (GT_COLOR, PRED_COLOR):
+        assert rgba(plain) != rgba(ERROR_COLOR), plain.name()
+    # the old per state names survive as aliases of that one red
+    aliases = (
+        "MISS_COLOR",
+        "FALSE_POSITIVE_COLOR",
+        "CLASS_MISMATCH_COLOR",
+        "IOU_BELOW_COLOR",
+        "LOW_SCORE_COLOR",
+    )
+    for name in aliases:
+        assert name in image_view_module.__all__, name
+        assert getattr(image_view_module, name) == ERROR_COLOR, name
+    for name in ("STATE_LOW_SCORE", "ERROR_COLOR"):
         assert name in image_view_module.__all__, name
 
 
 def test_the_colours_are_module_constants_of_the_canvas(qt_app):
-    "The six judgement colours are named once, in image_view."
+    "The three colours of the boxes are named once, in image_view."
 
     for name, value in (
         ("GT_COLOR", (46, 204, 113)),
         ("PRED_COLOR", (52, 152, 219)),
-        ("MISS_COLOR", (231, 76, 60)),
-        ("FALSE_POSITIVE_COLOR", (155, 89, 182)),
-        ("CLASS_MISMATCH_COLOR", (230, 126, 34)),
-        ("IOU_BELOW_COLOR", (241, 196, 15)),
-        ("LOW_SCORE_COLOR", (26, 188, 156)),
+        ("ERROR_COLOR", (231, 76, 60)),
     ):
         color = getattr(image_view_module, name)
         assert (color.red(), color.green(), color.blue()) == value, name
         assert name in image_view_module.__all__, name
+    # a box no error touched has no colour of its own - the plain state,
+    # and every state a later revision may add, answer the canvas colour
     assert shape_color(STATE_OK_PAIR) is None
+    assert shape_color(STATE_OK_PAIR, GT_COLOR) == GT_COLOR
+    assert shape_color("", PRED_COLOR) == PRED_COLOR
+    assert shape_color("NOPE", PRED_COLOR) == PRED_COLOR
+    # and every state the map does carry is the one red
     assert image_view_module.STATE_TO_COLOR == {
-        STATE_MISS: MISS_COLOR,
-        STATE_FALSE_POSITIVE: FALSE_POSITIVE_COLOR,
-        STATE_CLASS_MISMATCH: CLASS_MISMATCH_COLOR,
-        STATE_IOU_BELOW: IOU_BELOW_COLOR,
-        STATE_LOW_SCORE: LOW_SCORE_COLOR,
+        STATE_MISS: ERROR_COLOR,
+        STATE_FALSE_POSITIVE: ERROR_COLOR,
+        STATE_CLASS_MISMATCH: ERROR_COLOR,
+        STATE_IOU_BELOW: ERROR_COLOR,
+        STATE_LOW_SCORE: ERROR_COLOR,
     }
     # the canvas knows the state of a box, never a fill
     canvas = make_canvas()
@@ -1392,31 +1400,53 @@ def legend_colours() -> dict:
     "Return the colour of every entry of the rendered legend."
 
     return {
-        "miss": MISS_COLOR.name(),
-        "fp": FALSE_POSITIVE_COLOR.name(),
-        "cls": CLASS_MISMATCH_COLOR.name(),
-        "iou": IOU_BELOW_COLOR.name(),
-        "low": LOW_SCORE_COLOR.name(),
         "gt": GT_COLOR.name(),
+        "pred": PRED_COLOR.name(),
+        "err": ERROR_COLOR.name(),
     }
 
 
-def test_the_legend_names_every_judgement_colour(qt_app):
-    "The legend writes the canvas colours next to the state they mean."
+def test_the_legend_names_the_three_colours(qt_app):
+    "The legend writes the three box colours next to what they mean."
 
     text = legend_html()
-    for word in ("图例", "匹配", "漏报", "误报", "类别不一致", "IoU", "低分"):
+    for word in ("图例", "绿色", "蓝色", "红色", "异常", "原始标记", "推理结果"):
         assert word in text, word
     for color in legend_colours().values():
         assert color in text, color
-    # the sixth entry of the legend writes the teal of the low score
-    # state next to the word that names it
+    # every one of the three entries writes the colour of the canvas
+    # constant next to the word it explains
     assert (
-        "<span style='color:" + LOW_SCORE_COLOR.name() + "'>低分</span>"
+        "<span style='color:" + GT_COLOR.name() + "'>绿色 = 原始标记正常</span>"
     ) in text
-    # and the tooltip says what that colour means
-    assert "分数阈值" in LEGEND_TOOLTIP
-    assert LOW_SCORE_COLOR.name() not in LEGEND_HTML
+    assert (
+        "<span style='color:" + PRED_COLOR.name() + "'>蓝色 = 推理结果正常</span>"
+    ) in text
+    assert (
+        "<span style='color:" + ERROR_COLOR.name() + "'>红色 = 异常</span>"
+    ) in text
+    # the legend is one line of the three colours: the five entries of
+    # the previous revision are gone from the text and from the HTML
+    assert len(LEGEND_HTML.splitlines()) == 1
+    assert "<br/>" not in LEGEND_HTML
+    assert len(legend_colours()) == 3
+    # the five names of the previous revision are the very same red now,
+    # and the legend renders that one colour for the three entries
+    for alias in (
+        "MISS_COLOR",
+        "FALSE_POSITIVE_COLOR",
+        "CLASS_MISMATCH_COLOR",
+        "IOU_BELOW_COLOR",
+        "LOW_SCORE_COLOR",
+    ):
+        assert getattr(image_view_module, alias) == ERROR_COLOR, alias
+    # and the tooltip says what the red means, error by error
+    assert "异常" in LEGEND_TOOLTIP
+    assert "漏报" in LEGEND_TOOLTIP
+    assert "误报" in LEGEND_TOOLTIP
+    assert "类别不一致" in LEGEND_TOOLTIP
+    assert "IoU" in LEGEND_TOOLTIP
+    assert "分数低于 NG 阈值" in LEGEND_TOOLTIP
     # the legend never explains a fill: a box is an outline
     assert "填充" not in text
     page = ResultsPage()
@@ -1429,11 +1459,12 @@ def test_the_legend_names_every_judgement_colour(qt_app):
 def test_the_legend_sits_under_the_display_row_and_fits_the_page(qt_app):
     """The legend is the last line of the display controls and is readable.
 
-    The display row is shared with the two canvases, where the five
+    The display row is shared with the two canvases, where the three
     entries do not fit, so the legend gets its own line right below the
-    row and above the pictures. It is never clipped either: the page is
-    laid out at the window width and the label still gets the room of its
-    own text.
+    row and above the pictures. That line is one line high - the three
+    entries of the current revision are short enough to share it - and it
+    is never clipped either: the page is laid out at the window width and
+    the label still gets the room of its own text.
     """
 
     page = ResultsPage()
@@ -1448,6 +1479,9 @@ def test_the_legend_sits_under_the_display_row_and_fits_the_page(qt_app):
         # below the display row, above the pictures, on its own line
         assert legend_top.y() > row.y()
         assert legend_top.y() + legend.height() <= canvas_top.y()
+        # and that line is one line high: the old legend of two rows
+        # measured twice the height of the font of this label
+        assert legend.sizeHint().height() <= legend.fontMetrics().height()
         # and the whole text is on screen at the width of the window
         assert legend.width() >= legend.sizeHint().width()
         assert legend_top.x() + legend.width() <= page.width()
@@ -1477,10 +1511,11 @@ def test_the_page_colours_the_two_canvases_from_one_judgement(
 ):
     """The page hands the states of one matching to both canvases.
 
-    The two canvases show the very same box with the very same colour:
-    the miss of the left picture is orange red and the false positive of
-    the right one is magenta, both read from the one judgement detail of
-    the record.
+    The two canvases show the same record with the one matching: the miss
+    of the left picture and the false positive of the right one are both
+    the red of an error - each on its own side - while every box the run
+    judged fine keeps the green or the blue of its canvas, and neither
+    side ever shows the colour of the other one.
     """
 
     staging = osp.join(str(tmp_path), dataset.STAGING_PREFIX + "status")
@@ -1526,21 +1561,25 @@ def test_the_page_colours_the_two_canvases_from_one_judgement(
     try:
         gt_render = render_rgba(page.gt_canvas)
         pred_render = render_rgba(page.pred_canvas)
+        # the miss of the left picture is red, read from the judgement
+        # detail of the record
         assert (
-            stroke_pixels(page.gt_canvas, gt_render, MISS_COLOR, *MISSED)
+            stroke_pixels(page.gt_canvas, gt_render, ERROR_COLOR, *MISSED)
             > MIN_STROKE_PIXELS
         )
+        # and so is the false positive of the right one, on its own side
         assert (
             stroke_pixels(
                 page.pred_canvas,
                 pred_render,
-                FALSE_POSITIVE_COLOR,
+                ERROR_COLOR,
                 *FALSE_POSITIVE,
             )
             > MIN_STROKE_PIXELS
         )
-        # the matched pair keeps the plain colour of its own side and the
-        # pair under the threshold is yellow on both sides
+        # every box the run judged fine keeps the plain colour of its own
+        # side: the matched pair is green on the left and blue on the
+        # right, and the pair under the IoU threshold is red on both
         assert (
             stroke_pixels(page.gt_canvas, gt_render, GT_COLOR, *MATCHED)
             > MIN_STROKE_PIXELS
@@ -1550,29 +1589,28 @@ def test_the_page_colours_the_two_canvases_from_one_judgement(
             > MIN_STROKE_PIXELS
         )
         assert (
-            stroke_pixels(page.gt_canvas, gt_render, IOU_BELOW_COLOR, *LOW_IOU)
+            stroke_pixels(page.gt_canvas, gt_render, ERROR_COLOR, *LOW_IOU)
             > MIN_STROKE_PIXELS
         )
         assert (
             stroke_pixels(
                 page.pred_canvas,
                 pred_render,
-                IOU_BELOW_COLOR,
+                ERROR_COLOR,
                 *LOW_IOU_PRED,
             )
             > MIN_STROKE_PIXELS
         )
-        # the false positive is not flagged on the left and the miss is
-        # not flagged on the right
+        # neither side shows the plain colour of the other one: the red
+        # of a box is read from the one judgement and never from the
+        # colour of the other canvas
         assert (
-            stroke_pixels(
-                page.gt_canvas, gt_render, FALSE_POSITIVE_COLOR, *MISSED
-            )
+            stroke_pixels(page.gt_canvas, gt_render, PRED_COLOR, *MISSED)
             == 0
         )
         assert (
             stroke_pixels(
-                page.pred_canvas, pred_render, MISS_COLOR, *FALSE_POSITIVE
+                page.pred_canvas, pred_render, GT_COLOR, *FALSE_POSITIVE
             )
             == 0
         )
