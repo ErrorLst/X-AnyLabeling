@@ -551,6 +551,17 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 在 `test_mv_results_preview.py`（本轮起 15 例）补「提示行常驻 + 几何不变 + 预览保视图」用例，
 并在 `test_mv_results_marks.py`（12 例）与 `test_mv_results_edit.py`（7 例）各改写 1 例以覆盖第 5 列。
 
+本轮把 3 个测试文件里 11 条「按作者机器绝对像素写死」的断言改成按平台字体度量推导
+（`test_mv_label_placement.py` 7 条、`test_mv_image_view.py` 3 条、
+`test_mv_border_modes.py` 1 条）：口径是亮像素盒 ≠ 几何 ink 盒（见「已知坑」）。
+**目录合计 627 例全绿带一个前提**：带 `HOME`（fontconfig 命中 Microsoft YaHei、
+`config_page.sizeHint()` 571）时 627 全绿；剥离 `HOME`（DejaVu Sans、`sizeHint()`
+532）时 `test_mv_ui_dialog.py` 的
+`test_the_window_height_follows_the_configuration_page` 会红
+（`dialog.height()` 600 落不进 `hint + 56` = 588），这是既有现象、超出本轮改动
+范围；`test_mv_border_modes.py` 的同类窗口高度断言本轮已与 600px 下限对齐，
+两种字体环境下都绿。
+
 ### 已知坑
 
 - 上游文件里唯一新增的函数体是 `open_model_validation`；上游若在 `LabelingWidget`
@@ -577,6 +588,20 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
   Wayland），上游 `canvas.setFocus()` 于是把键盘留在主窗口，跟随之后 `A` / `D`
   不再响应，要手动点回验证窗口；X11 下正常。这是平台限制，不是跟随逻辑的缺陷
   （本项目就在 WSLg 上运行，该平台差异已确认存在）。
+- **像素用例的容忍量必须从平台字体度量推导**：测试里的宽度取自
+  `_label_glyphs/_stacked_glyphs(...).boundingRect()` 的**路径 ink 盒**，
+  高度与容忍量同样按 `QPainterPath.boundingRect()` 现算，不要抄作者机器上的
+  绝对像素数；`QFontMetricsF` 在产品里只用于多行标签的行距（字体无法整形时
+  才作兜底），不是宽度的来源；亮像素盒 ≠ 几何 ink 盒，前者受抗锯齿与阈值
+  影响，后者是路径的几何外沿。
+- `LABEL_POINT_SIZE=8pt` 在 96dpi 只有 11px，`text_mask`（RGB≥150）读不到下划线、
+  句点这类细笔画的半覆盖行：**亮像素下沿**到角点的 gap 比几何带下沿
+  （`corner.y()-LABEL_GAP`）约大 4 px（亮像素 gap 6/7 对几何带 gap 2/3，
+  两种字体环境一致；「比 ink 盒矮 3 行」按 11.61−8=3.6 行这个口径才成立），
+  而**描边外沿**严格等于 `corner.y()-LABEL_GAP`（几何恒等式，与字体无关）。
+- 页面 `sizeHint()` 与标签宽度随字体度量变化，同一容器里 fontconfig 命中哪套字体
+  由 `HOME` 决定：带 HOME → Microsoft YaHei，无 HOME → DejaVu Sans，
+  页面高度 571/532。
 
 ## smudge_tool
 

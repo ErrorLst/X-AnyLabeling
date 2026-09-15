@@ -571,13 +571,16 @@ def test_the_configuration_page_offers_no_fill_option(qt_app):
 
 
 def test_the_compact_page_keeps_its_measured_size(qt_app):
-    """The measured height of the compact page, with the option gone.
+    """The compact page keeps the budget of its layout.
 
-    The configuration page needs 563px: the fill mode combo shared the
-    row of the amount controls and took no height of its own, therefore
-    removing it left the height alone. The window keeps its 600px lower
-    bound and its 1024px width, and the page stays below the 580px the
-    compact layout was accepted with.
+    The height is a function of the font metrics of the environment (563
+    on the author machine, 571 with HOME and 532 without it in this
+    container), therefore the test pins the budget of the compact form
+    instead of one absolute number. The floor of that budget is the 600px
+    minimum height of the window: the gauge of
+    test_mv_ui_dialog.py:test_the_page_height_stays_inside_the_screen_budget
+    is that same 600px floor plus a range around the page hint, it never
+    compares the window height to hint + 56.
     """
 
     dialog = ModelValidationDialog()
@@ -585,11 +588,13 @@ def test_the_compact_page_keeps_its_measured_size(qt_app):
         dialog.show()
         QtWidgets.QApplication.processEvents()
         hint = dialog.config_page.sizeHint()
-        assert hint.height() == 563
-        assert hint.height() <= 580
+        assert 520 <= hint.height() <= 580
         assert dialog.minimumWidth() == 1024
         assert dialog.minimumHeight() == 600
-        assert dialog.height() <= hint.height() + 56
+        # the window hugs the page, but its own 600px floor wins when the
+        # platform font asks for less (532px with DejaVu Sans)
+        budget = max(hint.height() + 56.0, float(dialog.minimumHeight()))
+        assert dialog.height() <= budget
         assert dialog.height() < 680
     finally:
         dialog.close()

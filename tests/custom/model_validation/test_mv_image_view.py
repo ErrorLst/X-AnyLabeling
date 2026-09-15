@@ -672,7 +672,8 @@ def test_the_prediction_label_is_painted_at_the_corner_of_its_box(qt_app):
     canvas = make_label_canvas()
     plain = render_canvas(canvas)
     corner = canvas.image_to_widget(QtCore.QPointF(*LABEL_START))
-    canvas.set_shapes([], [score_box(list(LABEL_START), list(LABEL_END))])
+    predicted = score_box(list(LABEL_START), list(LABEL_END))
+    canvas.set_shapes([], [predicted])
     rendered = render_canvas(canvas)
 
     rect, count = label_pixels(rendered)
@@ -689,8 +690,13 @@ def test_the_prediction_label_is_painted_at_the_corner_of_its_box(qt_app):
     assert abs(plate[0] - corner.x()) <= 3
     assert 0 <= corner.y() - plate[3] <= 4
     assert rect[3] < plate[3]
-    # the text and its score: as wide as a label needs to be
-    assert rect[2] - rect[0] > 100
+    # the text and its score: the lit pixels span the very ink box the
+    # glyphs of this platform's label font measure, so the width is the
+    # one of the text instead of a pixel count of one machine
+    ink = ImageCanvas._stacked_glyphs(
+        ImageCanvas._label_font(), shape_label_text(predicted)
+    ).boundingRect()
+    assert abs((rect[2] - rect[0]) - ink.width()) <= 3
     # and it fits inside the widget instead of being clipped
     assert rect[2] < LABEL_WIDGET[0] and rect[3] < LABEL_WIDGET[1]
 
@@ -763,7 +769,12 @@ def test_a_label_of_an_offscreen_box_is_kept_inside_the_view(qt_app):
     # it starts at the very left of the view and is still the full text
     # (its outlined band starts one LABEL_PADDING below the top border)
     assert rect[0] <= 12 and rect[1] <= int(LABEL_PADDING) + 2
-    assert rect[2] - rect[0] > 100
+    # and it is the full text: the lit pixels span the ink box of the
+    # glyphs of the label font of this platform
+    ink = ImageCanvas._stacked_glyphs(
+        ImageCanvas._label_font(), shape_label_text(predicted)
+    ).boundingRect()
+    assert abs((rect[2] - rect[0]) - ink.width()) <= 3
 
 
 def test_a_long_label_stays_inside_the_widget(qt_app):
@@ -777,11 +788,26 @@ def test_a_long_label_stays_inside_the_widget(qt_app):
     assert fitted[0][2] < LABEL_WIDGET[0]
 
     # a label wider than the widget would be cut in half: it is refused
-    # instead, so nothing is ever painted outside the view
-    canvas.set_shapes(
-        [],
-        [rect_box([10, 10], [250, 190], label="a" * 40, score=LABEL_SCORE)],
+    # instead, so nothing is ever painted outside the view. The label is
+    # sized from the metrics of the label font of this platform: a run
+    # wide enough to overrun the view whatever the glyphs measure
+    font = ImageCanvas._label_font()
+    unit = max(
+        ImageCanvas._label_glyphs(font, "a").boundingRect().width(),
+        1.0,
     )
+    count = int(LABEL_WIDGET[0] / unit) + 8
+    overlong = rect_box(
+        [10, 10], [250, 190], label="a" * count, score=LABEL_SCORE
+    )
+    ink = ImageCanvas._stacked_glyphs(
+        font, shape_label_text(overlong)
+    ).boundingRect()
+    # the premise of this case: this label really is wider than the view,
+    # so it is refused and never painted, whichever drop path refuses it
+    # (the whole-block branch is pinned by the block case further down)
+    assert ink.width() + 2 * LABEL_PADDING > LABEL_WIDGET[0]
+    canvas.set_shapes([], [overlong])
     assert label_pixels(render_canvas(canvas)) == (None, 0)
 
 

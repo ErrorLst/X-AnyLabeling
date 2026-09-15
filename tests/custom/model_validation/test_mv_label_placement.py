@@ -9,8 +9,16 @@ view scale and the text lands about seventeen pixels away from its own
 box - the defect these tests pin down.
 
 Every assertion reads the rendered pixels of a canvas and locates the
-green outline of a GT box and the bright pixels of its text, so the
-geometry is checked as the user sees it and not as the code intends it.
+green outline of a GT box with three rulers of that render: the box of
+its bright glyph pixels, the band a label alone paints - the difference
+between the canvas and the same canvas with show_labels turned off - and
+the ink box of the label font, measured on the platform at hand and
+turned into widget pixels by the placement itself. A bound is written
+against the font of the machine when a pixel threshold or an absolute
+width of the text would only hold on the machine it was written on, so
+the geometry is checked as the user sees it and not as the code intends
+it.
+
 The same pixels pin the display rule of a box: a box is an outline and
 nothing else, so the pixels inside it stay the pixels of the original
 picture, and hiding the labels removes the text alone.
@@ -34,7 +42,9 @@ from anylabeling.custom.model_validation.ui import (
 )
 from anylabeling.custom.model_validation.ui.image_view import (
     GT_COLOR,
+    LABEL_GAP,
     LABEL_MARGIN,
+    LABEL_OUTLINE_WIDTH,
     LABEL_PADDING,
     TEXT_COLOR,
     ImageCanvas,
@@ -193,6 +203,37 @@ def measure(canvas, start):
     )
 
 
+def label_band(canvas, shapes, predictions=()) -> tuple:
+    """Return (rect, count) of the pixels a label alone paints.
+
+    The band measures what the canvas really paints on the platform at
+    hand instead of an absolute pixel threshold: the bright pixel rule of
+    text_mask only sees pixels a glyph covers at least half, so the anti
+    aliased rows above and below the ink box of a label go unread and its
+    bright rect ends about three rows higher than the ink the placement
+    measures. The width of a label is platform dependent for the same
+    reason - the same point size yields different ink under another font
+    - so a bound on a pixel count or on an absolute width only ever holds
+    on the machine it was written on. The band is the difference between
+    the canvas and the very same canvas with show_labels turned off, so
+    it holds the text and its outline alone. It requires the picture to
+    be flat and far darker than the glyphs, the grey backdrop of this
+    file: a bright pixel of the picture would be counted as a glyph.
+    """
+
+    reference = make_canvas()
+    reference.show_labels = False
+    reference.set_shapes(list(shapes), list(predictions))
+    return drawn_region(render(reference), render(canvas))
+
+
+def label_ink(canvas, text):
+    "Return the ink box of one label, as the placement measures it."
+
+    font = canvas._label_font()
+    return canvas._stacked_glyphs(font, text).boundingRect()
+
+
 def interior_pixels(canvas, rendered, start, end, inset=4.0):
     """Return the rendered pixels inside a box and the source pixels.
 
@@ -233,9 +274,11 @@ def test_a_label_hangs_just_above_its_own_box(qt_app):
     "With room above, the text sits right on top of its own box."
 
     start, end = (100, 100), (200, 160)
+    shapes = [rect_shape(start, end)]
     canvas = make_canvas()
-    canvas.set_shapes([rect_shape(start, end)], [])
+    canvas.set_shapes(shapes, [])
     rendered, corner, box_rect, text = measure(canvas, start)
+    band, count = label_band(canvas, shapes)
 
     assert box_rect is not None and text is not None
     # the outline of the box is where the image mapping puts it
@@ -243,24 +286,29 @@ def test_a_label_hangs_just_above_its_own_box(qt_app):
     assert abs(box_rect[1] - corner.y()) <= 2
     # the text starts at the left edge of the box ...
     assert abs(text[0] - corner.x()) <= LABEL_MARGIN + 2
-    # ... and its lower edge stays in the two pixel gap above the box
-    assert 0 <= box_rect[1] - text[3] <= TIGHT
-    # the text hangs above the corner, it is never below or across it
-    assert text[3] < corner.y()
+    # ... and the band the label paints stays in the two pixel gap above
+    # the box, measured against the very same canvas without its label
+    assert band is not None and count > 0
+    assert 0 <= box_rect[1] - band[3] <= TIGHT
+    # the label hangs above the corner, it is never below or across it
+    assert band[3] < corner.y()
 
 
 def test_a_tiny_box_keeps_its_label_right_next_to_it(qt_app):
     "An eight pixel box is labelled next to it, not away from it."
 
     start, end = (100, 100), (108, 108)
+    shapes = [rect_shape(start, end)]
     canvas = make_canvas()
-    canvas.set_shapes([rect_shape(start, end)], [])
+    canvas.set_shapes(shapes, [])
     rendered, corner, box_rect, text = measure(canvas, start)
+    band, count = label_band(canvas, shapes)
 
     assert box_rect is not None and text is not None
     assert abs(text[0] - corner.x()) <= LABEL_MARGIN + 2
-    assert 0 <= box_rect[1] - text[3] <= TIGHT
-    assert text[3] < corner.y()
+    assert band is not None and count > 0
+    assert 0 <= box_rect[1] - band[3] <= TIGHT
+    assert band[3] < corner.y()
 
 
 def test_a_label_of_a_box_at_the_top_edge_flips_below_it(qt_app):
@@ -287,50 +335,58 @@ def test_a_label_of_a_box_leaving_the_view_is_pulled_back(qt_app):
     "A box hanging over the right edge keeps a fully visible label."
 
     start, end = (150, 100), (200, 160)
+    shapes = [rect_shape(start, end)]
     canvas = make_canvas()
-    canvas.set_shapes([rect_shape(start, end)], [])
+    canvas.set_shapes(shapes, [])
     rendered, corner, box_rect, text = measure(canvas, start)
+    band, count = label_band(canvas, shapes)
+    ink = label_ink(canvas, image_view_module.shape_label_text(shapes[0]))
 
     assert text is not None and box_rect is not None
     # the text was pulled back inside the widget ...
     assert text[2] <= WIDGET_SIZE[0] - LABEL_MARGIN
     assert text[0] >= LABEL_MARGIN
     # ... without losing the two pixel gap above its own box
-    assert 0 <= box_rect[1] - text[3] <= TIGHT
-    # the whole text is still there, never clipped by the border
-    assert text[2] - text[0] > 100
+    assert band is not None and count > 0
+    assert 0 <= box_rect[1] - band[3] <= TIGHT
+    # the whole text is still there, never clipped by the border: the
+    # band is one glyph box wide plus the outline centred on its edge
+    assert abs((band[2] - band[0]) - (ink.width() + LABEL_OUTLINE_WIDTH)) <= 2
 
 
 def test_a_label_never_drifts_to_the_scaled_position(qt_app):
     "The label is measured in widget pixels, not scaled by the view."
 
     start, end = (100, 100), (200, 160)
+    shapes = [rect_shape(start, end)]
     canvas = make_canvas()
-    canvas.set_shapes([rect_shape(start, end)], [])
+    canvas.set_shapes(shapes, [])
     rendered, corner, box_rect, text = measure(canvas, start)
+
+    # the whole label ends in the two pixel gap above the corner: against
+    # the same canvas without its label, the painted band is one glyph
+    # band high and its lowest pixel sits that gap above the box
+    reference = make_canvas()
+    reference.show_labels = False
+    reference.set_shapes([rect_shape(start, end)], [])
+    drawn, count = drawn_region(render(reference), rendered)
+    ink = label_ink(canvas, image_view_module.shape_label_text(shapes[0]))
 
     scale = canvas.view_scale()
     assert scale > 1.2
     # the defect scaled the font by the view scale and pushed the text
     # about seventeen pixels below the corner of its own box
-    assert text[3] < corner.y()
+    assert drawn[3] < corner.y()
     # the outlined band ends LABEL_GAP above the corner, so the glyphs
     # themselves stop half an outline width higher
-    assert corner.y() - text[3] <= TIGHT + 1
-    # the glyph band keeps the height of the fixed screen font
-    assert text[3] - text[1] < 20
-    # and the whole label ends in the very same gap: against the same
-    # canvas without its label, the painted band is one glyph band high
-    # and its lowest pixel sits the two pixel gap above the box
-    reference = make_canvas()
-    reference.show_labels = False
-    reference.set_shapes([rect_shape(start, end)], [])
-    drawn, count = drawn_region(render(reference), rendered)
+    assert corner.y() - drawn[3] <= TIGHT + 2
+    # the band keeps the height of the fixed screen font, whatever the
+    # view scale, within the ink the placement measures on this platform
+    assert text[3] - text[1] <= ink.height() + 1
     assert drawn is not None and count > 0
     # the outline is centred on the border of the glyphs, so the painted
     # band reaches half of its width beyond them
-    assert 0 <= corner.y() - drawn[3] <= TIGHT + 2
-    assert drawn[3] - drawn[1] < 20
+    assert drawn[3] - drawn[1] <= ink.height() + LABEL_OUTLINE_WIDTH + 2
 
 
 def test_a_box_pushed_out_of_the_view_keeps_a_readable_label(qt_app):
@@ -343,12 +399,18 @@ def test_a_box_pushed_out_of_the_view_keeps_a_readable_label(qt_app):
         QtCore.QPointF(float(start[0]), float(start[1]))
     )
     assert corner.x() < 0 and corner.y() < 0
+    shapes = [rect_shape(start, end)]
     text = rect_of(text_mask(render(canvas)))
+    band, count = label_band(canvas, shapes)
+    ink = label_ink(canvas, image_view_module.shape_label_text(shapes[0]))
 
     assert text is not None
     assert text[0] >= LABEL_MARGIN and text[1] >= LABEL_MARGIN
     assert text[2] < WIDGET_SIZE[0] and text[3] < WIDGET_SIZE[1]
-    assert text[2] - text[0] > 100
+    # the whole text is there, never clipped by the border: the painted
+    # band is one glyph box wide plus the outline centred on its edge
+    assert band is not None and count > 0
+    assert abs((band[2] - band[0]) - (ink.width() + LABEL_OUTLINE_WIDTH)) <= 2
 
 
 # -------------------------------------------------------------- switches
@@ -356,26 +418,48 @@ def test_a_label_never_carries_a_background_plate(qt_app):
     "A label is its glyphs and their outline, never a plate behind them."
 
     start, end = (100, 100), (200, 160)
+    shape = rect_shape(start, end)
     canvas = make_canvas()
-    canvas.set_shapes([rect_shape(start, end)], [])
+    canvas.set_shapes([shape], [])
+    corner = canvas.image_to_widget(
+        QtCore.QPointF(float(start[0]), float(start[1]))
+    )
     with_label = render(canvas)
     text = rect_of(text_mask(with_label))
     assert text is not None
+    ink = label_ink(canvas, image_view_module.shape_label_text(shape))
 
     # the reference is the very same picture and box without its label
     reference = make_canvas()
     reference.show_labels = False
-    reference.set_shapes([rect_shape(start, end)], [])
+    reference.set_shapes([shape], [])
     plain = render(reference)
 
     drawn, count = drawn_region(plain, with_label)
     assert drawn is not None and count > 0
-    # the painted band is the glyphs plus their thin outline; the
-    # translucent plate of the previous revision added a LABEL_PADDING
-    # margin of solid colour all around them, which these bounds exclude
-    assert drawn[1] >= text[1] - 2 and drawn[3] <= text[3] + 2
-    assert drawn[3] - drawn[1] <= (text[3] - text[1]) + 4
-    assert drawn[2] - drawn[0] <= (text[2] - text[0]) + 4
+    # the two bounds below measure the band against the ink box the
+    # placement itself works on - the glyphs of this platform, not the
+    # bright pixels of the text. The corner is the anchor of the label,
+    # so the paint of the glyphs runs from half an outline width above
+    # the top of that box to LABEL_GAP above the corner; a band that
+    # stays within one outline width of the two edges is the glyphs and
+    # their stroke, while the plate of the previous revision sits
+    # LABEL_PADDING = 3.0 further out and fails here. Only containing
+    # the bright pixel box, as this test did before, holds by
+    # construction and proves nothing
+    font = canvas._label_font()
+    glyphs = canvas._stacked_glyphs(
+        font, image_view_module.shape_label_text(shape)
+    )
+    box = glyphs.boundingRect()
+    outline = LABEL_OUTLINE_WIDTH / 2.0
+    origin_y = corner.y() - LABEL_GAP - float(box.bottom()) - outline
+    ink_top = origin_y + float(box.top())
+    ink_bottom = origin_y + float(box.bottom()) + outline
+    assert ink_top - drawn[1] <= LABEL_OUTLINE_WIDTH
+    assert drawn[3] - ink_bottom <= LABEL_OUTLINE_WIDTH
+    assert drawn[3] - drawn[1] <= ink.height() + LABEL_OUTLINE_WIDTH + 2
+    assert drawn[2] - drawn[0] <= ink.width() + LABEL_OUTLINE_WIDTH + 2
     # and the padding margin a plate would have covered is the flat
     # picture: the columns left of the leftmost painted pixel and the
     # row above the painted band carry no colour at all
@@ -392,12 +476,15 @@ def test_a_label_never_carries_a_background_plate(qt_app):
 def test_a_label_is_only_text_and_its_dark_outline(qt_app):
     "White glyphs on a dark outline: that is all a label paints."
 
+    shapes = [rect_shape((100, 100), (200, 160))]
     canvas = make_canvas()
-    canvas.set_shapes([rect_shape((100, 100), (200, 160))], [])
+    canvas.set_shapes(shapes, [])
     rendered, corner, box_rect, text = measure(canvas, (100, 100))
+    painted, count = label_band(canvas, shapes)
 
     assert text is not None
-    assert 0 <= box_rect[1] - text[3] <= TIGHT
+    assert painted is not None and count > 0
+    assert 0 <= box_rect[1] - painted[3] <= TIGHT
     # the padding band left of the first glyph is untouched: a plate
     # would have covered it with the blend of the picture and its colour
     row = (text[1] + text[3]) // 2
