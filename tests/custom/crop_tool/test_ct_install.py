@@ -17,6 +17,8 @@ PROBE = (
     "sys.modules['ct_probe'] = module;"
     "spec.loader.exec_module(module);"
     "print(module.natural_key('a10'));"
+    "print(sorted(['a.jpg', '1.jpg', '10.jpg'],"
+    " key=module.natural_key));"
     "print('PyQt6' in sys.modules)"
 )
 
@@ -88,7 +90,8 @@ class TestPackageSurface:
         )
         assert result.returncode == 0, result.stderr
         lines = result.stdout.strip().splitlines()
-        assert lines[-2] == "['a', 10]"
+        assert lines[-3] == "[(1, 'a'), (0, 10)]"
+        assert lines[-2] == "['1.jpg', '10.jpg', 'a.jpg']"
         assert lines[-1] == "False"
 
     def test_crop_core_source_has_no_qt(self):

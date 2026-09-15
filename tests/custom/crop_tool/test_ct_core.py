@@ -31,13 +31,26 @@ class TestNaturalKey:
 
     def test_non_decimal_digit_is_a_character(self):
         assert core.natural_key("a\u00b2.jpg") == [
-            "a",
-            "\u00b2",
-            ".",
-            "j",
-            "p",
-            "g",
+            (1, "a"),
+            (1, "\u00b2"),
+            (1, "."),
+            (1, "j"),
+            (1, "p"),
+            (1, "g"),
         ]
+
+    def test_digits_and_letters_mix(self):
+        names = ["b.jpg", "10.jpg", "a2.png", "1.jpg", "\u6b63\u9762.png"]
+        assert sorted(names, key=core.natural_key) == [
+            "1.jpg",
+            "10.jpg",
+            "a2.png",
+            "b.jpg",
+            "\u6b63\u9762.png",
+        ]
+
+    def test_a_numeric_run_ranks_before_a_character(self):
+        assert core.natural_key("1a") < core.natural_key("a1")
 
 
 class TestScanDirectory:
