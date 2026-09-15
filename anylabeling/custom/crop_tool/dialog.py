@@ -632,9 +632,18 @@ class CropDialog(QtWidgets.QDialog):
         self.crop_current()
 
     def _on_cursor_moved(self, x, y) -> None:
-        """Report the pointer position in the status bar."""
+        """Report the pointer and center the crop box on it.
+
+        The view reports (-1, -1) as soon as the pointer sits outside
+        the image; the box then stays where it is instead of jumping
+        to the top left corner. A pan reports the pointer as well, so
+        the box keeps following the cursor while the left button is
+        held.
+        """
 
         self.coord_label.setText(COORD_FORMAT % (x, y))
+        if x >= 0 and y >= 0:
+            self.viewer.center_crop_on(x, y)
 
     # ------------------------------------------------------------ 删除
 

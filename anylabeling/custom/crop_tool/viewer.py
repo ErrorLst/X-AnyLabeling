@@ -308,6 +308,22 @@ class CropView(QtWidgets.QGraphicsView):
         y = (self._size[1] - self._crop_size[1]) // 2
         return self.move_crop_to(x, y)
 
+    def center_crop_on(self, x, y) -> Tuple[int, int]:
+        """Put the center of the crop box on one image point.
+
+        The corner that center implies is clamped by move_crop_to, so
+        a point near an edge slides the box along that edge and a box
+        larger than the image stays pinned at (0, 0). Without an
+        image the box does not move at all.
+        """
+
+        if self._pixmap is None:
+            return self.crop_pos()
+        return self.move_crop_to(
+            int(x) - self._crop_size[0] // 2,
+            int(y) - self._crop_size[1] // 2,
+        )
+
     def _crop_rect(self) -> QtCore.QRectF:
         """Return the crop box as a scene rectangle."""
 

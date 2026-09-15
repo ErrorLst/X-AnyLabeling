@@ -210,6 +210,44 @@ class TestCropBox:
         view.set_pad(-1, -1)
         assert view.pad_size() == (0, 0)
 
+    def test_center_follows_the_point(self, ct_dir):
+        view = _view()
+        _load(view, ct_dir)
+        view.set_crop_size(*BOX)
+        assert view.center_crop_on(50, 30) == (40, 25)
+
+    def test_center_clamps_to_the_top_left(self, ct_dir):
+        view = _view()
+        _load(view, ct_dir)
+        view.set_crop_size(*BOX)
+        assert view.center_crop_on(0, 0) == (0, 0)
+
+    def test_center_clamps_to_the_bottom_right(self, ct_dir):
+        view = _view()
+        _load(view, ct_dir)
+        view.set_crop_size(*BOX)
+        assert view.center_crop_on(1000, 1000) == (
+            SRC_SIZE[0] - BOX[0],
+            SRC_SIZE[1] - BOX[1],
+        )
+
+    def test_center_of_a_box_larger_than_the_image(self, ct_dir):
+        view = _view()
+        _load(view, ct_dir, "small.png", (8, 6))
+        view.set_crop_size(100, 100)
+        assert view.center_crop_on(4, 3) == (0, 0)
+
+    def test_center_without_an_image_does_nothing(self, ct_dir):
+        view = _view()
+        assert view.center_crop_on(50, 30) == (0, 0)
+
+    def test_move_crop_to_still_means_the_corner(self, ct_dir):
+        view = _view()
+        _load(view, ct_dir)
+        view.set_crop_size(*BOX)
+        assert view.move_crop_to(50, 30) == (50, 30)
+        assert view.center_crop_on(50, 30) == (40, 25)
+
 
 class TestZoom:
     """The wheel multiplies a zoom relative to the fitted view."""

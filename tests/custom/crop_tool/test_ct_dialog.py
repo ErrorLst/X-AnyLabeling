@@ -728,6 +728,109 @@ class TestNavigation:
         assert dialog.coord_label.text() == ct_dialog.COORD_FORMAT % (5, 7)
 
 
+class TestBoxFollowsCursor:
+    """The crop box centers on the pointer while it is inside."""
+
+    def _dialog(self, ct_dir, ct_store, size=(100, 60), box=(20, 10)):
+        """Show a dialog whose box is set before the image opens.
+
+        The box is chosen while the view is still empty, so the load
+        itself centers it and the test starts from a centered box.
+        """
+
+        write_pil(ct_dir, "img.png", size)
+        settings, _ini = ct_store
+        dialog = _show(_make_dialog(settings))
+        dialog.width_box.setValue(box[0])
+        dialog.height_box.setValue(box[1])
+        dialog.set_input_dir(ct_dir)
+        QtWidgets.QApplication.processEvents()
+        return dialog
+
+    def _move_to_viewport(self, dialog, position):
+        """Deliver one real mouse move to a viewport point.
+
+        The event travels through the widget event system of Qt
+        instead of a direct call of the handler: it is sent to the
+        viewport of the view, exactly where a real pointer event
+        lands, and the view forwards it to its own mouseMoveEvent.
+        """
+
+        view = dialog.viewer
+        event = QtGui.QMouseEvent(
+            QtCore.QEvent.Type.MouseMove,
+            QtCore.QPointF(position),
+            QtCore.QPointF(view.viewport().mapToGlobal(position)),
+            QtCore.Qt.MouseButton.NoButton,
+            QtCore.Qt.MouseButton.NoButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+        QtWidgets.QApplication.sendEvent(view.viewport(), event)
+        QtWidgets.QApplication.processEvents()
+        return view.mapToScene(position)
+
+    def _move_to(self, dialog, x, y):
+        """Deliver a real move to the viewport point of image (x, y)."""
+
+        position = dialog.viewer.mapFromScene(
+            QtCore.QPointF(float(x), float(y))
+        )
+        return self._move_to_viewport(dialog, position)
+
+    def test_a_real_mouse_move_centers_the_box_on_the_pointer(
+        self, ct_dir, ct_store
+    ):
+        dialog = self._dialog(ct_dir, ct_store)
+        centered = dialog.viewer.crop_pos()
+        assert centered == ((100 - 20) // 2, (60 - 10) // 2)
+        point = self._move_to(dialog, 25, 15)
+        width, height = dialog.viewer.crop_size()
+        assert (int(point.x()), int(point.y())) != centered
+        assert dialog.coord_label.text() == ct_dialog.COORD_FORMAT % (
+            int(point.x()),
+            int(point.y()),
+        )
+        assert dialog.viewer.crop_pos() == (
+            int(point.x()) - width // 2,
+            int(point.y()) - height // 2,
+        )
+        assert dialog.viewer.crop_pos() != centered
+
+    def test_outside_the_image_keeps_the_box(self, ct_dir, ct_store):
+        dialog = self._dialog(ct_dir, ct_store, size=(20, 10), box=(4, 2))
+        centered = ((20 - 4) // 2, (10 - 2) // 2)
+        self._move_to(dialog, 4, 4)
+        before = dialog.viewer.crop_pos()
+        assert before[0] < centered[0] and before[1] < centered[1]
+        position = QtCore.QPoint(dialog.viewer.viewport().width() // 2, 4)
+        point = dialog.viewer.mapToScene(position)
+        assert not (0 <= point.x() < 20 and 0 <= point.y() < 10)
+        self._move_to_viewport(dialog, position)
+        assert dialog.coord_label.text() == ct_dialog.COORD_FORMAT % (-1, -1)
+        assert dialog.viewer.crop_pos() == before
+
+    def test_a_new_image_centers_the_box_again(self, ct_dir, ct_store):
+        write_pil(ct_dir, "a.png", (100, 60))
+        write_pil(ct_dir, "b.png", (200, 100))
+        settings, _ini = ct_store
+        dialog = _show(_make_dialog(settings))
+        dialog.width_box.setValue(20)
+        dialog.height_box.setValue(10)
+        dialog.set_input_dir(ct_dir)
+        QtWidgets.QApplication.processEvents()
+        assert dialog.viewer.crop_pos() == (40, 25)
+        point = self._move_to(dialog, 60, 40)
+        width, height = dialog.viewer.crop_size()
+        moved = (
+            int(point.x()) - width // 2,
+            int(point.y()) - height // 2,
+        )
+        assert dialog.viewer.crop_pos() == moved
+        assert moved != (40, 25)
+        assert dialog.show_image(1) is True
+        assert dialog.viewer.crop_pos() == (90, 45)
+
+
 class TestDelete:
     """Delete asks first and then removes only its own crops."""
 
