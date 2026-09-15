@@ -14,8 +14,6 @@ from typing import Iterable, List
 
 from PyQt6 import QtCore, QtWidgets
 
-from anylabeling.views.labeling.utils.theme import get_theme
-
 from .viewer import first_directory
 
 __all__ = ["PICK_MARK", "PreviewFileList"]
@@ -23,36 +21,7 @@ __all__ = ["PICK_MARK", "PreviewFileList"]
 #: Prefix of a row whose image already exists inside picked/.
 PICK_MARK = "✓  "
 
-MIN_WIDTH = 180
-ROW_HEIGHT = 24
-
-
-def list_style() -> str:
-    """Return the QSS of the list, built from the theme tokens."""
-
-    theme = get_theme()
-    return f"""
-        QListWidget {{
-            background-color: {theme["background_secondary"]};
-            color: {theme["text"]};
-            border: 1px solid {theme["border"]};
-            border-radius: 6px;
-            outline: none;
-            selection-background-color: {theme["selection"]};
-            selection-color: {theme["selection_text"]};
-        }}
-        QListWidget::item {{
-            padding: 3px 6px;
-            min-height: {ROW_HEIGHT}px;
-        }}
-        QListWidget::item:selected {{
-            background-color: {theme["selection"]};
-            color: {theme["selection_text"]};
-        }}
-        QListWidget::item:hover {{
-            background-color: {theme["surface_hover"]};
-        }}
-    """
+MIN_WIDTH = 200
 
 
 class PreviewFileList(QtWidgets.QListWidget):
@@ -87,7 +56,6 @@ class PreviewFileList(QtWidgets.QListWidget):
         )
         self.setDefaultDropAction(QtCore.Qt.DropAction.CopyAction)
         self.setAcceptDrops(True)
-        self.setStyleSheet(list_style())
         self.currentRowChanged.connect(self._on_row_changed)
 
     # ------------------------------------------------------------- rows

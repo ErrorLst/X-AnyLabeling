@@ -38,12 +38,10 @@ from typing import FrozenSet, List, Optional, Sequence
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from anylabeling.views.labeling.utils import qt as qt_utils
-from anylabeling.views.labeling.utils.style import get_dialog_style
-from anylabeling.views.labeling.utils.theme import get_theme
 
 from . import core
 from .category_filter import CategoryFilterButton
-from .list_panel import PreviewFileList, list_style
+from .list_panel import PreviewFileList
 from .pick_worker import PickJob
 from .settings import PreviewSettings
 from .viewer import PreviewView, first_directory
@@ -52,12 +50,14 @@ from .worker import PreviewPreloader, PreviewWorker
 __all__ = [
     "FILTER_DEBOUNCE_MS",
     "HOLD_DELAY_MS",
+    "LIST_MIN_WIDTH",
     "MIN_WINDOW_SIZE",
     "NO_IMAGES_TEXT",
     "NOT_PICKED_TEXT",
     "PICK_ALL_TEXT",
     "PICK_PROBE_DEBOUNCE_MS",
     "PreviewDialog",
+    "SPLITTER_SIZES",
     "TOGGLE_PICK_ICON",
     "TOGGLE_PICK_TEXT",
     "TOGGLE_REMOVE_ICON",
@@ -69,6 +69,8 @@ __all__ = [
 WINDOW_TITLE = "预览工具"
 WINDOW_SIZE = (1200, 800)
 MIN_WINDOW_SIZE = (900, 560)
+LIST_MIN_WIDTH = 200
+SPLITTER_SIZES = (LIST_MIN_WIDTH, 880)
 FILTER_DEBOUNCE_MS = 250
 PICK_PROBE_DEBOUNCE_MS = 250
 HOLD_DELAY_MS = 500
@@ -240,34 +242,8 @@ class PreviewDialog(QtWidgets.QDialog):
         outer.setSpacing(6)
         outer.addLayout(self._build_toolbar())
         outer.addLayout(self._build_filter_row())
-
-        splitter = QtWidgets.QSplitter(
-            QtCore.Qt.Orientation.Horizontal, self
-        )
-        self._view = PreviewView(splitter)
-        self._list = PreviewFileList(splitter)
-        splitter.addWidget(self._view)
-        splitter.addWidget(self._list)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([820, 300])
-        outer.addWidget(splitter, 1)
-
-        status_row = QtWidgets.QHBoxLayout()
-        self._status = QtWidgets.QLabel(self)
-        self._status.setWordWrap(False)
-        self._coords = QtWidgets.QLabel(self)
-        self._coords.setStyleSheet(
-            f"color: {get_theme().get('text_secondary', '#86868b')};"
-        )
-        self._hint = QtWidgets.QLabel(KEYS_TEXT, self)
-        self._hint.setStyleSheet(
-            f"color: {get_theme().get('text_secondary', '#86868b')};"
-        )
-        status_row.addWidget(self._status, 1)
-        status_row.addWidget(self._hint, 0)
-        status_row.addWidget(self._coords, 0)
-        outer.addLayout(status_row)
+        self._build_splitter(outer)
+        self._build_status_bar(outer)
 
         self._debounce_timer = QtCore.QTimer(self)
         self._debounce_timer.setSingleShot(True)
@@ -286,8 +262,47 @@ class PreviewDialog(QtWidgets.QDialog):
         self._view.directory_dropped.connect(self._on_directory_dropped)
         self._list.directory_dropped.connect(self._on_directory_dropped)
         self._list.selection_changed.connect(self._on_row_selected)
-        self.setStyleSheet(get_dialog_style() + list_style())
         self._update_index_label()
+
+    def _build_splitter(self, root) -> None:
+        """Build the file list and the view, side by side.
+
+        The list sits on the left, like every other tool of this fork,
+        and the view takes the room that is left over.
+        """
+
+        self._list = PreviewFileList()
+        self._list.setMinimumWidth(LIST_MIN_WIDTH)
+        self._list.setUniformItemSizes(True)
+        # The list never takes the keyboard: the shortcuts of the window
+        # live in the event filter of the dialog, and a focused
+        # QListWidget would eat Space and End before they get there.
+        self._list.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._view = PreviewView()
+        self._splitter = QtWidgets.QSplitter(
+            QtCore.Qt.Orientation.Horizontal, self
+        )
+        self._splitter.addWidget(self._list)
+        self._splitter.addWidget(self._view)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes(list(SPLITTER_SIZES))
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(1)
+        root.addWidget(self._splitter, 1)
+
+    def _build_status_bar(self, root) -> None:
+        """Build the status bar: summary left, hints right."""
+
+        self._status = QtWidgets.QLabel(self)
+        self._status.setWordWrap(False)
+        self._coords = QtWidgets.QLabel(self)
+        self._hint = QtWidgets.QLabel(KEYS_TEXT, self)
+        self.status_bar = QtWidgets.QStatusBar(self)
+        self.status_bar.addWidget(self._status)
+        self.status_bar.addPermanentWidget(self._hint)
+        self.status_bar.addPermanentWidget(self._coords)
+        root.addWidget(self.status_bar)
 
     def _build_toolbar(self) -> QtWidgets.QHBoxLayout:
         """Build the first row: folders, picking and navigation."""

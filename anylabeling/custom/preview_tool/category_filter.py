@@ -17,8 +17,6 @@ from typing import Dict, FrozenSet, Iterable, List, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
-from anylabeling.views.labeling.utils.theme import get_theme
-
 from .core import BACKGROUND_LABEL
 
 __all__ = ["ALL_TEXT", "NONE_TEXT", "CategoryFilterButton"]
@@ -28,60 +26,6 @@ NONE_TEXT = "无"
 SELECT_ALL_TEXT = "全选"
 CLEAR_ALL_TEXT = "清空"
 MIN_MENU_WIDTH = 160
-
-
-def menu_style() -> str:
-    """Return the QSS of the button and of its menu."""
-
-    theme = get_theme()
-    return f"""
-        QToolButton {{
-            background-color: {theme["background_secondary"]};
-            color: {theme["text"]};
-            border: 1px solid {theme["border"]};
-            border-radius: 6px;
-            padding: 4px 8px;
-            min-width: 72px;
-        }}
-        QToolButton:hover {{
-            border-color: {theme["border_light"]};
-        }}
-        QToolButton::menu-indicator {{
-            image: none;
-        }}
-        QMenu {{
-            background-color: {theme["background_secondary"]};
-            color: {theme["text"]};
-            border: 1px solid {theme["border"]};
-        }}
-        QMenu::item {{
-            padding: 4px 18px 4px 10px;
-        }}
-        QMenu::item:selected {{
-            background-color: {theme["surface_hover"]};
-        }}
-        QMenu QCheckBox {{
-            color: {theme["text"]};
-            background: transparent;
-            spacing: 6px;
-            padding: 4px 10px;
-        }}
-        QMenu QCheckBox:hover {{
-            background-color: {theme["surface_hover"]};
-        }}
-        QMenu QCheckBox::indicator {{
-            width: 14px;
-            height: 14px;
-            border: 1px solid {theme["border_light"]};
-            border-radius: 3px;
-            background-color: {theme["background"]};
-        }}
-        QMenu QCheckBox::indicator:checked {{
-            background-color: {theme["primary"]};
-            border-color: {theme["primary"]};
-            image: url(:/images/images/checkmark-white.svg);
-        }}
-    """
 
 
 class CategoryFilterButton(QtWidgets.QToolButton):
@@ -104,7 +48,6 @@ class CategoryFilterButton(QtWidgets.QToolButton):
         self.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
         )
-        self.setStyleSheet(menu_style())
         self._menu = QtWidgets.QMenu(self)
         self._menu.setMinimumWidth(MIN_MENU_WIDTH)
         self.setMenu(self._menu)

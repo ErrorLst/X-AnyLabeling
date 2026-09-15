@@ -1456,11 +1456,11 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   徽标 `✓N`（N=0 时不显示徽标）与状态栏「已裁切: N 次」同源；重建时机：打开目录、改输出目录、
   每次裁切成功（append 新记录）、每次 Del 后（整表重建）；同名 stem 视为同一原图（与徽标同口径）。
 - **R12 持久化、默认值与线程**：`QSettings("anylabeling", "anylabeling")` 的
-  `custom/crop_tool/{width,height,pad_width,pad_height,output_dir,input_dir}`；默认 640/640/0/0；
+  `custom/crop_tool/{width,height,pad_width,pad_height,output_dir}`；默认 640/640/0/0；
   `output_dir` 未设置时每次取 `os.getcwd()`（不缓存、不写回），只有用户显式选择才持久化；
-  `input_dir` 为空则窗口不自动加载；填充固定 0，不持久化；不用线程（扫描与重建标记各一次
-  `scandir`），非模态窗口 + 每主窗口单实例复用（`widget._crop_tool_dialog` + `destroyed` 清理），
-  无取消按钮。
+  输入目录**只存在于内存、不持久化**，窗口永远空着打开（旧版本留下的 `input_dir` 键被忽略）；
+  填充固定 0，不持久化；不用线程（扫描与重建标记各一次 `scandir`），非模态窗口 + 每主窗口
+  单实例复用（`widget._crop_tool_dialog` + `destroyed` 清理），无取消按钮。
 
 ### 测试
 
@@ -1494,19 +1494,20 @@ json 的标注叠加在图上（矩形可按设定像素外扩）；第二行工
 「背景」）独立判定。挑选是按当前图的**双向开关**：未挑选时把图与边车 json 拷进
 <输出目录>/picked/，已挑选时把 picked/ 里该 stem 的**全部副本移入 dsh-trash**
 （移动，不是删除）。另有「全部拷贝」。窗口是非模态 QDialog，参数走 QSettings 持久化，
-**没有历史栈**：源图永不被改动，反向操作随时可以再执行一次。
+**没有历史栈**：源图永不被改动，反向操作随时可以再执行一次。布局与其它工具一致：
+文件列表在**左**、图片视图在**右**，底部是标准 QStatusBar，不设任何自己的样式表。
 
 ### 代码与体量
 
-`anylabeling/custom/preview_tool/`（13 个文件 5142 行：`dialog.py` 1470 行是窗口与交互，
+`anylabeling/custom/preview_tool/`（13 个文件 5064 行：`dialog.py` 1485 行是窗口与交互，
 `pick_core.py` 515 行是不依赖 Qt 的挑选与移除文件层（`dsh-trash` 的移动、stem 家族
-匹配与探测），`viewer.py` 505 行是缩放与平移视图，`worker.py` 464 行是目录扫描与
+匹配与探测），`viewer.py` 501 行是缩放与平移视图，`worker.py` 464 行是目录扫描与
 QImage 预加载，`core.py` 417 行是扫描、标注解析与过滤（纯数据层），`settings.py`
 444 行是 QSettings 包装，`overlay.py` 338 行是标注层与矩形外扩，`pick_worker.py`
-330 行是拷贝、移除与探测线程，`category_filter.py` 266 行是多选类别菜单，
-`list_panel.py` 221 行是带对钩的文件列表，`installer.py` 75 行、`__init__.py`
+330 行是拷贝、移除与探测线程，`category_filter.py` 209 行是多选类别菜单，
+`list_panel.py` 189 行是带对钩的文件列表，`installer.py` 75 行、`__init__.py`
 50 行、`launcher.py` 47 行只做入口与挂载）；测试
-`tests/custom/preview_tool/`（8 个文件 3492 行，共 226 个用例，其中 1 个图标用例在
+`tests/custom/preview_tool/`（8 个文件 3532 行，共 228 个用例，其中 1 个图标用例在
 offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`，行数取 `wc -l`。
 
 本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以
@@ -1611,7 +1612,7 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
 
 `python -m pytest -p no:cacheprovider tests/custom/preview_tool -v`
 （本工作区用 `.venv/bin/python` 跑；offscreen 由 conftest 设置）
-（需 PyQt6）。目录里实际落地 **226 个用例**（225 passed + 1 skipped）：
+（需 PyQt6）。目录里实际落地 **228 个用例**（227 passed + 1 skipped）：
 `test_pt_core.py` 覆盖自然排序、扫描范围、标注解析与三轴过滤，`test_pt_pick.py`
 覆盖拷贝与移入 dsh-trash（含 `xb` 占名、重名跳号、stem 家族与不可逆性防护），
 `test_pt_settings.py` 覆盖 8 项默认值与按目录类别键，`test_pt_worker.py` 覆盖

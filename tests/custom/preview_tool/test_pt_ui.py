@@ -197,6 +197,26 @@ def test_view_toggles_the_background(pt_dir):
         view.deleteLater()
 
 
+def test_the_components_leave_the_style_to_the_application():
+    """No component carries a style sheet of its own any more."""
+
+    panel = list_panel.PreviewFileList()
+    button = category_filter.CategoryFilterButton()
+    view = viewer.PreviewView()
+    try:
+        assert panel.styleSheet() == ""
+        assert button.styleSheet() == ""
+        assert view.styleSheet() == ""
+        assert view.backgroundBrush().style() == QtCore.Qt.BrushStyle.NoBrush
+        view.toggle_background()
+        assert view.backgroundBrush().style() != QtCore.Qt.BrushStyle.NoBrush
+        view.toggle_background()
+        assert view.backgroundBrush().style() == QtCore.Qt.BrushStyle.NoBrush
+    finally:
+        for widget in (panel, button, view):
+            widget.deleteLater()
+
+
 def test_view_accepts_only_a_dropped_directory(pt_dir):
     view = viewer.PreviewView()
     try:

@@ -17,7 +17,7 @@ from typing import Optional, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from anylabeling.views.labeling.utils.theme import get_mode, get_theme
+from anylabeling.views.labeling.utils.theme import get_mode
 
 from .overlay import AnnotationLayer
 
@@ -64,12 +64,6 @@ def first_directory(mime) -> str:
         if path and os.path.isdir(path):
             return path
     return ""
-
-
-def _background_style(color: str) -> str:
-    """Return the QSS that paints the viewport with one colour."""
-
-    return f"QGraphicsView {{ background-color: {color}; border: none; }}"
 
 
 class PreviewView(QtWidgets.QGraphicsView):
@@ -276,16 +270,18 @@ class PreviewView(QtWidgets.QGraphicsView):
     # ---------------------------------------------------------- painting
 
     def _apply_theme(self) -> None:
-        """Paint the viewport with the colour of the current mode."""
+        """Recolour the viewport without a style sheet of its own.
+
+        The plain mode paints its colour through the background brush
+        of the view; with the brush emptied again the view follows the
+        palette of the application, the way the crop view does.
+        """
 
         if self._plain_background:
             color = BACKGROUND_DARK if _is_dark() else BACKGROUND_LIGHT
+            self.setBackgroundBrush(QtGui.QColor(color))
         else:
-            color = get_theme().get("background", "#ffffff")
-        self.setStyleSheet(_background_style(color))
-        self._hint.setStyleSheet(
-            f"color: {get_theme().get('text_secondary', '#86868b')};"
-        )
+            self.setBackgroundBrush(QtGui.QBrush())
 
     def _show_hint(self, text: str) -> None:
         """Show one line of text in the middle of the viewport."""

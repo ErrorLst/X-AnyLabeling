@@ -174,6 +174,26 @@ def test_build_filter_reads_every_widget(opened, pt_store):
     assert dialog._height_label.text() == pt_dialog.HEIGHT_BELOW_TEXT
 
 
+def test_the_window_follows_the_layout_of_the_other_tools(
+    opened, pt_store
+):
+    """The list sits on the left, the status is a standard bar."""
+
+    settings, _ini = pt_store
+    dialog = opened(settings)
+    splitter = dialog._splitter
+    assert splitter.widget(0) is dialog._list
+    assert splitter.widget(1) is dialog._view
+    assert splitter.childrenCollapsible() is False
+    assert splitter.handleWidth() == 1
+    assert dialog._list.minimumWidth() == pt_dialog.LIST_MIN_WIDTH
+    assert dialog._list.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
+    assert dialog.styleSheet() == ""
+    assert isinstance(dialog.status_bar, QtWidgets.QStatusBar)
+    for label in (dialog._status, dialog._hint, dialog._coords):
+        assert label.parent() is dialog.status_bar
+
+
 def test_filter_controls_disable_with_the_switch(opened, pt_store):
     settings, _ini = pt_store
     dialog = opened(settings)
