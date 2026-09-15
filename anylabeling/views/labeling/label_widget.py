@@ -44,6 +44,7 @@ from anylabeling.custom.smudge_tool import install_smudge_tool
 from anylabeling.custom.rename_tool import install_rename_tool
 from anylabeling.custom.label_filter import install_label_filter
 from anylabeling.custom import reset_view_on_switch
+from anylabeling.custom.crop_tool import install_crop_tool
 
 from ...app_info import (
     __appname__,
@@ -2633,6 +2634,7 @@ class LabelingWidget(LabelDialog):
         install_rename_tool(self)  # 重命名工具
         install_label_filter(self)  # 标签过滤
         reset_view_on_switch.install_reset_view_on_switch(self)  # 换图复位缩放/视图
+        install_crop_tool(self)  # 裁图工具
 
         self.set_text_editing(False)
 

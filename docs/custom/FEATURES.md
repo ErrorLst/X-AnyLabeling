@@ -30,6 +30,7 @@
 | label_filter | 按标签分类过滤文件列表（Tool 菜单运行时追加，实例级包装 import_image_folder） | `anylabeling/custom/label_filter/` | `tests/custom/label_filter/` | 1 个（1 行 import + 1 行调用） | 2 |
 | crash_log | 崩溃与运行日志落盘 `~/.xanylabeling/logs/xany-*.log`（faulthandler + 异常钩子 + Qt 钩子；异常退出检测） | `anylabeling/custom/crash_log/` | `tests/custom/crash_log/` | 1 个（1 行 import + 1 行调用） | 0 |
 | reset_view_on_switch | 换到另一张图片时画布缩放/滚动复位成首图初始态（有意压过 keep_prev_scale；同文件重载不复位） | `anylabeling/custom/reset_view_on_switch/` | 同目录 `tests/custom/reset_view_on_switch/` | 1 个（1 行 import + 1 行调用） | 1 |
+| crop_tool | 拖入目录后用固定 W×H 裁切框逐张裁图：右键裁切、A/D 换图、文件名即记录、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -1284,6 +1285,135 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 - 包装层序依赖「新包装追加在挂载点 2 之后」：把本功能的调用行挪到
   `install_ensure_label_file(self)` 之前会让它成为内层包装，复位与失败恢复都会被
   ensure 包装挡住（不会崩，只是视图不复位）。
+
+## crop_tool
+
+### 职责
+
+数据集逐张裁切：把图片目录拖进子窗口，用一个固定的 W×H 裁切框（可选内边距）逐张裁图，
+右键裁切、A/D 换图。**文件名即记录**：裁切子图的名字里编码了原图 stem、区域、内边距与序号，
+所以输出目录一读就知道「哪些原图裁过、每张裁了哪些区域」，不写 `.crop_record.json`、不读
+输入目录里的任何文件。唯一的删除入口是 Del：先弹确认框、默认答「否」，确认后只删输出目录里
+名字符合裁切模板的自己的子图。
+
+### 代码与体量
+
+`anylabeling/custom/crop_tool/`（6 个文件 2416 行：`crop_core.py` 675 行是不依赖 Qt 的文件层 ——
+扫描、可逆命名与解析、补齐与内边距、原子写、白名单删除，`dialog.py` 884 行是窗口与交互，
+`viewer.py` 626 行是缩放/平移/裁切框/标记，`settings.py` 147 行、`__init__.py` 46 行、
+`launcher.py` 38 行）；测试 `tests/custom/crop_tool/`（7 个文件 2428 行，200 个用例）。
+
+本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以 `docs/custom/contract.json` 为准。
+
+### 入口符号
+
+`anylabeling/custom/crop_tool/__init__.py` 导出的 `install_crop_tool`（幂等安装，重复调用不会加出
+第二个 Tool 菜单项）与 `launch_crop_tool`（非模态窗口，复用已有实例）；
+`anylabeling/custom/crop_tool/crop_core.py` 导出的 `crop_image` / `scan_crops` / `delete_crops`
+（文件层三个公开入口：裁一张、扫一个目录、按白名单删若干张）。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom.crop_tool import install_crop_tool`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`，追加在
+  `reset_view_on_switch.install_reset_view_on_switch(self)  # 换图复位缩放/视图` 之后）：
+  `install_crop_tool(self)  # 裁图工具`
+- 软挂载：`widget._crop_tool_dialog` 由 `launch_crop_tool` 在
+  `anylabeling/custom/crop_tool/launcher.py` 里读写（第二次打开复用同一个窗口，`destroyed` 时清空
+  引用），上游类零改动。
+- **只改上游两行**：本功能对上游文件的全部影响就是这两行挂载点，其余逻辑（含 Tool 菜单项）
+  都在包内；锚点原文（`install_crop_tool(self)`）必须**恰好命中 1 行**才是「装上了」，
+  命中 0 行即「没装上」。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.menus` | direct | 运行时把「裁图工具」动作追加进 Tool 菜单（无静态菜单挂载点） |
+| `anylabeling/views/labeling/utils/qt.py` 的 `new_action` | direct | 构造菜单动作 |
+| `anylabeling/views/labeling/utils/qt.py` 的 `new_icon` | direct | 取菜单动作图标 |
+
+以上三项与重命名工具同形：上游把 `LabelingWidget.menus` 改名、或 `new_action` / `new_icon`
+换名/换签名时，契约自检立刻报 FAIL；菜单报错只影响入口，裁切文件层不受影响。
+
+### 行为级契约（不可机器校验）
+
+- **R1 扫描**：只扫输入目录**顶层**（不递归）；扩展名 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`、
+  `.tif`、`.tiff`、`.gif`，大小写不敏感；排序是**自然序**（`2.jpg` 在 `10.jpg` 之前）；
+  只跳过「位于输出目录内、且名字能被 `parse_crop_name` 解析」的文件 —— 只排除本工具自己的产物，
+  而不是整个输出目录（默认输出目录就是 cwd，按目录排除会误伤同目录下的输入图）；
+  目录不存在或不可读 -> 空列表，不报错。
+- **R2 可逆命名模板**：`<stem>__x<X>_y<Y>_w<W>_h<H>__px<PX>_py<PY>[__<SEQ>].<ext>`；解析用贪婪
+  正则取**最右一个**坐标块，回得 stem + x + y + w + h + pad_x + pad_y（有则再加 seq 与 ext）；
+  数字段必须是 ASCII 十进制；字符集只有字母、数字、下划线与点（Windows 合法，无尾随点/空格）；
+  UTF-8 名长超过 240 字节 -> `CropError`。填充色固定 0，**不编码进名字**。
+- **R3 不覆盖 + 原子写**：同名（含悬空软链、含残留同名 `.part`）一律跳号到 `__2`、`__3`…
+  （最多 1000 次）；先判最终名是否存在（`lexists`），再 `open(<最终名>.part, "xb")` 独占创建，
+  写成功后 `os.replace` 到最终名；失败保留 `.part` 并在错误文案里给出路径；**永不覆盖任何既有文件**。
+- **R4 格式与 mode**：`.jpg`/`.jpeg` -> JPEG(quality=100, subsampling=0)、`.png` -> PNG、
+  `.bmp` -> BMP、`.webp` -> WEBP(lossless=True)、`.tif`/`.tiff` -> TIFF(deflate)，其余 -> `.png`；
+  mode 归一：`L`/`RGB`/`RGBA`/`I;16*` 直通，`1` -> `L`、`P` -> `RGB`、`PA`/`LA` -> `RGBA`，
+  其余（CMYK/YCbCr/I/F）含 A 转 RGBA、否则转 RGB；保存前再按格式收敛（JPEG 只收 L/RGB 等）。
+- **R5 裁切几何**：先按 W×H 建填 0 背景（L/I;16* -> 0、RGB -> (0,0,0)、RGBA -> (0,0,0,255)），
+  把「源图 ∩ 裁切框」贴到对应位置（越界区域显式填 0，不依赖 PIL 的隐式补零），再画内边距带
+  （夹到 `min(pad, 边长 // 2)`）涂 0；x/y 夹取到 ≥ 0；越界与「图片小于裁切框」由同一条规则补齐，
+  都不报错。
+- **R6 EXIF 方向**：两侧都不做 exif_transpose（与主画布一致，物理纠正留给上游
+  `process_image_exif`）-> 所见即所裁；测试用 orientation=6 的 JPEG 钉死这条。
+- **R7 上限保护**：源图 W*H > `MAX_IMAGE_PIXELS`(1e8) 既拒绝显示也拒绝裁切；框 w*h >
+  `MAX_CROP_PIXELS`(1e8) -> `CropError`；PIL `DecompressionBombError` 转 `CropError`；
+  上限常量在调用时读模块属性（便于测试 monkeypatch）；视图用 `QImageReader.size()` 只读头不解码。
+- **R8 交互与快捷键**：A/D 为主快捷键换图（←/→ 是等价别名）；滚轮以光标为锚缩放
+  （1.0 = 适应窗口，上限 20×，低于下限回落适应窗口）；左键拖动平移；鼠标移动时裁切框中心跟随
+  光标并夹取（图片小于框 -> 钉在 (0,0) 并提示「右侧/下侧填 0」）；右键裁切 —— **这是唯一的裁切
+  入口**，没有任何键盘裁切绑定（Enter/Return 无裁切语义）；双击左键复位视图；Del 删除裁切子图
+  （见 R10）；Esc 关闭；文件列表在左、图像视图在右；状态栏常驻提示含「A/D 换图」「右键裁切」
+  「Del 删裁切」；视图的 `keyPressEvent` 对 Left/Right/Delete/Escape 一律 `ignore()` 冒泡，
+  dialog 另装 `eventFilter` 保证焦点在任意子控件时快捷键都生效；文件列表设 `NoFocus`，
+  以免 A/D 被键盘搜索吃掉。
+- **R9 输入目录只读 + 文件名即记录**：不读也不写输入目录里的任何文件（尤其不读 `.json`）；
+  不写 `<stem>.crop_record.json` —— 命名模板本身可逆（原图 stem + 区域 + 内边距 + 序号 + 扩展名），
+  解析输出目录即可重建「哪些原图裁过、每张裁了哪些区域」，所以文件名就是记录：不会出现记录与磁盘
+  不一致，也没有跨会话丢失。
+- **R10 删除（唯一删除入口与不变量）**：Del 先弹确认框，列出「将删除 N 个裁切子图」与全部路径，
+  默认按钮是「否」；取消 -> 什么都不做。确认后逐条白名单校验（输出目录可用 -> 名字匹配裁切模板 ->
+  非符号链接且是普通文件 -> realpath 位于 realpath(output_dir) 之内 -> `os.remove`），任一不满足
+  就跳过并在状态栏报告原因（中文常量：输出目录不可用 / 文件名不符合裁切模板 / 符号链接 /
+  不是普通文件 / 不在输出目录内 / 删除失败）；绝不递归、绝不删目录、绝不删模板之外的文件；
+  删完重建解析缓存，标记消失、徽标计数下降、状态栏报告。**不变量**：除 Del 删除本工具自己的裁切
+  子图外，本功能不删除任何文件（`.part` 残留不清理，属人工处理）。
+- **R11 标记来源与缓存**：标记 = `scan_crops(output_dir)` 的解析结果按 stem 归属到原图
+  （`CropRecord{path, source_stem, x, y, w, h, pad_x, pad_y, seq, ext}` -> 画成 `(x, y, w, h)` 矩形）；
+  徽标 `✓N`（N=0 时不显示徽标）与状态栏「已裁切: N 次」同源；重建时机：打开目录、改输出目录、
+  每次裁切成功（append 新记录）、每次 Del 后（整表重建）；同名 stem 视为同一原图（与徽标同口径）。
+- **R12 持久化、默认值与线程**：`QSettings("anylabeling", "anylabeling")` 的
+  `custom/crop_tool/{width,height,pad_width,pad_height,output_dir,input_dir}`；默认 640/640/0/0；
+  `output_dir` 未设置时每次取 `os.getcwd()`（不缓存、不写回），只有用户显式选择才持久化；
+  `input_dir` 为空则窗口不自动加载；填充固定 0，不持久化；不用线程（扫描与重建标记各一次
+  `scandir`），非模态窗口 + 每主窗口单实例复用（`widget._crop_tool_dialog` + `destroyed` 清理），
+  无取消按钮。
+
+### 测试
+
+`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/crop_tool -v`
+（需 PyQt6）。目录里实际落地 **200 个用例**：`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
+（扫描与自然序、命名与解析、跳号与原子写、格式与 mode 收敛、越界补齐与内边距、上限与
+`DecompressionBombError`），`test_ct_viewer.py` 覆盖缩放/平移/裁切框跟随与快捷键冒泡，
+`test_ct_dialog.py` 覆盖确认框与白名单删除、标记与徽标、输出目录切换，`test_ct_settings.py` 覆盖
+默认值与持久化，`test_ct_install.py` 覆盖挂载点两行与菜单项幂等安装。
+
+### 已知坑
+
+- `.part` 残留只能人工清理：Del 既不删非模板文件、也不删 `.part`，而残留的同名文件会让同一区域的
+  下一次裁切跳到 `__2`。
+- 输入目录里若有文件名**恰好符合模板**（用户自己命名的），会被当成自家产物跳过，不再出现在列表里。
+- 输出目录 == 输入目录时，靠模板名排除自家产物；裁完要**重扫**才刷新列表。
+- 默认输出目录 = `os.getcwd()`：从快捷方式或只读目录启动时裁切会报「输出目录不可写」（不崩溃；
+  改一次输出目录即持久化）。
+- 扫描集合不含 heic/heif：这类图片不会被列出。
+- 裁切丢 EXIF 与 ICC（只写像素与 mode，不搬元数据）。
+- 解析只按 stem 归属：不同输入目录下的同名 stem 会共享标记与徽标。
+- 与上游「保存裁剪图像」（按标注形状批量裁切）是两件事：本功能按固定框裁，不读标注。
 
 ## 变更台账
 

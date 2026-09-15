@@ -35,7 +35,7 @@
 
 自研功能的挂载点绝大多数落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
 与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有五处：模型验证的菜单动作与
-方法定义、重命名工具的 Tool 菜单动作追加、标签过滤的 Tool 菜单运行时追加
+方法定义、重命名工具与裁图工具的 Tool 菜单动作追加、标签过滤的 Tool 菜单运行时追加
 （`menus.tool.addAction`）与 `LabelingWidget.import_image_folder` 的实例级包装，
 换图复位视图的 `load_file` 实例级包装，
 以及崩溃日志的第五处——`anylabeling/app.py` **模块顶层**挂载（1 行 import + 1 行调用，
@@ -95,6 +95,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
 | 切换图片时画布缩放/滚动回到默认 | `anylabeling/custom/reset_view_on_switch/`（实例级包装 `load_file`，换图复位成首图初始态、同文件重载不复位、有意压过 `keep_prev_scale`；软挂载见 contract.json） |
 | 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
+| 固定框裁图（数据集逐张裁切） | `anylabeling/custom/crop_tool/`（Tool 菜单「裁图工具」：拖入目录、W×H 固定框、右键裁切、A/D 换图、文件名即记录、Del 经确认删自己的裁切子图；默认输出 = `os.getcwd()`） |
 | 按标签分类过滤文件列表 | `anylabeling/custom/label_filter/`（Tool 菜单「标签过滤」运行时追加，实例级包装 `import_image_folder` 做二道过滤） |
 | 崩溃 / 运行日志（无控制台取证） | `anylabeling/custom/crash_log/`（挂载 `anylabeling/app.py:23-24`；日志 `~/.xanylabeling/logs/xany-YYYYMMDD.log`，保留 14 份；`XANY_LOG_DIR` 改目录、`XANY_LOG_DISABLE=1` 关闭） |
 | 快捷键 | `anylabeling/views/labeling/label_widget.py` 的动作定义（快捷键表取自 `self._config["shortcuts"]`，即 `.xanylabelingrc`） |
