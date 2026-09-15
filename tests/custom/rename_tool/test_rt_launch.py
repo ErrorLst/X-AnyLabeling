@@ -74,7 +74,7 @@ class TestPackageSurface:
         )
         assert result.returncode == 0, result.stderr
         lines = result.stdout.strip().splitlines()
-        assert lines[0] == "[\'a\', 10]"
+        assert lines[0] == "[(1, 'a'), (0, 10)]"
         assert lines[1] == "False"
 
 

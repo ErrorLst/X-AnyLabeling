@@ -60,8 +60,34 @@ class TestNaturalKey:
 
     def test_non_decimal_digit_is_a_character(self):
         assert core.natural_key("a².jpg") == [
-            "a", "²", ".", "j", "p", "g"
+            (1, "a"), (1, "²"), (1, "."), (1, "j"), (1, "p"), (1, "g")
         ]
+
+    def test_chunks_are_kind_tagged(self):
+        assert core.natural_key("a10") == [(1, "a"), (0, 10)]
+
+    def test_mixed_names_sort(self):
+        names = ["b.jpg", "10.jpg", "a2.png", "1.jpg", "正面.png"]
+        assert sorted(names, key=core.natural_key) == [
+            "1.jpg", "10.jpg", "a2.png", "b.jpg", "正面.png"
+        ]
+
+    def test_number_and_text_prefix_do_not_raise(self):
+        assert sorted(["a.jpg", "a2.png"], key=core.natural_key) == [
+            "a2.png", "a.jpg"
+        ]
+
+    def test_extension_and_number_do_not_raise(self):
+        assert sorted(
+            ["img.jpg", "img2.jpg", "img10.jpg"], key=core.natural_key
+        ) == ["img2.jpg", "img10.jpg", "img.jpg"]
+
+    def test_mixed_folder_plans(self, rt_dataset):
+        for stem in ("a", "a2", "b", "10", "1"):
+            make_pair(rt_dataset, stem, "person")
+        plan = core.plan_directory(rt_dataset)
+        assert plan.blocked() is False
+        assert len(plan.items) == 5
 
     def test_superscript_names_sort_stably(self):
         names = ["a².jpg", "b.jpg", "a.jpg"]
