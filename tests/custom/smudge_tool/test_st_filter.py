@@ -606,10 +606,13 @@ def test_a_source_window_over_the_region_reports_it(st_tool):
     widget = st_tool.widget
     before = _bytes(widget.image_path)
     controller._action.trigger()
-    # The source point is the middle of the box, so the window is the
-    # region itself and every candidate is refused.
+    # The source point is the middle of the box, so the window would be
+    # the region itself and every candidate would be refused. The guard
+    # tells the user instead, before anything is read, written or
+    # remembered.
     _fill(canvas, (40.0, 40.0), (20.0, 20.0), (60.0, 60.0))
-    assert any("未发生变化" in message for message in widget.messages)
+    assert any("源点在框选区域内" in message for message in widget.messages)
+    assert not any("未发生变化" in message for message in widget.messages)
     assert not any("已完成涂抹修复" in message for message in widget.messages)
     assert _bytes(widget.image_path) == before
     assert controller._history == {}
@@ -788,10 +791,13 @@ def test_a_small_drag_fills_the_region_and_writes_the_file(st_tool):
     assert _same_image(canvas.pixmap, widget.image_path)
     shape = (canvas.pixmap.height(), canvas.pixmap.width())
     window = operations.source_window((85.0, 70.0), (10, 10), shape)
-    assert window == (80, 65, 90, 75)
-    # The window is as large as the region, so the aligned patch is the
-    # window itself: the region holds the texture of the source point.
-    assert np.array_equal(is_now[10:20, 10:20], was[65:75, 80:90])
+    # The window is three times the region, so the block has a known
+    # margin around it and the matcher takes the texture of the window
+    # instead of being covered by the aligned patch of a window of the
+    # size of the region.
+    assert window == (70, 50, 100, 80)
+    assert controller._source_box == window
+    assert np.array_equal(is_now, texture_fill.fill_roi(was, roi, window))
 
 
 def test_a_small_box_over_the_source_window_reports_it(st_tool):
@@ -800,13 +806,101 @@ def test_a_small_box_over_the_source_window_reports_it(st_tool):
     widget = st_tool.widget
     before = _bytes(widget.image_path)
     controller._action.trigger()
-    # The source point is the middle of the box, so the window is the box
-    # itself: the aligned patch would be the region, which is refused.
+    # The source point is the middle of the box, so the window would be
+    # the box itself: the aligned patch would be the region, which is
+    # refused, and the guard reports the source point instead.
     _fill(canvas, (15.0, 15.0), (10.0, 10.0), (20.0, 20.0))
-    assert any("未发生变化" in message for message in widget.messages)
+    assert any("源点在框选区域内" in message for message in widget.messages)
+    assert not any("未发生变化" in message for message in widget.messages)
     assert _bytes(widget.image_path) == before
     assert controller._history == {}
     assert controller._backups == {}
+
+
+def test_a_source_point_inside_the_box_is_refused_without_a_trace(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    _drop_override_cursors()
+    controller._action.trigger()
+    was = _bytes(widget.image_path)
+    # A normal fill first: the tool then has a source box, a backup and
+    # a step of history, and every one of them has to survive the
+    # refusal untouched.
+    _fill(canvas, (85.0, 70.0), (20.0, 20.0), (60.0, 60.0))
+    assert any("已完成涂抹修复" in message for message in widget.messages)
+    assert controller._history[widget.image_path]
+    assert controller._backups
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+    bytes_before = _bytes(widget.image_path)
+    backups_before = dict(controller._backups)
+    history_before = {
+        path: list(steps) for path, steps in controller._history.items()
+    }
+    # The source point now sits inside the box that is about to be
+    # dragged: the window would be the box itself, so the region would
+    # search the defect in itself.
+    press(canvas, (40.0, 40.0), QtCore.Qt.MouseButton.RightButton)
+    source_box_before = controller._source_box
+    notes_before = len(widget.messages)
+    drag(canvas, (20.0, 20.0), (60.0, 60.0))
+    notes = widget.messages[notes_before:]
+    assert len(notes) == 1
+    assert "源点在框选区域内" in notes[0]
+    assert controller._source_box == source_box_before
+    assert _bytes(widget.image_path) == bytes_before
+    assert controller._backups == backups_before
+    assert controller._history == history_before
+    assert _override_shape() == QtCore.Qt.CursorShape.CrossCursor
+    # The drag state is left alone as well: the box stays the region the
+    # tool remembers, so a later right click still shows where the window
+    # of this box would sit.
+    assert controller._roi == (20, 20, 60, 60)
+    # The step of the normal fill is still the one Ctrl+Z takes back, so
+    # the refused gesture never reached the history.
+    send_key(
+        canvas, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.ControlModifier
+    )
+    assert _bytes(widget.image_path) == was
+    assert controller._history == {}
+
+
+def test_a_source_point_on_the_edge_of_the_box_is_not_refused(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    controller._action.trigger()
+    # The box is half open, so (50, 40) is the corner just outside the
+    # box (10, 10, 50, 40) and the fill has to run as usual.
+    _fill(canvas, (50.0, 40.0), (10.0, 10.0), (50.0, 40.0))
+    assert not any(
+        "源点在框选区域内" in message for message in widget.messages
+    )
+    assert any("已完成涂抹修复" in message for message in widget.messages)
+    assert controller._history[widget.image_path]
+
+
+def test_a_source_window_that_overlaps_the_box_is_not_refused(st_tool):
+    controller = st_tool.controller
+    canvas = st_tool.widget.canvas
+    widget = st_tool.widget
+    controller._action.trigger()
+    # The source point (65, 60) is outside the box (20, 20, 60, 60), but
+    # the window it asks for still reaches the box: that is the ordinary
+    # case of a region that takes its texture from right next to it.
+    press(canvas, (65.0, 60.0), QtCore.Qt.MouseButton.RightButton)
+    assert controller._source_box is None
+    drag(canvas, (20.0, 20.0), (60.0, 60.0))
+    shape = (canvas.pixmap.height(), canvas.pixmap.width())
+    window = operations.source_window((65.0, 60.0), (40, 40), shape)
+    box = (20, 20, 60, 60)
+    assert window[0] < box[2] and box[0] < window[2]
+    assert window[1] < box[3] and box[1] < window[3]
+    assert controller._source_box == window
+    assert controller._overlay._source_box == window
+    assert any("已完成涂抹修复" in message for message in widget.messages)
+    assert controller._history[widget.image_path]
+
 
 def test_a_plain_move_keeps_the_cross_of_the_mode(st_tool):
     controller = st_tool.controller

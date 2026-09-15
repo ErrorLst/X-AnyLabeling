@@ -1,8 +1,11 @@
 """Tests of the pure texture fill algorithm."""
 
+import warnings
+
 import numpy as np
 import pytest
 
+from anylabeling.custom.smudge_tool import operations
 from anylabeling.custom.smudge_tool import texture_fill as tf
 
 
@@ -392,3 +395,316 @@ def test_a_small_region_without_a_source_window_is_matched_globally():
     mask = _outside_mask(image.shape, box)
     assert np.array_equal(out[mask], image[mask])
     assert not np.array_equal(out[20:30, 20:30], image[20:30, 20:30])
+
+
+#: The region, the source point and the defect of the seam probes: a box
+#: of 50x40 pixels, a source point 60 pixels to its right, and a defect
+#: that fills the whole region, so a border that keeps the pixels it
+#: replaces shows up as the colour of the defect.
+SEAM_BOX = (60, 50, 110, 90)
+SEAM_SOURCE = (170.0, 130.0)
+SEAM_DEFECT = 20
+
+
+def _ramp_material(height=160, width=200):
+    "A smooth diagonal gradient, 0.43 grey level per pixel."
+
+    rows, cols = np.indices((height, width))
+    values = 40.0 + 0.43 * (cols + rows)
+    return np.clip(np.round(values), 0, 255).astype(np.uint8)
+
+
+def _active_material(height=160, width=200):
+    "A grainy material whose level drifts."
+
+    rows, cols = np.indices((height, width))
+    level = 71.0 + 80 * np.sin(rows / 60.0) + 60 * np.cos(cols / 50.0)
+    rng = np.random.default_rng(23)
+    noise = rng.integers(-9, 10, (height, width))
+    return np.clip(np.round(level + noise), 0, 255).astype(np.uint8)
+
+
+def _blobbed(image, box, colour=SEAM_DEFECT):
+    "Paint the whole region with the colour of a defect."
+
+    out = image.copy()
+    out[box[1] : box[3], box[0] : box[2]] = colour
+    return out
+
+
+def _ring(image, box):
+    "The outermost ring of a region, as one flat array."
+
+    x0, y0, x1, y1 = box
+    values = image.astype(np.float64)
+    return np.concatenate(
+        [
+            values[y0, x0:x1],
+            values[y1 - 1, x0:x1],
+            values[y0:y1, x0],
+            values[y0:y1, x1 - 1],
+        ]
+    )
+
+
+def _seam_windows(image):
+    "The narrow window of the port and the window the tool asks for."
+
+    size = (SEAM_BOX[2] - SEAM_BOX[0], SEAM_BOX[3] - SEAM_BOX[1])
+    narrow = operations.source_window(SEAM_SOURCE, size, image.shape, factor=1)
+    wide = operations.source_window(SEAM_SOURCE, size, image.shape)
+    return narrow, wide
+
+
+def _edge_jump(result, box):
+    "Mean absolute difference across the four edges of a region."
+
+    x0, y0, x1, y1 = box
+    values = result.astype(np.float64)
+    jumps = [
+        np.abs(values[y0, x0:x1] - values[y0 - 1, x0:x1]),
+        np.abs(values[y1 - 1, x0:x1] - values[y1, x0:x1]),
+        np.abs(values[y0:y1, x0] - values[y0:y1, x0 - 1]),
+        np.abs(values[y0:y1, x1 - 1] - values[y0:y1, x1]),
+    ]
+    return float(np.mean([jump.mean() for jump in jumps]))
+
+
+def _material_variation(image, box):
+    "Mean absolute difference of neighbouring pixels of the material."
+
+    band = image[box[1] - 30 : box[1] - 10, :].astype(np.float64)
+    return float(np.abs(np.diff(band, axis=1)).mean())
+
+
+@pytest.mark.parametrize(
+    "shorter,expected",
+    [
+        (6, 0),
+        (10, 0),
+        (12, 1),
+        (17, 2),
+        (20, 2),
+        (30, 3),
+        (40, 4),
+        (50, 5),
+        (80, 8),
+        (2000, 8),
+    ],
+)
+def test_the_outer_feather_follows_the_shorter_side(shorter, expected):
+    "A tenth of the shorter side, clamped to eight pixels."
+
+    assert tf.edge_ramp_for(shorter, shorter) == expected
+    assert tf.edge_ramp_for(shorter, shorter + 40) == expected
+
+
+def test_edge_feather_is_the_complement_of_the_block_feather():
+    "The two feathers sum to one: where the one is high the other is low."
+
+    feather = tf.edge_feather(24, 24, 6)
+    alpha = tf.feather_alpha(24, 24, 6)
+    assert feather.shape == (24, 24, 1)
+    assert feather.dtype == np.float32
+    assert np.allclose(feather[:, :, 0] + alpha[:, :, 0], 1.0)
+    assert feather[12, 12, 0] == 0.0
+    assert feather[0, 0, 0] > 0.9
+    assert alpha[12, 12, 0] == 1.0
+    assert alpha[0, 0, 0] < 0.06
+
+
+def test_the_adaptive_feather_spares_a_region_below_one_block():
+    "A large region gets a border that moves, a small one does not."
+
+    box = (40, 30, 90, 70)
+    window = (100, 100, 150, 140)
+    image = _defect(_texture(), box)
+    assert tf.edge_ramp_for(40, 50) == 4
+    zero = tf.fill_roi(image, box, window, edge_ramp=0)
+    adaptive = tf.fill_roi(image, box, window)
+    bands = (
+        (slice(30, 31), slice(40, 90)),
+        (slice(69, 70), slice(40, 90)),
+        (slice(30, 70), slice(40, 41)),
+        (slice(30, 70), slice(89, 90)),
+    )
+    for rows, cols in bands:
+        assert not np.array_equal(adaptive[rows, cols], zero[rows, cols])
+    small = (20, 20, 30, 30)
+    assert tf.edge_ramp_for(10, 10) == 0
+    tiny = _defect(_texture(), small)
+    assert np.array_equal(
+        tf.fill_roi(tiny, small, (100, 100, 110, 110)),
+        tf.fill_roi(tiny, small, (100, 100, 110, 110), edge_ramp=0),
+    )
+
+
+def test_a_zero_ramp_is_the_result_of_the_port():
+    "Without a feather the fill only writes the matched texture."
+
+    box = (40, 30, 90, 70)
+    window = (100, 100, 150, 140)
+    image = _defect(_texture(), box)
+    zero = tf.fill_roi(image, box, window, edge_ramp=0)
+    adaptive = tf.fill_roi(image, box, window)
+    assert not np.array_equal(zero, adaptive)
+    mask = _outside_mask(image.shape, box)
+    assert np.array_equal(zero[mask], image[mask])
+    assert np.array_equal(adaptive[mask], image[mask])
+
+
+def test_the_enlarged_window_removes_the_seam_of_a_gradient():
+    "The jump across the edges drops to the slope of the gradient."
+
+    clean = _ramp_material()
+    image = _blobbed(clean, SEAM_BOX)
+    narrow, wide = _seam_windows(image)
+    # The port searched a window of the size of the region, which is the
+    # left column of this one: eleven placements in a single row.
+    assert narrow == (145, 110, 195, 150)
+    assert wide == (50, 40, 200, 160)
+    zero = tf.fill_roi(image, SEAM_BOX, narrow, edge_ramp=0)
+    out = tf.fill_roi(image, SEAM_BOX, wide)
+    assert _edge_jump(zero, SEAM_BOX) >= 30.0
+    assert _edge_jump(out, SEAM_BOX) <= 10.0
+    # The border of the region carries the material it was painted with:
+    # a feather that kept the pixels the region replaces would leave the
+    # ring of the region at the colour of the defect.
+    assert _ring(out, SEAM_BOX).mean() == pytest.approx(
+        _ring(clean, SEAM_BOX).mean(), abs=10.0
+    )
+    assert _ring(clean, SEAM_BOX).min() > SEAM_DEFECT + 40
+
+
+def test_the_enlarged_window_removes_the_seam_of_a_grainy_material():
+    "The jump across the edges stays within the activity of the grain."
+
+    clean = _active_material()
+    image = _blobbed(clean, SEAM_BOX)
+    narrow, wide = _seam_windows(image)
+    zero = tf.fill_roi(image, SEAM_BOX, narrow, edge_ramp=0)
+    out = tf.fill_roi(image, SEAM_BOX, wide)
+    material = _material_variation(clean, SEAM_BOX)
+    assert _edge_jump(zero, SEAM_BOX) >= 30.0
+    assert _edge_jump(out, SEAM_BOX) <= material + 8.0
+    assert _edge_jump(out, SEAM_BOX) < _edge_jump(zero, SEAM_BOX)
+    assert _ring(out, SEAM_BOX).mean() == pytest.approx(
+        _ring(clean, SEAM_BOX).mean(), abs=10.0
+    )
+
+
+def test_the_border_of_the_region_never_keeps_the_defect():
+    "The outermost ring of a region is texture, never the defect."
+
+    image = _blobbed(_ramp_material(), SEAM_BOX)
+    _, wide = _seam_windows(image)
+    out = tf.fill_roi(image, SEAM_BOX, wide)
+    # Every pixel of the ring sits on the material the region replaces,
+    # which is a gradient of 87..127 grey levels there: the defect is a
+    # colour of its own and cannot hide in that range.
+    assert _ring(out, SEAM_BOX).min() > SEAM_DEFECT + 40
+
+
+def test_a_region_at_the_image_corner_is_feathered_on_every_edge():
+    "The feather follows the region, not one of the image borders."
+
+    box = (0, 0, 40, 40)
+    image = _defect(_texture(), box)
+    window = (100, 100, 140, 140)
+    assert tf.edge_ramp_for(40, 40) == 4
+    zero = tf.fill_roi(image, box, window, edge_ramp=0)
+    out = tf.fill_roi(image, box, window)
+    mask = _outside_mask(image.shape, box)
+    assert np.array_equal(out[mask], image[mask])
+    bands = (
+        (slice(0, 2), slice(0, 40)),
+        (slice(38, 40), slice(0, 40)),
+        (slice(0, 40), slice(0, 2)),
+        (slice(0, 40), slice(38, 40)),
+    )
+    for rows, cols in bands:
+        assert not np.array_equal(out[rows, cols], zero[rows, cols])
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_the_outer_feather_keeps_the_range_of_the_dtype(dtype, channels):
+    "The feathered border stays inside the range of the dtype."
+
+    base = _texture()
+    box = (60, 40, 140, 120)
+    source = (60, 130, 140, 210)
+    if channels == 1:
+        image = base[:, :, 0].copy()
+    elif channels == 3:
+        image = base[:, :, :3].copy()
+    else:
+        alpha = np.full(base.shape[:2] + (1,), 200, np.uint8)
+        image = np.concatenate([base[:, :, :3], alpha], axis=2)
+    defect = _defect(image, box)
+    if dtype == np.uint16:
+        image = (image.astype(np.uint16) * 257).astype(np.uint16)
+        defect = (defect.astype(np.uint16) * 257).astype(np.uint16)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = tf.fill_roi(defect, box, source)
+    assert [
+        item for item in caught if issubclass(item.category, RuntimeWarning)
+    ] == []
+    assert out.dtype == dtype
+    assert out.shape == defect.shape
+    mask = _outside_mask(defect.shape, box)
+    assert np.array_equal(out[mask], defect[mask])
+    assert not np.array_equal(out[40:120, 60:140], defect[40:120, 60:140])
+    assert out.max() <= np.iinfo(dtype).max
+
+
+def _border_state(image, ramp):
+    "Return the state of a fill whose region border carries the feather."
+
+    state = _fill_state(image, (100, 60, 112, 72))
+    if ramp:
+        state.update(
+            {
+                "edge_ramp": ramp,
+                "edge_h": 12,
+                "edge_w": 12,
+                "edge_origin": (0, 0),
+                "edge_feather": tf.edge_feather(12, 12, ramp),
+            }
+        )
+    return state
+
+
+def test_the_border_weight_leaves_a_pixel_no_block_has_written_alone():
+    "The port already gives an empty pixel the whole texture."
+
+    image = _texture()[:, :, 0].astype(np.float32)
+    source = image[60:66, 100:106].copy()
+    state = _border_state(image, 4)
+    filled = np.ones(image.shape[:2], bool)
+    filled[0:6, 0:6] = False
+    assert tf._cover_block(state, filled, (0, 0), (0, 0, 6, 6), 24)
+    # The border weight of the region cannot lift a pixel that no block
+    # has written yet: that pixel takes the texture whole already, so
+    # the aligned patch is the source window untouched.
+    assert np.array_equal(state["work"][0:6, 0:6], source)
+
+
+def test_the_border_weight_takes_over_a_pixel_an_earlier_block_wrote():
+    "On the border the fresh texture outweighs what is written there."
+
+    image = _texture()[:, :, 0].astype(np.float32)
+    source = float(image[60, 100])
+    written = np.zeros(2, np.float32)
+    for index, ramp in enumerate((0, 4)):
+        state = _border_state(image, ramp)
+        state["work"][0:6, 0:6] = 7.0
+        filled = np.ones(image.shape[:2], bool)
+        tf._blend_block(state, filled, (0, 0, 6, 6, 6, 6), (60, 100))
+        written[index] = state["work"][0, 0]
+    # The port leaves the corner of the block to the pixels it wrote
+    # before, see the block feather; the feather of the region hands
+    # that corner to the fresh texture instead.
+    assert abs(written[0] - source) > abs(written[1] - source)
+    assert abs(written[1] - source) < abs(written[1] - 7.0)

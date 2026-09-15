@@ -419,31 +419,76 @@ def validate_roi(roi, shape):
         raise SmudgeError("矩形超出图像范围，请重新框选")
 
 
-def source_window(center, size, shape):
+#: The source window is this many times the region of interest. A
+#: window only has to hold the region to be a legal window, and a window
+#: of the size of the region leaves the weighted search as many candidate
+#: placements as the difference of the two rectangles has pixels - a
+#: single row of eleven placements for a region of 50x40 - so the cost is
+#: flat or its minimum sits in a corner of that range and the matched
+#: texture lands on a visible seam at the border of the region. Three
+#: times the region gives the search enough placements to find a patch
+#: the texture around the region continues.
+SOURCE_WINDOW_FACTOR = 3
+
+
+def source_window(center, size, shape, factor=SOURCE_WINDOW_FACTOR):
     """Return the source window centred on a point of the image.
 
-    The window has the size of the region of interest and is clamped into
-    the image, so a source point near a border still yields a window the
-    matching can use: it is shifted inwards instead of being cut short.
-    A window that cannot reach the requested size, on an image smaller
-    than the region, is returned as large as the image allows.
+    The window is ``factor`` times the size of the region of interest -
+    three times it by default, see :data:`SOURCE_WINDOW_FACTOR` - and is
+    clamped into the image, so a source point near a border still yields
+    a window the matching can use: it is shifted inwards instead of being
+    cut short. A window that cannot reach the requested size, on an image
+    smaller than the region, is returned as large as the image allows.
 
     Args:
         center: ``(cx, cy)`` of the source point, in image coordinates.
         size: ``(width, height)`` of the region of interest.
         shape: The shape of the image.
+        factor: How many times the region the window is wide and tall.
+            ``1`` gives the window the size of the region itself, which
+            is what the matching used before the factor existed.
 
     Returns:
         ``(x0, y0, x1, y1)``, half open, inside the image.
     """
     height, width = shape[:2]
-    window_w = min(max(1, int(round(size[0]))), width)
-    window_h = min(max(1, int(round(size[1]))), height)
+    window_w = min(max(1, int(round(size[0] * factor))), width)
+    window_h = min(max(1, int(round(size[1] * factor))), height)
     x0 = int(round(center[0] - window_w / 2))
     y0 = int(round(center[1] - window_h / 2))
     x0 = int(np.clip(x0, 0, width - window_w))
     y0 = int(np.clip(y0, 0, height - window_h))
     return (x0, y0, x0 + window_w, y0 + window_h)
+
+
+def point_in_box(point, box):
+    """Return ``True`` when a point falls inside a half open box.
+
+    The guard this serves is deliberately this narrow, and the window of
+    :func:`source_window` is why. That window always holds the source
+    point: it is centred on the point and then moved as a whole into the
+    image, never cut short. A source point inside the region therefore
+    asks the fill for the texture around the defect at the defect
+    itself, which is the one place the region may not take its texture
+    from. A source point outside the region whose window still overlaps
+    the region is the ordinary case - the texture comes from right next
+    to the region - and the two cannot be told apart by looking at the
+    overlap of the window, which is why only the point itself is looked
+    at here.
+
+    Args:
+        point: ``(x, y)`` of the point, in image coordinates.
+        box: ``(x0, y0, x1, y1)``, half open.
+
+    Returns:
+        ``True`` when ``box[0] <= int(point[0]) < box[2]`` and
+        ``box[1] <= int(point[1]) < box[3]``.
+    """
+    return (
+        box[0] <= int(point[0]) < box[2]
+        and box[1] <= int(point[1]) < box[3]
+    )
 
 
 def roi_box(press, release):

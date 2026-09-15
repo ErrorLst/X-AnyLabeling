@@ -48,7 +48,7 @@ ACTION_TEXT = "涂抹工具"
 #: Tooltip of the tool button.
 ACTION_TIP = (
     "涂抹工具：右键选背景源点，左键拖出矩形后松开；"
-    "用源点附近同尺寸纹理填充框内内容，结果直接覆盖原图。"
+    "用源点附近纹理填充框内内容，结果直接覆盖原图。"
     "涂抹模式下 Ctrl+Z 撤销，Esc 取消。"
 )
 
@@ -1053,6 +1053,19 @@ class SmudgeController(QtCore.QObject):
             return
         if self._source is None:
             self._status("请先右键选择背景源点")
+            return
+        if operations.point_in_box(self._source, roi):
+            # The region takes its texture from the window around the
+            # source point, and that window holds the source point: a
+            # source point inside the region asks the fill for the
+            # texture around the defect at the defect itself. The tool
+            # says so instead of running the fill, and touches nothing
+            # else -- no file, no backup, no history, no cursor, no
+            # source box.
+            self._status(
+                "源点在框选区域内，该区域无法从自身取纹理，已跳过"
+                "（请把源点放在框外）"
+            )
             return
         target = self._target_file()
         if not target or not osp.isfile(target):

@@ -140,27 +140,33 @@ def test_validate_roi_messages_are_chinese():
 
 
 def test_source_window_is_centred_when_it_fits():
+    # The geometry of the window itself, at the size of the region. The
+    # tool asks for three times that size by default, see the test below
+    # and operations.SOURCE_WINDOW_FACTOR.
+    assert operations.source_window(
+        (50.0, 40.0), (20, 10), (100, 100), factor=1
+    ) == (40, 35, 60, 45)
+
+
+def test_source_window_is_three_times_the_region_by_default():
+    "The matching searches far enough around the source point to align."
+
+    assert operations.SOURCE_WINDOW_FACTOR == 3
     assert operations.source_window((50.0, 40.0), (20, 10), (100, 100)) == (
-        40,
-        35,
-        60,
-        45,
+        20,
+        25,
+        80,
+        55,
     )
 
 
 def test_source_window_is_clamped_into_the_image():
-    assert operations.source_window((2.0, 2.0), (20, 10), (100, 100)) == (
-        0,
-        0,
-        20,
-        10,
-    )
-    assert operations.source_window((99.0, 99.0), (20, 10), (100, 100)) == (
-        80,
-        90,
-        100,
-        100,
-    )
+    assert operations.source_window(
+        (2.0, 2.0), (20, 10), (100, 100), factor=1
+    ) == (0, 0, 20, 10)
+    assert operations.source_window(
+        (99.0, 99.0), (20, 10), (100, 100), factor=1
+    ) == (80, 90, 100, 100)
 
 
 def test_source_window_of_a_region_larger_than_the_image():
