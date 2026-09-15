@@ -36,6 +36,15 @@ from anylabeling.custom.remote_training.ui.close_guard import (
     ApplicationCloseGuard,
     workers_finished,
 )
+from anylabeling.custom.remote_training.ui.config_page import (
+    BATCH_CHOICES,
+    BATCH_DEFAULT,
+    BATCH_SNAP_TEMPLATE,
+    NOTICE_OPTIMIZER_AUTO,
+    PARAM_GROUPS,
+    PARAM_LABELS,
+    PARAM_SPECS,
+)
 
 CAPABILITIES = {
     "param_schema": {
@@ -60,6 +69,42 @@ CAPABILITIES = {
                                          "yolo26": "yolo26-default"}},
     "tasks": ["detect", "segment"],
 }
+
+#: The two parameter defaults of the 41 key form (spec §3.8.4): an
+#: untouched form sends them, because they are values now instead of
+#: absences - the 16 batch step and the family's `auto` preset.
+ALWAYS_SENT = {"batch": 16, "optimizer": "auto"}
+#: The same form while no server has answered: the local fallback schema
+#: declares no preset at all, so only the batch step is sent.
+BATCH_ONLY = {"batch": 16}
+
+def family_scoped_capabilities():
+    """One answer whose last preset belongs to a single family (§3.8.4).
+
+    `gamma` exists in `yolo26` only, and that family declares no
+    `auto`: the two fallback shapes of a rebuild - a real value the
+    selected family cannot carry, and the valueless policy entry - can
+    therefore be told apart.
+    """
+
+    return {
+        "param_schema": {
+            "optimizer": {"type": "preset",
+                          "values": ["alpha", "auto", "beta", "gamma"]},
+        },
+        "optimizer_presets": {"alpha": {"optimizer": "SGD"},
+                              "beta": {"optimizer": "AdamW"},
+                              "gamma": {"optimizer": "MuSGD"}},
+        "model_families": {
+            "yolo11": {"weights": {"detect": ["yolo11n.pt"]},
+                       "presets": ["alpha", "auto", "beta"]},
+            "yolo26": {"weights": {"detect": ["yolo26n.pt"]},
+                       "presets": ["gamma"]},
+        },
+        "preset_policy": {"default_preset": {"yolo11": "alpha",
+                                             "yolo26": "gamma"}},
+        "tasks": ["detect"],
+    }
 
 
 class Parent(QtWidgets.QMainWindow):
@@ -353,12 +398,13 @@ def test_parameter_surface_follows_capabilities(dialogs):
     dialog = dialogs()
     page = dialog.config_page
     page.set_capabilities(dict(CAPABILITIES))
-    assert len(page._params) == 23
-    # no parameter carries an initial value (spec §3.8.4): an untouched
-    # form sends no key at all, `optimizer` included
-    assert page.values().params == {}
+    assert len(page._params) == 41
+    # two defaults are values now (spec §3.8.4): an untouched form sends
+    # the batch step and the family's `auto` preset
+    assert page.values().params == ALWAYS_SENT
+    assert page.explicit_params() == ALWAYS_SENT
     page._params["epochs"].widget.setValue(7)
-    assert page.values().params == {"epochs": 7}
+    assert page.values().params == dict(ALWAYS_SENT, epochs=7)
 
 
 def test_weights_follow_family_and_task(dialogs):
@@ -387,16 +433,17 @@ def test_presets_follow_the_family(dialogs):
         return [combo.itemText(i) for i in range(combo.count())]
 
     widget = page._params["optimizer"].widget
-    # the first entry lets the server pick by preset_policy and is the
-    # initial value of the form (§3.8.4)
+    # the first entry still lets the server pick by preset_policy, but
+    # the initial value is the family's `auto` preset: it carries a
+    # real value and is therefore sent (§3.8.4)
     assert items(widget) == ["（由服务端默认策略决定；家族默认 yolo11-sgd）",
                              "auto", "yolo11-adamw", "yolo11-sgd"]
-    assert widget.currentData() is None
+    assert widget.currentData() == "auto"
     page.model_family_combo.setCurrentIndex(
         items(page.model_family_combo).index("yolo26"))
     assert items(widget) == ["（由服务端默认策略决定；家族默认 yolo26-default）",
                              "auto", "yolo26-default"]
-    assert widget.currentData() is None
+    assert widget.currentData() == "auto"
 
 
 def test_a_family_without_the_sentinel_keeps_the_server_policy(dialogs):
@@ -421,17 +468,17 @@ def test_a_family_without_the_sentinel_keeps_the_server_policy(dialogs):
                      "yolo26-default"]
     assert widget.currentData() is None
     assert page._params["optimizer"].explicit is False
-    assert page.explicit_params() == {}
-    assert page.values().params == {}
+    assert page.explicit_params() == BATCH_ONLY
+    assert page.values().params == BATCH_ONLY
 
 
-def test_family_switch_stays_on_the_server_policy_entry(dialogs):
-    """A family switch keeps the form on the server policy (§3.8.4).
+def test_family_switch_lands_on_the_new_family_initial_entry(dialogs):
+    """A family switch applies the initial value rule of the new family.
 
-    The family without the sentinel and the one that declares `auto`
-    both start on the first entry, and the switch has to resolve that
-    entry against the new item list, not against the stale one of the
-    family just left.
+    The family without the sentinel starts on the valueless server
+    policy entry, the one that declares `auto` starts on that preset
+    (and sends it).  The switch has to resolve the entry against the
+    new item list, not against the stale one of the family just left.
     """
 
     dialog = dialogs()
@@ -456,12 +503,12 @@ def test_family_switch_stays_on_the_server_policy_entry(dialogs):
     assert families == ["yolo26", "yolo11"]
     # the family without `auto` starts on the server policy entry
     assert widget.currentData() is None
-    assert page.values().params == {}
+    assert page.values().params == BATCH_ONLY
     page.model_family_combo.setCurrentIndex(families.index("yolo11"))
     items = [widget.itemText(index) for index in range(widget.count())]
     assert "auto" in items
-    assert widget.currentData() is None
-    assert page.values().params == {}
+    assert widget.currentData() == "auto"
+    assert page.values().params == ALWAYS_SENT
 
 
 def test_family_switch_keeps_a_shared_preset_name(dialogs):
@@ -493,13 +540,13 @@ def test_family_switch_keeps_a_shared_preset_name(dialogs):
     })
     widget = page._params["optimizer"].widget
     widget.setCurrentIndex(widget.findData("beta"))
-    assert page.values().params == {"optimizer": "beta"}
+    assert page.values().params == dict(ALWAYS_SENT, optimizer="beta")
     families = [page.model_family_combo.itemText(index)
                 for index in range(page.model_family_combo.count())]
     page.model_family_combo.setCurrentIndex(families.index("yolo26"))
     # `beta` sits at another position in the list of yolo26
     assert widget.currentData() == "beta"
-    assert page.values().params == {"optimizer": "beta"}
+    assert page.values().params == dict(ALWAYS_SENT, optimizer="beta")
 
 
 def test_import_and_export_round_trip(dialogs, tmp_path):
@@ -520,13 +567,14 @@ def test_import_and_export_round_trip(dialogs, tmp_path):
     assert page.dataset_edit.text() == "/tmp/ds"
     assert page.current_task() == "segment"
     assert page.seed_text() == "20260101"
-    assert page.values().params == {"epochs": 50}
+    assert page.values().params == dict(ALWAYS_SENT, epochs=50)
 
     target = tmp_path / "out.json"
     assert dialog.write_config_document(str(target)) is True
     exported = json.loads(target.read_text(encoding="utf-8"))
     assert exported["task"] == "segment"
     assert exported["seed"] == 20260101
+    assert exported["params"] == dict(ALWAYS_SENT, epochs=50)
     assert "api_key" not in exported
     assert sorted(exported) == [
         "classes_file", "dataset_dir", "model", "model_family", "params",
@@ -535,15 +583,16 @@ def test_import_and_export_round_trip(dialogs, tmp_path):
     ]
 
 
-def test_switching_family_back_keeps_the_family_default_entry_silent(
-    dialogs
-):
-    """The server policy entry is the default of every family (§3.8.4).
+def test_switching_family_back_restores_the_remembered_preset(dialogs):
+    """A preset of the family just left is never sent to the new one.
 
-    A preset of the family just left is not a choice for the new one
-    (it would come back as 422 OPTIMIZER_UNSUPPORTED), and the way
-    back to the first family must not resurrect it: the form is on the
-    server policy entry again and sends no `optimizer` key.
+    The switch to `yolo26` - which does not offer `alpha` - falls back
+    to the valueless server policy entry (a value the new family does
+    not know would come back as 422 OPTIMIZER_UNSUPPORTED), so that
+    request carries no `optimizer` key.  The fallback is a display and
+    request decision only: the choice lives on the page
+    (`_preset_selection`, spec §3.8.4), so coming back to `yolo11`
+    restores `alpha` and sends it again.
     """
 
     dialog = dialogs()
@@ -568,15 +617,70 @@ def test_switching_family_back_keeps_the_family_default_entry_silent(
     })
     widget = page._params["optimizer"].widget
     widget.setCurrentIndex(widget.findData("alpha"))
-    assert page.values().params == {"optimizer": "alpha"}
+    assert page.values().params == dict(BATCH_ONLY, optimizer="alpha")
     families = [page.model_family_combo.itemText(index)
                 for index in range(page.model_family_combo.count())]
     page.model_family_combo.setCurrentIndex(families.index("yolo26"))
+    # `alpha` is not offered here: the policy entry, no optimizer key
     assert widget.currentData() is None
-    assert page.values().params == {}
+    assert page.explicit_params() == BATCH_ONLY
+    assert page.values().params == BATCH_ONLY
+    page.model_family_combo.setCurrentIndex(families.index("yolo11"))
+    assert widget.currentData() == "alpha"
+    assert page.values().params == dict(BATCH_ONLY, optimizer="alpha")
+
+
+def test_the_policy_choice_is_remembered_across_a_family_round_trip(
+    dialogs
+):
+    """The memory carries the choice of the user, not "a preset" (§3.8.4).
+
+    Going back to the first entry is a real choice: it has to survive a
+    family round trip the same way a concrete preset does, so the form
+    comes back on the valueless entry and the request keeps the
+    `optimizer` key out.  Both families offer `auto` and `beta` here,
+    so an implementation that merely remembers "the last preset" cannot
+    pass this test.
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities({
+        "param_schema": {
+            "optimizer": {"type": "preset",
+                          "values": ["alpha", "auto", "beta"]},
+        },
+        "optimizer_presets": {"alpha": {"optimizer": "SGD"},
+                              "beta": {"optimizer": "AdamW"}},
+        "model_families": {
+            "yolo11": {"weights": {"detect": ["yolo11n.pt"]},
+                       "presets": ["alpha", "auto", "beta"]},
+            "yolo26": {"weights": {"detect": ["yolo26n.pt"]},
+                       "presets": ["auto", "beta"]},
+        },
+        "preset_policy": {"default_preset": {"yolo11": "alpha",
+                                             "yolo26": "beta"}},
+        "tasks": ["detect"],
+    })
+    widget = page._params["optimizer"].widget
+    # the family declares `auto`: that is where an untouched form sits
+    assert widget.currentData() == "auto"
+    widget.setCurrentIndex(widget.findData("beta"))
+    assert page.values().params == dict(ALWAYS_SENT, optimizer="beta")
+    # ... and going back to the first entry is a choice of its own
+    widget.setCurrentIndex(0)
+    assert widget.currentData() is None
+    assert page.values().params == BATCH_ONLY
+    families = [page.model_family_combo.itemText(index)
+                for index in range(page.model_family_combo.count())]
+    page.model_family_combo.setCurrentIndex(families.index("yolo26"))
+    # yolo26 offers both `auto` and `beta`: neither may come back
+    assert widget.currentData() is None
+    assert page.values().params == BATCH_ONLY
     page.model_family_combo.setCurrentIndex(families.index("yolo11"))
     assert widget.currentData() is None
-    assert page.values().params == {}
+    assert page.values().params == BATCH_ONLY
+    assert dialog.job_request_body()["params"] == BATCH_ONLY
 
 
 def test_bad_seed_and_bad_import_are_reported(dialogs, tmp_path):
@@ -600,16 +704,17 @@ def test_capabilities_rebuild_keeps_explicit_params(dialogs):
     page.set_capabilities(dict(CAPABILITIES))
     page._params["epochs"].widget.setValue(50)
     page.set_capabilities(dict(CAPABILITIES))
-    assert page.values().params == {"epochs": 50}
+    assert page.values().params == dict(ALWAYS_SENT, epochs=50)
 
 
-def test_optimizer_is_out_of_the_request_by_default(dialogs):
-    """An untouched form sends no `optimizer` key (spec §3.8.4).
+def test_optimizer_defaults_to_auto_in_the_request(dialogs):
+    """An untouched form sends `optimizer: auto` (spec §3.8.4).
 
-    The first entry is the server policy one: it carries no value and
-    is not a choice of the user, so the request leaves the decision to
-    the server (`preset_policy`) instead of pinning a preset. `auto`
-    stays offered as one explicit choice among the others.
+    The combo starts on the family's `auto` preset whenever the family
+    declares one: that entry carries a literal value, so it is a choice
+    of the form and reaches the request body.  The valueless server
+    policy entry stays offered next to it (see
+    `test_server_policy_entry_keeps_optimizer_out_of_the_request`).
     """
 
     dialog = dialogs()
@@ -618,11 +723,11 @@ def test_optimizer_is_out_of_the_request_by_default(dialogs):
     widget = page._params["optimizer"].widget
     items = [widget.itemText(index) for index in range(widget.count())]
     assert "auto" in items
-    assert widget.currentData() is None
-    assert page._params["optimizer"].explicit is False
-    assert page.explicit_params() == {}
-    assert page.values().params == {}
-    assert dialog.job_request_body()["params"] == {}
+    assert widget.currentData() == "auto"
+    assert page._params["optimizer"].explicit is True
+    assert page.explicit_params() == ALWAYS_SENT
+    assert page.values().params == ALWAYS_SENT
+    assert dialog.job_request_body()["params"] == ALWAYS_SENT
 
 
 def test_server_policy_entry_keeps_optimizer_out_of_the_request(dialogs):
@@ -646,17 +751,17 @@ def test_server_policy_entry_keeps_optimizer_out_of_the_request(dialogs):
     assert widget.findData(preset) > 0
     widget.setCurrentIndex(widget.findData(preset))
     assert widget.currentData() == preset
-    assert page.values().params == {"optimizer": preset}
+    assert page.values().params == dict(ALWAYS_SENT, optimizer=preset)
     # back to the first entry: it carries no value at all
     widget.setCurrentIndex(0)
     assert widget.currentData() is None
-    assert page.explicit_params() == {}
-    assert page.values().params == {}
-    assert dialog.job_request_body()["params"] == {}
-    # and on again: the sentinel is one explicit choice of two
+    assert page.explicit_params() == BATCH_ONLY
+    assert page.values().params == BATCH_ONLY
+    assert dialog.job_request_body()["params"] == BATCH_ONLY
+    # and on again: `auto` is one explicit choice of two
     widget.setCurrentIndex(widget.findData("auto"))
     assert widget.currentData() == "auto"
-    assert page.values().params == {"optimizer": "auto"}
+    assert page.values().params == ALWAYS_SENT
 
 
 def test_a_capabilities_refresh_keeps_the_server_policy_choice(dialogs):
@@ -665,9 +770,10 @@ def test_a_capabilities_refresh_keeps_the_server_policy_choice(dialogs):
     A second `set_capabilities` is realistic: re-clicking 「测试连接」
     or the error driven capabilities refresh runs it again.  The form
     must stay on the valueless first entry, so the next submit still
-    carries no `optimizer` key (spec §5.2.2) - a refresh must not
-    fall back to the `auto` initial value of an older build (spec
-    §3.8.4).
+    carries no `optimizer` key (spec §5.2.2).  The widget does not
+    survive that rebuild, so the choice has to live on the page:
+    `_preset_selection` carries it through `rebuild_params()` and the
+    fresh answer (spec §3.8.4).
     """
 
     dialog = dialogs()
@@ -680,22 +786,123 @@ def test_a_capabilities_refresh_keeps_the_server_policy_choice(dialogs):
     presets = CAPABILITIES["model_families"][family]["presets"]
     preset = next(name for name in presets if name != "auto")
     widget.setCurrentIndex(widget.findData(preset))
-    assert page.values().params == {"optimizer": preset}
+    assert page.values().params == dict(ALWAYS_SENT, optimizer=preset)
     widget.setCurrentIndex(0)
     assert widget.currentData() is None
-    assert "optimizer" not in page.values().params
+    assert page.values().params == BATCH_ONLY
     page.set_capabilities(dict(CAPABILITIES))
     widget = page._params["optimizer"].widget
     assert widget.currentIndex() == 0
     assert widget.currentData() is None
     assert "optimizer" not in page.explicit_params()
-    assert "optimizer" not in page.values().params
-    assert "optimizer" not in dialog.job_request_body()["params"]
+    assert page.values().params == BATCH_ONLY
+    assert dialog.job_request_body()["params"] == BATCH_ONLY
     # ... and the state is stable over further answers
     page.set_capabilities(dict(CAPABILITIES))
     widget = page._params["optimizer"].widget
     assert widget.currentIndex() == 0
-    assert "optimizer" not in page.values().params
+    assert page.values().params == BATCH_ONLY
+
+
+def test_a_capabilities_refresh_keeps_the_explicit_preset(dialogs):
+    """A concrete preset survives a late `capabilities` answer (§5.2.2).
+
+    The rebuild destroys the combo the user chose in, so the choice has
+    to live on the page (`_preset_selection`) and the fresh answer has
+    to put it back, name for name.
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(dict(CAPABILITIES))
+    widget = page._params["optimizer"].widget
+    widget.setCurrentIndex(widget.findData("yolo11-adamw"))
+    assert page.values().params == dict(ALWAYS_SENT, optimizer="yolo11-adamw")
+    page.set_capabilities(dict(CAPABILITIES))
+    widget = page._params["optimizer"].widget
+    assert widget.currentData() == "yolo11-adamw"
+    assert page.values().params == dict(
+        ALWAYS_SENT, optimizer="yolo11-adamw"
+    )
+    assert dialog.job_request_body()["params"] == dict(
+        ALWAYS_SENT, optimizer="yolo11-adamw"
+    )
+
+
+def test_a_family_only_preset_survives_a_capabilities_refresh(dialogs):
+    """A preset only one family carries survives a late answer (§3.8.4).
+
+    `gamma` belongs to `yolo26` alone.  A fresh answer refills the
+    family combo from its *first* family, so the rebuilt combo has to
+    fall back to the valueless policy entry there - `yolo11` cannot
+    carry `gamma` - and that request really leaves the `optimizer` key
+    out.  The fallback is a display / send level downgrade only: the
+    memory survives the rebuild, so coming back to `yolo26` shows
+    `gamma` again and sends it (spec §3.8.4, §5.2.2).
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(family_scoped_capabilities())
+    families = [page.model_family_combo.itemText(index)
+                for index in range(page.model_family_combo.count())]
+    page.model_family_combo.setCurrentIndex(families.index("yolo26"))
+    widget = page._params["optimizer"].widget
+    widget.setCurrentIndex(widget.findData("gamma"))
+    assert page.values().params == dict(BATCH_ONLY, optimizer="gamma")
+
+    page.set_capabilities(family_scoped_capabilities())
+    # the answer puts the form back on its first family, which cannot
+    # carry `gamma`: policy entry on screen, no `optimizer` in the body
+    widget = page._params["optimizer"].widget
+    assert page.model_family_combo.currentText() == "yolo11"
+    assert widget.currentIndex() == 0
+    assert widget.currentData() is None
+    assert dialog.job_request_body()["params"] == BATCH_ONLY
+
+    # ... and the memory still carries `gamma` back to its own family
+    page.model_family_combo.setCurrentIndex(
+        page.model_family_combo.findText("yolo26")
+    )
+    assert widget.currentData() == "gamma"
+    assert page.values().params == dict(BATCH_ONLY, optimizer="gamma")
+    assert dialog.job_request_body()["params"] == dict(
+        BATCH_ONLY, optimizer="gamma"
+    )
+
+
+def test_an_imported_preset_of_another_family_keeps_its_memory(dialogs):
+    """An import that cannot be shown yet is still remembered (§5.2.8).
+
+    Importing `optimizer: gamma` while `yolo11` is selected falls back
+    to the policy entry (`gamma` belongs to `yolo26`), but the import
+    is a request value: neither that fallback nor the following
+    `capabilities` rebuild may drop it, so switching to the family
+    that owns `gamma` restores and sends it.
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(family_scoped_capabilities())
+    assert page.model_family_combo.currentText() == "yolo11"
+    # `gamma` is not offered by this family: the combo falls back to
+    # the policy entry (and would send no `optimizer` key), while the
+    # import itself is the memory the next answer has to keep
+    page.set_params({"optimizer": "gamma"})
+    widget = page._params["optimizer"].widget
+    assert widget.currentData() is None
+    assert page.values().params == BATCH_ONLY
+
+    page.set_capabilities(family_scoped_capabilities())
+    page.model_family_combo.setCurrentIndex(
+        page.model_family_combo.findText("yolo26")
+    )
+    widget = page._params["optimizer"].widget
+    assert widget.currentData() == "gamma"
+    assert page.values().params == dict(BATCH_ONLY, optimizer="gamma")
+    assert dialog.job_request_body()["params"] == dict(
+        BATCH_ONLY, optimizer="gamma"
+    )
 
 
 def test_explicit_preset_and_imported_optimizer_are_kept(dialogs):
@@ -706,9 +913,112 @@ def test_explicit_preset_and_imported_optimizer_are_kept(dialogs):
     page.set_capabilities(dict(CAPABILITIES))
     widget = page._params["optimizer"].widget
     widget.setCurrentIndex(widget.findData("yolo11-sgd"))
-    assert page.values().params == {"optimizer": "yolo11-sgd"}
+    assert page.values().params == dict(ALWAYS_SENT, optimizer="yolo11-sgd")
     page.set_params({"optimizer": "auto"})
-    assert page.values().params == {"optimizer": "auto"}
+    assert page.values().params == ALWAYS_SENT
+
+
+# --------------------------------------------- the four new rules
+
+
+def test_the_defaults_of_an_untouched_form_reach_the_request(dialogs):
+    """New ①: both defaults are values, not absences (spec §3.8.4).
+
+    `batch` starts on the 16 step and `optimizer` on the family's
+    `auto` preset; both are explicit from the first build, so the body
+    of a form nobody touched carries them.
+    """
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(dict(CAPABILITIES))
+    assert page._params["batch"].explicit is True
+    assert page._params["optimizer"].explicit is True
+    assert page._params["batch"].value() == BATCH_DEFAULT
+    assert page._params["optimizer"].value() == "auto"
+    assert page.explicit_params() == ALWAYS_SENT
+    assert dialog.job_request_body()["params"] == ALWAYS_SENT
+
+
+def test_a_capabilities_refresh_keeps_the_auto_default(dialogs):
+    """New ②: a late answer rebuilds on the same initial value rule."""
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(dict(CAPABILITIES))
+    page.set_capabilities(dict(CAPABILITIES))
+    widget = page._params["optimizer"].widget
+    assert widget.currentData() == "auto"
+    assert page.values().params == ALWAYS_SENT
+    assert dialog.job_request_body()["params"] == ALWAYS_SENT
+
+
+def test_batch_is_one_non_editable_drop_down_of_four_steps(dialogs):
+    """New ③: 8 / 16 / 32 / 64, no free number any more (§3.8.2)."""
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(dict(CAPABILITIES))
+    widget = page._params["batch"].widget
+    assert isinstance(widget, QtWidgets.QComboBox)
+    assert widget.count() == len(BATCH_CHOICES)
+    assert widget.isEditable() is False
+    assert [widget.itemData(index) for index in range(widget.count())] \
+        == list(BATCH_CHOICES)
+    assert [widget.itemText(index) for index in range(widget.count())] \
+        == [str(step) for step in BATCH_CHOICES]
+    assert widget.currentData() == BATCH_DEFAULT == 16
+
+
+def test_an_imported_batch_outside_the_steps_is_snapped(dialogs):
+    """New ④: the snap lands on the nearest step and says so (§3.8.2)."""
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(dict(CAPABILITIES))
+    page.set_params({"batch": 100})
+    QtWidgets.QApplication.processEvents()
+    widget = page._params["batch"].widget
+    assert widget.currentData() == 64
+    assert page.values().params["batch"] == 64
+    assert BATCH_SNAP_TEMPLATE.format(100, 64) in page.notice_label.text()
+    # a real change of the user ends the advisory
+    widget.setCurrentIndex(widget.findData(32))
+    widget.activated.emit(widget.currentIndex())
+    QtWidgets.QApplication.processEvents()
+    assert "batch" not in page.notice_label.text()
+    assert page.values().params["batch"] == 32
+
+
+def test_auto_next_to_a_hyper_parameter_is_only_an_advisory(dialogs):
+    """New ⑤: the conflict is announced, no value is changed (§3.8.4)."""
+
+    dialog = dialogs()
+    page = dialog.config_page
+    page.set_capabilities(dict(CAPABILITIES))
+    QtWidgets.QApplication.processEvents()
+    assert page.notice_label.text() == ""
+    page.set_params({"lr0": 0.01})
+    QtWidgets.QApplication.processEvents()
+    assert NOTICE_OPTIMIZER_AUTO in page.notice_label.text()
+    assert page._params["optimizer"].value() == "auto"
+    assert page._params["lr0"].value() == pytest.approx(0.01)
+    assert page.values().params == dict(ALWAYS_SENT, lr0=0.01)
+    # ... and a concrete preset clears the advisory again
+    widget = page._params["optimizer"].widget
+    widget.setCurrentIndex(widget.findData("yolo11-sgd"))
+    QtWidgets.QApplication.processEvents()
+    assert page.notice_label.text() == ""
+
+
+def test_the_four_groups_cover_the_whole_parameter_surface():
+    """New ⑥: every key of the 41 key surface sits in exactly one group."""
+
+    grouped = [name for _group, names in PARAM_GROUPS for name in names]
+    assert len(grouped) == 41
+    assert len(set(grouped)) == len(grouped)
+    assert set(grouped) == set(PARAM_SPECS)
+    assert set(grouped) == set(PARAM_LABELS)
 
 
 # ------------------------------------------------------- the preview

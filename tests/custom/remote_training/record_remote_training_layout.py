@@ -23,12 +23,18 @@ asks for in the current fold state and the one the plan measures.
 Folding a group only posts a LayoutRequest, so the probe settles the
 layout (`layout().activate()`) before every measurement.
 
-The baseline of the main session (offscreen / Fusion, 23 parameters,
-before the layout round) is:
+The baseline of the main session (offscreen / Fusion) has fallen to the
+generation of the 41 parameters: 423 x 1679, parameter box 874, preview
+table 70 px at 1000x900, controls 827-893 wide, right edge share 0.964.
+The values below are the *same* numbers of that first generation: they
+are kept only so a `--compare` run still reports a drop, never as a
+target.  The layout round that follows is judged on the scroll fields of
+this probe (scroll_visible / scroll_maximum / viewport_height /
+content_height / content_size_hint_height / min_control_height_ratio)
+plus param_count and the preview table minimum, not on those drops.
 
-    page.sizeHint() = 423 x 1679   parameter box = 874
-    preview_table.height() @1000x900 = 70
-    control width 827-893          right edge share = 0.964
+    page_size_hint = 423 x 1679   params_box_height = 874
+    preview_table_height = 70     min_control_width = 827
 
 Pass it as `--compare` to get the drop of every one of those numbers.
 """
@@ -53,13 +59,20 @@ sys.path.insert(0, REPO_ROOT)
 from PyQt6 import QtWidgets  # noqa: E402  (after the platform choice)
 
 from anylabeling.custom.remote_training.ui.config_page import (  # noqa: E402
+    BATCH_CHOICES,
+    BATCH_DEFAULT,
     NARROW_PAGE_WIDTH,
     PARAM_GROUPS,
     PARAM_SPECS,
+    SCROLL_RESERVE_WIDTH,
     ConfigPage,
 )
 
-#: The baseline of the main session, in the shape `--compare` expects.
+#: The first generation baseline of the main session, in the shape
+#: `--compare` expects: the generation of 23 parameters (page height
+#: 1679, parameter box 874, preview table 70 px @1000x900, controls
+#: 827-893 wide).  The baseline of the current generation - 41 items and
+#: a scrollable content - is the JSON this probe writes.
 MAIN_SESSION_BASELINE = {
     "page_size_hint": {"width": 423, "height": 1679},
     "params_box_height": 874,
@@ -71,7 +84,7 @@ GROUP_NAMES = tuple(name for name, _names in PARAM_GROUPS)
 
 
 def capabilities():
-    """One realistic capabilities answer for all of the 23 parameters."""
+    """One realistic capabilities answer for all of the 41 parameters."""
 
     schema = {
         "epochs": {"type": "int", "min": 1, "max": 1000},
@@ -86,11 +99,21 @@ def capabilities():
         if kind == "bool":
             schema[name] = {"type": "bool"}
         elif kind == "enum":
-            schema[name] = {"values": ["x", "y"]}
+            # copy_paste_mode is an enum here, so the real values go
+            # in: a placeholder pair would pick the wrong entry.
+            schema[name] = {"values": list(shape[1])}
         elif kind == "int":
             schema[name] = {"type": "int"}
         else:
-            schema[name] = {"type": "float"}
+            # The range object the server sends, not the type only
+            # spelling: perspective is the one field whose bounds
+            # make the step size visible.
+            document = {"type": "float"}
+            if len(shape) > 1 and shape[1] is not None:
+                document["min"] = shape[1]
+            if len(shape) > 2 and shape[2] is not None:
+                document["max"] = shape[2]
+            schema[name] = document
     return {
         "tasks": ["detect", "segment"],
         "model_families": {
@@ -175,28 +198,53 @@ def right_edge_share(page):
     return right / max(1, page.width())
 
 
+def page_height(page):
+    """The height the page content asks for in its current state.
+
+    The window size hint is dominated by the scroll area, which keeps
+    the height it was last laid out with.  The layout hint is the
+    number the folding really moves, so it is what this probe reports
+    as the page height (the scroll area pins its widget to it).
+    """
+
+    return page._content_height()
+
+
 def collapse_gains(page):
     """Height one group at a time buys the page (fold, then unfold)."""
 
     gains = {}
     for group in GROUP_NAMES:
-        before = page.sizeHint().height()
+        before = page_height(page)
         page._group_buttons[group].setChecked(False)
         settle(page)
-        gains[group] = before - page.sizeHint().height()
+        gains[group] = before - page_height(page)
         page._group_buttons[group].setChecked(True)
         settle(page)
     return gains
 
 
 def report_page(page):
+    """One measurement pass over the page and its scroll area."""
+
     size = page.sizeHint()
     widths = control_widths(page)
+    # One row of the label / control grid, whatever widget type sits in
+    # it.  `widget.height()` would be the clipped strip at a short
+    # window, and a bare checkbox is shorter than the row it owns, so
+    # the number comes from the grid itself.
+    min_control_height = min(
+        page._group_contents[group].sizeHint().height()
+        / -(-len(names) // page._param_columns)
+        for group, names in PARAM_GROUPS
+    )
     preview_inside = (
         page.preview_table.height()
         + page.preview_summary.height()
         + page.preview_row.height()
     )
+    viewport_height = page.scroll.viewport().height()
+    content = page.content
     return {
         "page_size_hint": {"width": size.width(), "height": size.height()},
         "page_size": {"width": page.width(), "height": page.height()},
@@ -214,6 +262,32 @@ def report_page(page):
         "preview_inside_height": preview_inside,
         "preview_overflow": preview_inside > page.preview_splitter.height(),
         "param_count": len(page._params),
+        "batch_choices": list(BATCH_CHOICES),
+        "batch_default": BATCH_DEFAULT,
+        # --- the scroll area added by the 41 parameter round ----------
+        "scroll_reserve_width": SCROLL_RESERVE_WIDTH,
+        "scroll_visible": page.scroll.verticalScrollBar().maximum() > 0,
+        "scroll_maximum": page.scroll.verticalScrollBar().maximum(),
+        "scroll_bar_width": page.scroll.verticalScrollBar().width(),
+        "viewport_height": viewport_height,
+        "viewport_width": page.scroll.viewport().width(),
+        "content_height": content.height(),
+        "content_minimum_height": content.minimumHeight(),
+        "content_size_hint_height": content.sizeHint().height(),
+        "content_layout_hint_height": content.layout().sizeHint().height(),
+        # The height of one grid row, in pixels.
+        "min_control_height": round(min_control_height, 2),
+        # >= 0.95 means the page has more than one row of scroll (or
+        # fits): the form is scrollable and never stuck on a clipped
+        # strip, whatever widget type the shortest row holds.
+        "min_control_height_ratio": round(
+            min(
+                viewport_height,
+                page.scroll.verticalScrollBar().maximum(),
+            )
+            / max(1.0, min_control_height),
+            4,
+        ),
     }
 
 

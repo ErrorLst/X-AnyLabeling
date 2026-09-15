@@ -553,7 +553,7 @@ X-AnyLabeling-Server/
 
 | # | 方法 | 路径（前缀 `/custom/train`） | 用途 | 客户端 v1 |
 | --- | --- | --- | --- | --- |
-| 1 | `GET` | `/capabilities` | 能力协商：家族与可用性（`weights_ready` / `available` / `unavailable_reason`）、权重下载开关、auto-batch 开关、OOM 兜底、参数 schema（23 项）、preset 与默认策略、设备与显存账本、队列深度、`cancel_grace_seconds`、显存估算表（含每组合 `source` / `max_batch` / `calibration_at`）、标定状态、`training_env` 指纹、启动告警、`server_version` | 消费 |
+| 1 | `GET` | `/capabilities` | 能力协商：家族与可用性（`weights_ready` / `available` / `unavailable_reason`）、权重下载开关、auto-batch 开关、OOM 兜底、参数 schema（41 项）、preset 与默认策略、设备与显存账本、队列深度、`cancel_grace_seconds`、显存估算表（含每组合 `source` / `max_batch` / `calibration_at`）、标定状态、`training_env` 指纹、启动告警、`server_version` | 消费 |
 | 2 | `POST` | `/datasets/plan` | 增量上传阶段 1：声明 manifest、判定需上传哪些图片、发一次性 `upload_token` | 消费 |
 | 3 | `POST` | `/datasets/upload` | 增量上传阶段 2：multipart 提交 zip，写 blob 与数据集目录 | 消费 |
 | 4 | `GET` | `/datasets` | 列出数据集（服务端分页） | **不消费** |
@@ -582,7 +582,7 @@ X-AnyLabeling-Server/
 | 4 | `?limit=`（默认 50、上限 200）、`?offset=`（默认 0）；两者都必须是非负整数，取值非法或 `limit` 超上限 → 400 `VALIDATION_FAILED`（`details.field` = `limit` / `offset`，越限时另带 `details.limit` / `details.provided`） | `data` **就是**数据集数组（形如 `[...]`，**不是** `{"datasets": [...]}` 包装），每条含 `dataset_id` / `task` / `classes` / `counts` / `split_stats` / `bytes` / `created_at` / `expires_at` / `referenced_by_jobs[]`；翻页规则见 §3.2.5 |
 | 5 | 路径参数 `dataset_id` | 200 `{"deleted": true, "moved_to_trash": "<path>"}`；被 queued / preparing / running 任务引用 → 409 `DATASET_IN_USE`（`details.referenced_by_jobs[]`） |
 | 6 | 无 | `blobs` / `blob_bytes` / `blob_hit_rate` / `unreferenced_blobs` / `reclaimed_24h` / `trash_bytes` / `work_dir_free_gb` |
-| 7 | JSON body：`schema_version` / `dataset_id` / `task` / `model_family` / `model` / `params`（23 项，§3.8.2），可选 `client_job_name`（只落库、**不回传**）与 `client_submission_id`（幂等键、**不回传**） | `job_id` / `status`（首次提交恒为 `queued`）/ `queue_position` / `device_index`（提交时恒为 `null`）/ `vram_estimate_mb` / `queued_reason` / `resolved_params`（**`device` 必须为 `null`**，§3.8.5）/ `warnings[]`（§3.9）/ `created_at` |
+| 7 | JSON body：`schema_version` / `dataset_id` / `task` / `model_family` / `model` / `params`（41 项，§3.8.2），可选 `client_job_name`（只落库、**不回传**）与 `client_submission_id`（幂等键、**不回传**） | `job_id` / `status`（首次提交恒为 `queued`）/ `queue_position` / `device_index`（提交时恒为 `null`）/ `vram_estimate_mb` / `queued_reason` / `resolved_params`（**`device` 必须为 `null`**，§3.8.5）/ `warnings[]`（§3.9）/ `created_at` |
 | 8 | `?ids=`（逗号分隔；**单次 id 数上限 = `limit`**，超限 400 `VALIDATION_FAILED`）、`?status=`（逗号分隔，过滤）、`?limit=`（默认 50）；**无 `offset`** | `jobs[]`（job 对象，含 `is_terminal`，§3.4.4）+ `total`（= `jobs[]` 长度，不含 `not_found_ids[]`）+ `not_found_ids[]`；七条规则见 §3.2.4 |
 | 9 | 路径参数 `job_id` | 单个 job 对象（§3.4.4）；未知 id → 404 `JOB_NOT_FOUND`（`details.job_id`） |
 | 10 | `?after=<seq>`（缺省按 0 处理） | `{"events": [...], "last_seq": N}`：只返回 `seq` **严格大于** `after` 的事件；`last_seq` = 当前文件最大 `seq`（§3.5） |
@@ -848,7 +848,25 @@ X-AnyLabeling-Server/
       "save_period": {"type": "int", "min": 0, "max": 1000},
       "fraction": {"type": "float", "min": 0.0, "exclusive_min": true, "max": 1.0},
       "seed": {"type": "int"},
-      "dropout": {"type": "float", "min": 0.0, "max": 1.0}
+      "dropout": {"type": "float", "min": 0.0, "max": 1.0},
+      "hsv_h": {"type": "float", "min": 0.0, "max": 1.0},
+      "hsv_s": {"type": "float", "min": 0.0, "max": 1.0},
+      "hsv_v": {"type": "float", "min": 0.0, "max": 1.0},
+      "degrees": {"type": "float", "min": 0.0, "max": 180.0},
+      "translate": {"type": "float", "min": 0.0, "max": 1.0},
+      "scale": {"type": "float", "min": 0.0, "max": 1.0},
+      "shear": {"type": "float", "min": 0.0, "max": 180.0},
+      "perspective": {"type": "float", "min": 0.0, "max": 0.001},
+      "flipud": {"type": "float", "min": 0.0, "max": 1.0},
+      "fliplr": {"type": "float", "min": 0.0, "max": 1.0},
+      "bgr": {"type": "float", "min": 0.0, "max": 1.0},
+      "mosaic": {"type": "float", "min": 0.0, "max": 1.0},
+      "mixup": {"type": "float", "min": 0.0, "max": 1.0},
+      "cutmix": {"type": "float", "min": 0.0, "max": 1.0},
+      "copy_paste": {"type": "float", "min": 0.0, "max": 1.0},
+      "copy_paste_mode": {"type": "enum", "values": ["flip", "mixup"]},
+      "overlap_mask": {"type": "bool"},
+      "mask_ratio": {"type": "int", "min": 1, "max": 16}
     },
     "optimizer_presets": {
       "yolo11-sgd": {"optimizer": "SGD", "lr0": 0.01, "momentum": 0.937, "weight_decay": 0.0005, "warmup_bias_lr": 0.1}
@@ -913,10 +931,10 @@ X-AnyLabeling-Server/
 | `enabled` | bool | 训练子系统开关；`false` 时**除 `GET /health` 外**的全部 `/custom/train/*` 返回 503 `TRAINING_DISABLED`；本接口本身仍 200（§3.7） |
 | `tasks` | str[] | 支持的任务类型，当前为 `["detect", "segment"]`；提交的任务类型必须在此集合内 |
 | `allow_weight_download` | bool | 权重缺失时是否允许服务端按需下载；**与 `weights_ready` 正交**。客户端可提交判定 = `weights_ready[file] == true` **或** `allow_weight_download == true` |
-| `allow_auto_batch` | bool | 是否允许提交 `batch=-1` 或比例值；为 `false` 时 `param_schema.batch` 退化为 `{"type": "int", "min": 1, "max": 128}` |
+| `allow_auto_batch` | bool | 是否允许提交 `batch=-1` 或比例值（**其它调用方**的能力开关）；为 `false` 时 `param_schema.batch` 退化为 `{"type": "int", "min": 1, "max": 128}`。**客户端只提供 8 / 16 / 32 / 64 四档、默认 16、不可编辑、始终显式发送**，`allow_auto_batch` 不再驱动桌面端下拉 |
 | `oom_retry` | object | `{"enabled": bool, "max_retries": int}`（默认 `true` / `2`）；表示是否把 OOM 交给训练侧降 batch 重试。**不改变**参数校验与显存账本口径 |
 | `model_families` | object | 家族 → `{min_ultralytics, available, unavailable_reason, weights, weights_ready, presets}`，**每个家族的键集形状完全一致**（不得缺键）。`available` = 当前环境 ultralytics 版本是否不低于该家族 `min_ultralytics`；`unavailable_reason` 为 `null` 或不可用时的错误码字符串（当前只会是 `MODEL_FAMILY_UNSUPPORTED`）。`weights_ready[file]` **只有一个含义**：该文件是否已存在于 `<work_dir>/weights/`——不表示是否允许下载，也不表示不可提交 |
-| `param_schema` | object | **恰好覆盖 §3.8.2 的全部 23 个客户端可传参数**，是客户端本地校验的唯一依据；区间语义见 §3.1。`optimizer.values` 是**全部家族 preset 的并集**（与家族可用性无关），客户端必须先按所选家族的 `model_families[family].presets` 过滤再展示 |
+| `param_schema` | object | **恰好覆盖 §3.8.2 的全部 41 个客户端可传参数**，是客户端本地校验的唯一依据；区间语义见 §3.1。`optimizer.values` 是**全部家族 preset 的并集**（与家族可用性无关），客户端必须先按所选家族的 `model_families[family].presets` 过滤再展示 |
 | `optimizer_presets` | object | preset 名 → `{optimizer, lr0, momentum, weight_decay, warmup_bias_lr}`（对象形状即超参白名单，示例只列 `yolo11-sgd`） |
 | `preset_policy` | object | `{"type": "auto", "threshold": null, "default_preset": {}}`；`type ∈ {auto, iterations_threshold}`（缺省 ⇒ 数据类默认 `auto`，与出货默认一致；显式 `null` 属非法取值，§4.4.2）；`type:"auto"` 时 `threshold=null`、`default_preset={}`——键集与形状不变；选择算法与兜底顺序见 §3.8.4 |
 | `devices[]` | object[] | 各卡显存账本快照：`device_index` / `name` / `total_mb` / `free_mb` / `reserved_mb` / `in_flight_estimate_mb`（**仅 `preparing` 任务估算之和**）/ `running_estimate_mb`（**只读诊断字段，不参与账本公式**）/ `available_mb`。**账本公式（唯一）**：`available_mb = free_mb − reserved_mb − in_flight_estimate_mb`（`running` 任务的实际占用已包含在 `free_mb` 里，**不得再减一次**）。自洽性：`running_estimate_mb > 0` ⟺ `queue.running > 0`；`in_flight_estimate_mb > 0` ⟺ 存在 `preparing` 任务。跨卡判定一律用 §3.11 的 `min_device_total_mb` |
@@ -1047,19 +1065,21 @@ X-AnyLabeling-Server/
 | `project` / `name` | `jobs/<job_id>/run` / `train`；固定 `exist_ok=True` |
 | `resume` | 由恢复语义决定（`resume=True` 仅当有 `weights/last.pt`） |
 
-#### §3.8.2 客户端可传参数（23 个，范围权威定义）
+#### §3.8.2 客户端可传参数（41 个，范围权威定义）
 
-越界 → 422 `PARAM_OUT_OF_RANGE`（`details.field` 指明字段）。**区间语义（§3.1，唯一定义）**：`{min, exclusive_min: bool, max, exclusive_max: bool}`——`min` / `max` 为**闭**区间边界，`exclusive_min: true` 表示下界开、`exclusive_max: true` 表示上界开；**没有**「`exclusive_min` 直接给边界数值」的写法；`warn_above` 只触发告警、不拒绝（§3.8.3）。每个字段的类型 / 范围**以本表为权威定义**，`capabilities.param_schema`（§3.6）必须覆盖本表全部 23 项且逐项一致，客户端一律按 `param_schema` 做本地校验。
+越界 → 422 `PARAM_OUT_OF_RANGE`（`details.field` 指明字段）。**区间语义（§3.1，唯一定义）**：`{min, exclusive_min: bool, max, exclusive_max: bool}`——`min` / `max` 为**闭**区间边界，`exclusive_min: true` 表示下界开、`exclusive_max: true` 表示上界开；**没有**「`exclusive_min` 直接给边界数值」的写法；`warn_above` 只触发告警、不拒绝（§3.8.3）。每个字段的类型 / 范围**以本表为权威定义**，`capabilities.param_schema`（§3.6）必须覆盖本表全部 41 项且逐项一致，客户端一律按 `param_schema` 做本地校验。
 
-**「默认」列只描述取值来源**：本规格不为这 23 项定义数值默认值——客户端缺省不传的键由服务端按 **preset**（若所选 preset 定义了同名键）与训练侧内置默认值补齐。
+**「默认」列只描述取值来源**：本规格不为这 41 项定义数值默认值——客户端缺省不传的键由服务端按 **preset**（若所选 preset 定义了同名键）与训练侧内置默认值补齐。
+
+**`type:"enum"` 同时承载整数枚举与字符串枚举（`copy_paste_mode`，线上形状仍是 `{"type":"enum","values":[...]}`）**。
 
 | 参数 | 类型 | 范围 / 取值 | 默认 |
 | --- | --- | --- | --- |
 | `epochs` | int | 1 ≤ x ≤ 1000 | 不注入（训练侧默认生效） |
-| `batch` | int 或 auto | 整数 1 ≤ x ≤ 128；`allow_auto_batch: true` 时**另接受** `-1`（按 60% 显存自动）或 `0 < r < 1`（按比例自动）。**超过 128 一律 422**；1–128 内但超过该组合 `max_batch` 时**自动收敛**并在响应 `warnings[]` 记 `CONVERGED_TO_DEVICE_MAX` | 不注入；`allow_auto_batch: false` 时只接受整数 |
+| `batch` | int 或 auto | 整数 1 ≤ x ≤ 128；`allow_auto_batch: true` 时**另接受** `-1`（按 60% 显存自动）或 `0 < r < 1`（按比例自动）。**超过 128 一律 422**；1–128 内但超过该组合 `max_batch` 时**自动收敛**并在响应 `warnings[]` 记 `CONVERGED_TO_DEVICE_MAX` | 不注入；`allow_auto_batch: false` 时只接受整数。**客户端取值域 ⊆ 服务端取值域（8/16/32/64 ⊂ 1..128）**：客户端下拉只提供 8 / 16 / 32 / 64 四档、默认 16、不可编辑且**始终显式发送**，`allow_auto_batch` 不再驱动桌面端下拉 |
 | `imgsz` | enum | ∈ {320, 416, 512, 640, 768, 896, 1024, 1280, 1536} | 不注入 |
 | `workers` | int | 0 ≤ x ≤ 16 | 不注入 |
-| `optimizer` | preset 名或 `auto` | 取值域 = `capabilities.param_schema.optimizer.values`（= 各家族 `model_families[family].presets` 的并集，含 `auto`；`capabilities.optimizer_presets` 只映射真实 preset 名 → 超参对象，`auto` 不是它的键，§3.6）；显式传入的值必须属于所选家族；`auto` 是允许的显式取值，**裸优化器名不接受**（`SGD` / `AdamW` / `MuSGD` …）⇒ 422 `OPTIMIZER_UNSUPPORTED` | 缺省 → 按 `preset_policy` 选；出货策略 `type:"auto"` ⇒ 等价于显式 `auto`（§3.8.4） |
+| `optimizer` | preset 名或 `auto` | 取值域 = `capabilities.param_schema.optimizer.values`（= 各家族 `model_families[family].presets` 的并集，含 `auto`；`capabilities.optimizer_presets` 只映射真实 preset 名 → 超参对象，`auto` 不是它的键，§3.6）；显式传入的值必须属于所选家族；`auto` 是允许的显式取值，**裸优化器名不接受**（`SGD` / `AdamW` / `MuSGD` …）⇒ 422 `OPTIMIZER_UNSUPPORTED` | 客户端**始终显式发送**：默认 `auto`（家族 `presets` 未声明 `auto` 时回落第 0 项、不发键），否则为所选家族 preset 名；服务端缺省 → 按 `preset_policy` 选，出货策略 `type:"auto"` ⇒ 等价于显式 `auto`（§3.8.2 / §3.8.4） |
 | `lr0` | float | 0 < lr0 ≤ 0.05（`warn_above: 0.001` 见 §3.8.3） | preset 定义该键时以 preset 为准 |
 | `lrf` | float | 0 < lrf ≤ 1 | 不注入 |
 | `momentum` | float | 0 ≤ x ≤ 1 | preset 定义该键时以 preset 为准 |
@@ -1078,6 +1098,24 @@ X-AnyLabeling-Server/
 | `fraction` | float | 0 < x ≤ 1 | 不注入 |
 | `seed` | int | 任意整数 | 不注入 |
 | `dropout` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `hsv_h` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `hsv_s` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `hsv_v` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `degrees` | float | 0 ≤ x ≤ 180 | 不注入 |
+| `translate` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `scale` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `shear` | float | 0 ≤ x ≤ 180 | 不注入 |
+| `perspective` | float | 0 ≤ x ≤ 0.001 | 不注入 |
+| `flipud` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `fliplr` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `bgr` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `mosaic` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `mixup` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `cutmix` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `copy_paste` | float | 0 ≤ x ≤ 1 | 不注入 |
+| `copy_paste_mode` | enum（字符串） | ∈ {flip, mixup} | 不注入 |
+| `overlap_mask` | bool | true / false | 不注入 |
+| `mask_ratio` | int | 1 ≤ x ≤ 16 | 不注入 |
 
 #### §3.8.3 AdamW 与 `lr0` 的联动校验（冻结）
 
@@ -1093,7 +1131,7 @@ X-AnyLabeling-Server/
 
 ```text
 train_images = 数据集 train split 图片数
-batch_for_estimate = resolved_params.batch_assumed   # batch 为 auto 时用假定 batch
+batch_for_estimate = resolved_params.batch_assumed   # batch 为 auto 时用假定 batch；客户端不再提交 auto，服务端保留该路径
 total_iterations = epochs * ceil(train_images / batch_for_estimate)
 family = request.model_family                          # 家族过滤在第一步就生效
 
@@ -1119,9 +1157,12 @@ else:                                                    # iterations_threshold
 | 服务端按 `preset_policy` 选出 | 选中 preset 的裸优化器名（如 `SGD`） | 选中的 preset 名（如 `yolo11-sgd`） | `preset` |
 | 服务端策略 `type:"auto"` 命中 | `auto` | `null` | `server_auto` |
 
-- **默认 preset 按家族映射（仅 `type:"iterations_threshold"` 生效）**：`preset_policy.default_preset` = `{"yolo11": "yolo11-sgd", "yolo26": "yolo26-default"}`；兜底顺序为「家族映射 → 该家族 `presets` 的首项」，**绝不回退全局默认**（全局回退会把 yolo26 请求变成 `yolo11-sgd`，跨家族、服务端会拒绝）。客户端下拉**默认停在第 0 项**（`data=None`，文案「（服务端按默认策略选择）」），**不计为显式选择**、请求体**不含** `optimizer`；用户选 `auto` 时发 `"auto"`、选具体 preset 时发该名（§5.2.2）。**第 0 项文案有两套模板**：capabilities 回显了该家族的 `default_preset` 时渲染「（由服务端默认策略决定；家族默认 X）」，否则（含出货 `type:"auto"`、回显 `default_preset: {}` 时）渲染短文案「（服务端按默认策略选择）」；两套都表示**不发** `optimizer`、由服务端策略决定，只是提示详略不同。
+- **默认 preset 按家族映射（仅 `type:"iterations_threshold"` 生效）**：`preset_policy.default_preset` = `{"yolo11": "yolo11-sgd", "yolo26": "yolo26-default"}`；兜底顺序为「家族映射 → 该家族 `presets` 的首项」，**绝不回退全局默认**（全局回退会把 yolo26 请求变成 `yolo11-sgd`，跨家族、服务端会拒绝）。客户端下拉**默认停在 `auto`**（家族 `model_families[family].presets` 未声明 `auto` 时回落停在第 0 项），默认值**计入显式**、请求体带 `optimizer:"auto"`（§5.2.2）；第 0 项仍是**可选项**，用户选中即**不发**该键、由服务端策略决定；选具体 preset 时发该名。
+- **记忆记住的是「用户主动选过的值」（写死）**：① 该记忆——具体 preset、第 0 项 `policy`、导入的值——**穿过 capabilities 刷新与家族切换**；只有「从未动过」的表单才按家族初值规则解析一次（家族声明 `auto` ⇒ 落 `auto` 并**显式发送**；未声明 `auto` ⇒ 落第 0 项、**不发**该键）。② **切换到一个不承载该值的家族时**：下拉**显示并落到第 0 项**（文案「（服务端按默认策略选择）」）、请求体**不含** `optimizer` 键（避免跨家族 422 `OPTIMIZER_UNSUPPORTED`），但**记忆保留** ⇒ **切回原家族、或切到同样声明该 preset 的家族时恢复该值并重新发送该名**。③ 用户主动选过第 0 项 ⇒ 记忆里就是 `policy`，切走再切回**仍是** `policy`、仍**不发**该键。
+- **第 0 项文案有两套模板**：capabilities 回显了该家族的 `default_preset` 时渲染「（由服务端默认策略决定；家族默认 X）」，否则（含出货 `type:"auto"`、回显 `default_preset: {}` 时）渲染短文案「（服务端按默认策略选择）」；两套都表示**不发** `optimizer`、由服务端策略决定，只是提示详略不同。
 - **`auto` 的取值**：`resolved_params.optimizer` 的取值域是**四值** `SGD` / `AdamW` / `MuSGD` / `auto`——前三个来自 preset 的裸优化器名，`auto` 是取值哨兵，**可由客户端显式选择，也可由出货策略给出**，两者都不解析成裸名；`auto` 不注入任何超参，且与 `lr0` / `lrf` / `momentum` / `weight_decay` / `warmup_epochs` / `warmup_momentum` / `warmup_bias_lr` 同送即 422（§3.8.2 / §3.8.3）。
 - **仅当策略为 `iterations_threshold` 时**才注入 preset 裸名与超参：客户端未显式传 `optimizer` 时，`resolved_params.optimizer` 是 preset 的**裸优化器名**（`SGD` / `AdamW` / `MuSGD`），最终写入训练侧参数的也是该裸名与 preset 超参；策略为 `type:"auto"` 或客户端显式传 `auto` 时服务端**不选 preset、不注入超参**，`optimizer` 原样透传 `auto`，来源分别记 `server_auto` / `auto`（§3.8.5）。
+- **`batch` 的客户端口径**：客户端下拉只提供 8 / 16 / 32 / 64 四档（默认 16、不可编辑、始终显式发送）；OOM 降级下限仍为 `max(1, batch // 2)` 并受 `oom_retry_max` 约束（§3.8.5 / §4.2.6），**auto 仅服务端能力**（`-1` / `0<r<1` 只可能来自手改配置或旧客户端，§3.6）。
 
 #### §3.8.5 `resolved_params`（8 个权威字段）
 
@@ -1920,7 +1961,7 @@ batch_assumed  = min(caps)                                 # 仅当两个 cap �
 | 1 | 命中 `(model, task)` 行 | 用该行；`factor = 1.0` | 正常估算 |
 | 2 | 未命中本行，但同 `model` 存在其它 `task` 的行 | 用该行的 `baseline_mb` / `per_image_mb`；`factor = task_factor[目标 task] / task_factor[该行 task]` | 正常估算（用 `yolo11n/detect` 行推 `yolo11n/segment`：`1.25 / 1.00 = 1.25`；反向推 `detect`：`1.00 / 1.25 = 0.80`） |
 | 3 | 三层表都没有可用的行 | — | **不可估算**：提交 422 `VRAM_ESTIMATE_UNAVAILABLE`；该组合进 `unschedulable[]`（`reason=VRAM_TABLE_INCOMPLETE`） |
-| 4 | `batch` 为 auto（`-1` 或 `0<r<1`，需 `allow_auto_batch: true`） | 先按 ④ 折算 `batch_assumed`（**优先用实测 `max_batch` 封顶**），再按兜底 1 / 2 取行套主公式 | 正常估算，但**精度低于整数 batch**（实际 batch 由训练侧依当刻空闲显存决定）；**任一有效 cap < 1 时直接 422 `INSUFFICIENT_VRAM`**（不返回 1） |
+| 4 | `batch` 为 auto（`-1` 或 `0<r<1`，需 `allow_auto_batch: true`；**客户端不再提交 auto**，只可能来自手改配置 / 旧客户端） | 先按 ④ 折算 `batch_assumed`（**优先用实测 `max_batch` 封顶**），再按兜底 1 / 2 取行套主公式 | 正常估算，但**精度低于整数 batch**（实际 batch 由训练侧依当刻空闲显存决定）；**任一有效 cap < 1 时直接 422 `INSUFFICIENT_VRAM`**（不返回 1） |
 | 5 | `batch` 为整数且**超过**该组合的标定上限 `max_batch` | 自动收敛为 `max_batch`（`resolved_params.batch` 记生效值、原值另存 `requested_batch`），**不拒绝** | 响应 `warnings[]` 记 `CONVERGED_TO_DEVICE_MAX`。理由：提交这类请求的用户意图明确（用满该卡），直接放行会让任务运行期 OOM，而一律 422 会把「只是填大了」的合法请求拒掉 |
 
 **一条自洽的算例（本规格只保留这一个完整算例）**：`yolo11s` / `detect` / `batch=-1` / `imgsz=640`，单卡总显存 `total_mb = 24564`、`ratio = 0.60`、`factor = 1.0`（命中本行）、`vram_safety_factor = 1.25`。
@@ -1969,7 +2010,7 @@ batch_assumed = min(64, 96) = 64                           # 两个 cap 都 ≥ 
 
 | 机制 | 规则 |
 | --- | --- |
-| OOM **不判失败** | 训练侧遇 CUDA OOM 时**降 batch 重试**，服务端**不**因此改状态、不重排队、不判失败 |
+| OOM **不判失败** | 训练侧遇 CUDA OOM 时**降 batch 重试**（降级下限仍为 `max(1, batch // 2)`，受 `oom_retry_max` 约束），服务端**不**因此改状态、不重排队、不判失败 |
 | 降级留痕 | 每次降 batch 由训练进程写一条 `log` 事件：`{"level": "warning", "message": "...", "code": "OOM_BATCH_DOWNGRADE", "from_batch": 64, "to_batch": 32}`（`code` / `from_batch` / `to_batch` 是 `log` 事件的扩展字段，§3.5）；终态时同一信息汇总进 `summary.json.oom_downgrades[]` |
 | 降级上限 `oom_retry_max` | = 配置 `oom_retry.max_retries`（默认 **2**），随 `resolved_params.oom_retry_max` **下发**给训练侧（§3.8.5）。计数口径 = **单次训练进程内** `OOM_BATCH_DOWNGRADE` 的条数。达到上限后写 `log`（`level=error`、`code=OOM_RETRY_EXHAUSTED`，带实际 batch 与显存峰值）与 `done(status=failed)`，服务端按常规 `failed` 分支处理（§3.4.2） |
 | 能力下发 | `capabilities.oom_retry` = `{"enabled": true, "max_retries": 2}`（§3.6）；`vram_table.entries[].max_batch` 与 `calibration` 分别给出实测上限与标定状态 |
@@ -1996,7 +2037,7 @@ batch_assumed = min(64, 96) = 64                           # 两个 cap 都 ≥ 
 | 整数 `batch` ≤ `max_batch`（或该行 `max_batch` 为 `null`） | 不收敛，按常规预检处理 |
 | 整数 `batch` > `max_batch`（且 ≤ 128） | 自动收敛为 `max_batch`：`resolved_params.batch` = 收敛后的生效值、`requested_batch` = 客户端原值；提交响应 `warnings[]` 记 `CONVERGED_TO_DEVICE_MAX`（`details.requested` / `applied` / `max_batch`） |
 | 整数 `batch` > 128 | 422 `PARAM_OUT_OF_RANGE`（`param_schema` 硬上限，参数校验阶段即拒绝） |
-| auto 取值（`-1` / `0<r<1`） | **不触发**本告警：折算已由 `min(caps)` 封顶（四重上界 ①②），不存在「收敛」这一动作 |
+| auto 取值（`-1` / `0<r<1`；**客户端不再提交**，auto 仅服务端能力） | **不触发**本告警：折算已由 `min(caps)` 封顶（四重上界 ①②），不存在「收敛」这一动作 |
 
 #### §4.2.7 标定矩阵与失败分级
 
@@ -2936,7 +2977,7 @@ def launch_remote_training(parent: Any = None):
 
 | 页面 | 职责 | 关键控件 | 数据来源接口（§3.2.1 的编号） |
 | --- | --- | --- | --- |
-| 配置页 `ConfigPage` | 收集提交所需的一切；提交前做本地预检与服务器能力校验 | 服务器地址 + Token（**读写**框 + 「测试连接」）、数据集目录（**只读** + 浏览）、`classes.txt`（只读 + 浏览）、任务类型下拉（Detect / Segment）、模型家族与权重下拉、参数表单（**按组呈现**：常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它；**日志与产物记录类不暴露**；含 batch 的「自动」选项；**呈现层**：参数区按页宽自适应两列（页宽 ≥980 px）/ 单列（页宽 <980 px），四个分组可折叠且默认展开「常用参数」与「学习率与优化器」，组标题带「已设置 N 项」，参数箱顶部常驻「已显式设置 N 项（提交时才会发送）」；**字段与顺序、提交语义不变**）、划分参数（`val_ratio` + `seed`，留空则生成并回填，§5.2.8）、「划分预览」表（§5.2.8）、「导入配置 / 导出配置」（§5.2.8）、预检摘要、「提交任务」 | #1 `GET /capabilities`、#16 `GET /health`；本地扫描结果（§5.2） |
+| 配置页 `ConfigPage` | 收集提交所需的一切；提交前做本地预检与服务器能力校验 | 服务器地址 + Token（**读写**框 + 「测试连接」）、数据集目录（**只读** + 浏览）、`classes.txt`（只读 + 浏览）、任务类型下拉（Detect / Segment）、模型家族与权重下拉、参数表单（**按组呈现**：常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它；**日志与产物记录类不暴露**；batch 为 8 / 16 / 32 / 64 四档、默认 16、不可编辑且始终显式发送；optimizer 默认 `auto` 且显式发送；**呈现层**：**整页内容区单滚动条**（四个按钮行常驻在滚动区外）、内容高度**钉在自然高度** ⇒ 展开分组时**滚动而不是压缩组件**；参数区按页宽自适应两列（页宽 ≥980 px，含 16 px 滚动条预留）/ 单列（页宽 <980 px），四个分组可折叠且默认展开「常用参数」与「学习率与优化器」，组标题带「已设置 N 项」，参数箱顶部常驻「已显式设置 N 项（提交时才会发送）」、并常驻黄字提示（optimizer=auto 与 7 个超参互斥 422；导入的 batch 域外值吸附提示）；**字段与顺序、提交语义不变**）、划分参数（`val_ratio` + `seed`，留空则生成并回填，§5.2.8）、「划分预览」表（§5.2.8）、「导入配置 / 导出配置」（§5.2.8）、预检摘要、「提交任务」 | #1 `GET /capabilities`、#16 `GET /health`；本地扫描结果（§5.2） |
 | 任务列表页 `JobsPage` | 一览所有任务；批量操作 | `QTableWidget`（任务名 / 状态 / 进度 / 设备 / 耗时 / 需关注 / 恢复次数）、复选框、「刷新」「取消」「恢复」「查看详情」「下载结果」 | #8 `GET /jobs?ids=`（批量规则见 §3.2.4） |
 | 任务详情页 `JobDetailPage` | 单任务全貌与操作 | 状态徽标、进度条、指标卡片、`queued_reason` 提示、事件日志面板（只读 `QPlainTextEdit`）、「取消」「恢复」「下载结果」「打开产物目录」 | #9 `GET /jobs/{job_id}` + #10 `GET /jobs/{job_id}/events?after=<seq>` |
 | 结果页 `ResultsPage` | 产物浏览与下载 | 文件树（路径 / 大小 / 时间 / 「已中止」徽标；路径含 `partial/` 前缀）、下载按钮、摘要区（`summary.json` 关键字段）、黄条（`artifact_suspect`）、**底部只读调试信息区**（§5.1.5） | #13 `GET /jobs/{job_id}/files`、#15 `GET /jobs/{job_id}/download` |
@@ -3128,10 +3169,10 @@ def reject(self):
 
 **两条硬规则（写死）**：
 
-- `optimizer` 的**表单初值是第 0 项**（`data=None`，文案「（服务端按默认策略选择）」）：请求体**不含** `optimizer`，生效值由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`、来源 `server_auto`，§3.8.4）；`auto` 与具体 preset 是用户**显式选择**，选了就发（`params.optimizer = "auto"` / `"<preset 名>"`）；`auto` 与 7 个优化器超参同送仍 422（§3.8.3）。
+- `optimizer` 的**表单初值是 `auto`**（家族 `presets` 未声明 `auto` 时回落第 0 项，文案「（服务端按默认策略选择）」）：默认值**计入显式选择**、请求体带 `optimizer:"auto"`（生效 `auto`、来源 `auto`，§3.8.4）；**第 0 项仍是可选项**（`data=None`），选中即请求体**不含** `optimizer`、生效值由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`、来源 `server_auto`）；选具体 preset 时发 `"<preset 名>"`；`auto` 与 7 个优化器超参同送仍 422（§3.8.3）。
 - `save_period: -1` **不得原样透传**：它表示「不保存周期快照」，映射时应转为 `0` 或不传；服务端范围以 `param_schema.save_period`（0–1000）为准。
 
-**跨仓耦合告警（写死）**：客户端表单默认**不发送** `optimizer`，其生效值完全由服务端 `preset_policy.type` 决定。出货配置为 `type: "auto"`；若某部署把服务端改回 `type: "iterations_threshold"`，客户端必须同步改回「默认显式发送 `auto`」（或要求用户显式选择 `auto`），否则未显式选择的提交会重新走 preset 注入路径（历史实测：`yolo11-adamw`（AdamW `lr0=0.001` + `warmup_bias_lr=0.1`）+ 80 类小数据集，100 轮训练 mAP50 从 E1 的 0.4323 崩到 E5 谷底 0.0058，末 20 轮均值 0.1890；`best.pt` 停在 epoch 1，`results.csv` 末值 0.4315 是 `best.pt` 复测，不是末轮指标）。两处改动必须**同批上线**。
+**跨仓耦合告警（写死）**：桌面端**默认显式发送** `auto` ⇒ `preset_policy.type` 只影响**不带 `optimizer` 的提交**（客户端选中的第 0 项 / 其它调用方）。出货配置为 `type: "auto"`；把 `type` 改回 `iterations_threshold` 时，显式 `auto` 的客户端仍**不注入超参**——历史事故面因此收窄到「第 0 项 / 不带该键的调用方」这一条路径。历史实测数据（同一条 preset 注入路径上的真实事故，保留作佐证）：`yolo11-adamw`（AdamW `lr0=0.001` + `warmup_bias_lr=0.1`）+ 80 类小数据集，100 轮训练 mAP50 从 E1 的 0.4323 崩到 E5 谷底 0.0058，末 20 轮均值 0.1890；`best.pt` 停在 epoch 1，`results.csv` 末值 0.4315 是 `best.pt` 复测，不是末轮指标）。两处改动必须**同批上线**。
 
 **另一条形态约定**：表单**只提交用户显式设置过的键**——未设置的键不出现在请求体 `params` 里，由服务端 / ultralytics 走默认值；参数面范围与分组见 §3.8。
 
@@ -3422,8 +3463,8 @@ unresolved = [c for c in unresolved if len(I_c[c]) - val_count(c) == 0]   # 收�
 | 必含键 | `val_ratio` / `seed` / `split_strategy` **必须**进导出 JSON：§5.2.7 的确定性只对同一 `(数据集内容, classes 顺序, val_ratio, seed)` 成立，缺了它们就无法复现同一次划分 |
 | 不含 Token | `server.json` 里的 Token **不导出**（§5.3.3）；导入后由用户在配置页重填 |
 | 导入行为 | 逐键回填表单 → 重新扫描 + 转换 + 划分 + 预览（**不直接复用旧划分结果**），保证「导入的配置在该数据集上重算出的划分」与导出时一致 |
-| 未列出的键 | 表单其余字段（如 batch 的 `auto` 取值）按导入值回填；文件里没有的键保持当前界面值，不做隐式重置 |
-| `params` 的键集 | **只含用户显式设置过的键**：未设置的键**不出现在导出 JSON 里**（上例中的键仅为示例），导入后保持默认态、由服务端 / ultralytics 走默认值，不做隐式补齐（§3.8） |
+| 未列出的键 | 表单其余字段按导入值回填；文件里没有的键保持当前界面值，不做隐式重置。**`batch` 例外**：域外值（如 `48` / `-1` / 比例值）**吸附到最近的 8 / 16 / 32 / 64 档**并出黄字提示（四档不可编辑，§5.4.5 / CT46） |
+| `params` 的键集 | **只含用户显式设置过的键**：未设置的键**不出现在导出 JSON 里**（上例中的键仅为示例），导入后保持默认态、由服务端 / ultralytics 走默认值，不做隐式补齐（§3.8）。**`batch` 与 `optimizer` 例外**：两者在表单里**始终显式**（batch 四档、默认 16；optimizer 默认 `auto`）⇒ 导出的 `params` 里必然带这两个键 |
 | 版本 | `schema_version` 变更时按版本号补齐字段，不删旧键 |
 
 #### §5.2.9 打包
@@ -3938,13 +3979,13 @@ json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow
 | --- | --- |
 | 任务在 `tasks`、家族 `available`、preset 在**所选家族的** `model_families[].presets` 内 | 不满足 ⇒ 置灰 / 阻止提交 |
 | **`weights_ready[file] == true` 或 `allow_weight_download == true`** | 两者都为假才把该权重置灰并阻止提交；仅 `weights_ready=false` 而 `allow_weight_download=true` ⇒ **允许提交**，提交前提示一次（不阻断）：「首次训练将自动下载并缓存权重到服务端 `weights/`，请确认服务端可联网；下载期间任务停留在 `preparing`」 |
-| 参数在 `param_schema`（23 项，§3.8.2）内且落在范围内 | 超范围 ⇒ 本地拦截并高亮对应输入框 |
-| `allow_auto_batch` / `param_schema.batch.type` | `allow_auto_batch=true` 时 batch 额外提供两个 auto 取值——`-1`（按 **60% 显存**自动选）与比例值（`0 < r < 1`）；否则只接受 `1..128` 的整数 |
+| 参数在 `param_schema`（41 项，§3.8.2；**不按家族下发**，18 个增强键是两后端 `cfg/default.yaml` 的交集）内且落在范围内 | 超范围 ⇒ 本地拦截并高亮对应输入框 |
+| `allow_auto_batch` / `param_schema.batch.type` | **客户端只提供 8 / 16 / 32 / 64 四档、默认 16、不可编辑、始终显式发送**（取值域 ⊆ 服务端取值域），`allow_auto_batch` 不再驱动桌面端下拉。服务端仍接受 `1..128` 的整数与（`allow_auto_batch=true` 时）`-1`（按 **60% 显存**自动选）/ 比例值（`0 < r < 1`）——**其它调用方**的取值域 |
 | 设备上限 `vram_table.entries[].max_batch` | 输入框上方展示「本机实测上限 N」；用户填的整数超过它时**不本地拦截**（服务端自动收敛并在 `warnings[]` 返回 `CONVERGED_TO_DEVICE_MAX`），提交后提示「**已按该卡上限调整为 N**」 |
 | 显存基线来源 `vram_table.entries[].source` | `auto` = 本机已实测（带 `calibration_at`）；`manual` / `default` = 仍是起点值（`max_batch` 可能为 `null`）。两种状态在配置页与详情页**如实区分展示**，不把起点值说成实测值 |
 | OOM 预期 `oom_retry.enabled` | 为真时训练遇 CUDA OOM **不会**直接判失败，而由训练侧自行降 batch 重试；客户端遇到 `log` 事件 `code=OOM_BATCH_DOWNGRADE` 时提示「检测到显存不足，已自动降低 batch 重试（X → Y）」，**不**当错误弹窗 |
 
-**参数表单分组（除日志与产物记录类外全部可配）**：**常用参数** / **学习率与优化器** / **数据增强与训练控制** / **训练控制与其它**，分组与控件**一律由 `param_schema` 驱动**；**日志与产物记录类不暴露**（当前 23 项里对应 `save_period`，将来加入 `verbose` / `plots` 等纯记录参数同样不暴露）。`params.optimizer` 的选项来自**按所选家族过滤后的** preset 列表（含 `auto`）；**默认停在第 0 项** ⇒ 不发 `optimizer`，由服务端 `preset_policy` 决定（出货策略 `type:"auto"` ⇒ 生效 `auto`，§3.8.4）；用户选 `auto` 或具体 preset 时按**显式选择**发送；`default_preset` 仅用于第 0 项提示文案，`type:"iterations_threshold"` 时才参与 `select_preset`（§3.8.4）；**绝不**取全局 `default_preset`（跨家族）。**未主动设置的参数一律不发送**（请求体 `params` 里不出现该键），由服务端 / ultralytics 走默认值。
+**参数表单分组（除日志与产物记录类外全部可配）**：**常用参数** / **学习率与优化器** / **数据增强与训练控制** / **训练控制与其它**，分组与控件**一律由 `param_schema` 驱动**；**日志与产物记录类不暴露**（当前 41 项里对应 `save_period`，将来加入 `verbose` / `plots` 等纯记录参数同样不暴露）。`params.optimizer` 的选项来自**按所选家族过滤后的** preset 列表（含 `auto`）；**默认停在 `auto`**（家族未声明 `auto` 时回落第 0 项）并**计入显式**、请求体带 `optimizer:"auto"`；**第 0 项仍是可选项**，选中即不发该键、由服务端 `preset_policy` 决定（§3.8.4）；选具体 preset 时按**显式选择**发送；`default_preset` 仅用于第 0 项提示文案，`type:"iterations_threshold"` 时才参与 `select_preset`（§3.8.4）；**绝不**取全局 `default_preset`（跨家族）。**未主动设置的参数一律不发送**（请求体 `params` 里不出现该键），由服务端 / ultralytics 走默认值。**`batch` 与 `optimizer` 例外**：两者在表单里**始终显式**（batch 四档、默认 16；optimizer 默认 `auto`），因此提交请求体（以及 §5.2.8 的导出 `params`）**必然带这两个键**——**导出 / 提交的示例请求体都应含 `batch` 与 `optimizer`**，不得再以「只含用户显式设置过的键」为由省略它们。
 
 **提交幂等（`POST /jobs` 是创建型请求，与服务端共同保证至多一次实体创建）**：
 
@@ -3963,7 +4004,7 @@ json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow
 
 **降级行为（按已批准方案）**：
 
-1. **数据增强参数不在 `param_schema`**（23 项不动）⇒ 该组显示「**服务端未声明，走 ultralytics 默认值**」，**客户端不得自行提交未定义的字段**；服务端扩充 schema 后再由它驱动控件。
+1. **数据增强参数已进 `param_schema`（已解决）**：18 个增强键（`hsv_h` … `mask_ratio`）已在 schema 内（两后端 `cfg/default.yaml` 交集，§3.8.2）⇒ 该组由 `param_schema` 正常驱动控件；**未主动设置的键仍不发送**，由训练侧默认值生效。
 2. **无 `POST /jobs/preflight` 路由**（§3.2.1 的 16 条路由里没有）⇒ **不做本地显存预估**；权威的 `vram_estimate_mb` / `batch_assumed` / `resolved_params` / `warnings[]`（含 `CONVERGED_TO_DEVICE_MAX` / `ADAMW_LR0_HIGH`）**取自 `POST /jobs` 的响应**，客户端只展示与黄条提示；参数错误留到提交时由 422 族兜底。
 
 
@@ -4199,9 +4240,9 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 
 ## §6 验收
 
-本章的客户端用例保留 **CT1–CT45** 编号（写测试函数名时直接用），服务端冒烟用新的 **S1–S25** 编号；两者**正文其余位置不引用 S 编号**。客户端解析的字段一律以 §3 各契约表为准（本节不重复接口假设）。
+本章的客户端用例保留 **CT1–CT49** 编号（写测试函数名时直接用），服务端冒烟用新的 **S1–S26** 编号；两者**正文其余位置不引用 S 编号**。客户端解析的字段一律以 §3 各契约表为准（本节不重复接口假设）。
 
-### §6.1 客户端验收 CT1–CT45
+### §6.1 客户端验收 CT1–CT49
 
 | # | 用例 | 期望 |
 | --- | --- | --- |
@@ -4250,8 +4291,12 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | CT43 | 调试产物路径可见性（不新增挂载点） | `keep_staging: true` 后正常结束 3 次：UI 给出**可复制的完整路径**（保留目录**无份数上限**，只受 7 天固定 TTL 约束，§5.1.5） |
 | CT44 | `*_request_hash` 的按阶段命名与不变式 | 走完全链路：三个字段只描述各自阶段请求体且**未被改写**；`plan_request_hash == upload_request_hash`；三者**未出现在请求体** |
 | CT45 | 两类失败交替时的等待值唯一确定 | `5xx` → 连接错误 → `5xx`：定档只由 `c` 决定（`c == 1` 等 0 s；`2 / 3 / 4` 等 5 / 10 / 20 s；`c ≥ 5` 恒 30 s），**种类切换不重置档位** |
+| CT46 | batch 四档与所见即所发 | 下拉**只有** 8 / 16 / 32 / 64 四档、不可编辑；家族首开默认 16；请求体 `params.batch` 恒等于当前档位（**始终显式**）；导入一个域外值（如 48 / -1）⇒ 吸附到最近档位并出黄字提示，**不静默改写** |
+| CT47 | optimizer 默认 auto 显式发送 + 冲突提示 + 刷新后保持 | 首开下拉停在 `auto`（家族未声明 `auto` 时落第 0 项）、请求体带 `optimizer:"auto"`；勾选任一超参（`lr0` / `lrf` / `momentum` / `weight_decay` / `warmup_epochs` / `warmup_momentum` / `warmup_bias_lr`）⇒ 常驻黄字互斥提示（422 `OPTIMIZER_UNSUPPORTED`）；点「刷新能力」后仍停在 `auto` 且仍显式发送 |
+| CT48 | 41 键与家族共有性 | `capabilities.param_schema` 的键集与 §3.8.2 的 41 键**逐项同名同序**；18 个增强键在 yolo11 / yolo26 两个家族下**都在**（两后端 `cfg/default.yaml` 交集），控件随 schema 出现 |
+| CT49 | 滚动而不压缩 | 展开全部分组：内容高度**钉在自然高度**、组件高度**不变**（不被压缩）；整页内容区**只有一个滚动条**，四个按钮行**常驻**且在滚动区外；两列 / 单列阈值判定含 16 px 滚动条预留 |
 
-### §6.2 服务端冒烟 S1–S25
+### §6.2 服务端冒烟 S1–S26
 
 人工可执行的最小冒烟清单（每条「动作 → 期望」）。前置：单台 Linux 服务器、`work_dir` 可写、已按 §2.6 的**七步顺序**启动。
 
@@ -4282,6 +4327,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | S23 | preset 选择 | 出货策略 `type:"auto"`：未显式传 `optimizer` ⇒ `optimizer="auto"` / `optimizer_preset=null` / `optimizer_source="server_auto"`；策略为 `iterations_threshold` 时家族 `default_preset` 生效（`yolo26` ⇒ `yolo26-default`、`yolo11` ⇒ `yolo11-sgd`），未显式选择 `auto` 时 `resolved_params.optimizer` 为家族 preset 决定的优化器名；显式选择 `auto` 时 `optimizer="auto"` / `optimizer_preset=null` / `optimizer_source="auto"`（§3.8.4 取值来源表） |
 | S24 | 标定失败 ⇒ 不可调度 | 组合全部点位 OOM ⇒ `vram_table.unschedulable[]` 含它；提交该组合 ⇒ 422 `VRAM_ESTIMATE_UNAVAILABLE` |
 | S25 | TTL 与软删除 | `DELETE` ⇒ 目录**先进 `.trash/`**；`artifact_ttl_days: 0` ⇒ **不清理**；正值越期 ⇒ 到期清理 |
+| S26 | batch 四档提交、收敛告警与 OOM 降级下限 | 客户端档位值（8 / 16 / 32 / 64）提交后 `resolved_params.batch` = 原值（不出现 auto）；提交一个超过该卡 `max_batch` 的档位 ⇒ 收敛并在 `warnings[]` 记 `CONVERGED_TO_DEVICE_MAX`；运行期 OOM 降级每次落在 `max(1, batch // 2)` 且总次数 ≤ `oom_retry_max` |
 
 ## §7 已裁决、降级行为与未决项
 
@@ -4293,7 +4339,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | 2 | **不做分片 / 断点续传**：依据「单数据集常态 < 1 GB」——该依据**只在真正流式的前提下成立**，因此 upload **必须**用 `MultipartEncoder`（`files=` 会整包驻留内存）。 |
 | 3 | 结果 zip **不自动解压**：只保存到用户指定路径并提供「打开所在目录」。 |
 | 4 | **不做数据集管理页**：`GET /datasets`、`DELETE /datasets/{dataset_id}`、`GET /cache/stats` **不消费**；413 **优先**提示「服务端已触发自动回收，请稍后重试」；**仅当回收无法解除**才提示联系管理员手工清理（§4.1.7、§5.6）。 |
-| 5 | 参数表单**除日志与产物记录类外全部可配**，分四组（常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它）由 `param_schema` 驱动；**未主动设置的参数不发送**。 |
+| 5 | 参数表单**除日志与产物记录类外全部可配**，分四组（常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它）由 `param_schema` 驱动（**41 键；`param_schema` 不按家族下发，18 个增强键是两后端 `cfg/default.yaml` 的交集**）；**未主动设置的参数不发送**。 |
 | 6 | **不做本地显存预估**，改为**服务端预估**；客户端只展示服务端给出的 `vram_estimate_mb` / `batch_assumed` / `resolved_params` / `warnings[]`。 |
 | 7 | **单服务器**：`server.json` 只保存一个 `server_url`，暂不考虑多服务器切换（`pending_dir` 仍持久化原始 `server_url`）。 |
 
@@ -4301,7 +4347,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 
 | 未定义项 | 客户端降级行为 |
 | --- | --- |
-| 数据增强参数不在 `param_schema`（23 项不动） | 该组显示「服务端未声明，走 ultralytics 默认值」；**不得自行提交未定义的字段**。 |
+| 数据增强参数已在 `param_schema`（**已解决**） | 18 个增强键（两后端 `cfg/default.yaml` 交集）已进 schema ⇒ 该组由 `param_schema` 驱动；**未主动设置的键仍不提交**，走训练侧默认值。 |
 | 无 `POST /jobs/preflight` 路由（§3.2.1 的 16 条里没有） | **不做任何本地显存预估**；权威预估字段取自 `POST /jobs` 响应，参数错误由 422 族兜底。 |
 | 400 响应不保证携带 `rejected[]` | 「全部条目被拒」时只展示 `details` 中**实际存在**的字段 + 本地阻断清单，**不解析不存在的逐项列表**。 |
 
@@ -4320,7 +4366,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | # | 未决点 | 当前默认口径 |
 | --- | --- | --- |
 | 1 | 事件类型命名差异 | 服务端固定四类必需事件 + 可选 `manual_resume`，由客户端**适配层**映射到既有 `training_*` 语义；若要求端到端同名需另行澄清。 |
-| 2 | 数据增强参数的 `param_schema` 扩充 | 服务端仍是 23 项、无数据增强字段；客户端该组留空并注明「服务端未声明，走 ultralytics 默认值」，**不登记非法字段**。 |
+| 2 | 数据增强参数的 `param_schema` 扩充 | **已解决**：18 个增强键已进 schema（两后端 `cfg/default.yaml` 交集，合计 41 键）；客户端该组由 `param_schema` 驱动，**不登记非法字段**。 |
 | 3 | 无副作用参数预检入口 | 接口集合仍是 **16 条**、**无 preflight**；客户端不做本地估算，参数错误由提交时 422 兜底。 |
 | 4 | 上传 token 的撤销 / supersede 契约 | **不新增撤销契约**：旧 token **仅客户端丢弃**，服务端按判定表 ② / ③ / ⑤ 的自然行为处理。 |
 | 5 | 保留期届满后的重放语义（过期 tombstone） | **不引入 tombstone**：保留期外回落为 400 `UNKNOWN_UPLOAD_TOKEN`（判定表 ①，**有意如此**）；客户端在保留期外**重新 plan**。 |

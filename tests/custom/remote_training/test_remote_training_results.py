@@ -114,13 +114,18 @@ HEALTH_KEYS = (
     "warnings",
 )
 
-#: The 23 client settable parameters (`param_schema`, spec §3.6/§3.8.2).
+#: The 41 client settable parameters (`param_schema`, spec §3.6/§3.8.2).
+#: The order is the one of `config_page.PARAM_LABELS` / `PARAM_SPECS`:
+#: the 18 augmentation / mask keys of the 41 key round follow `dropout`.
 PARAM_KEYS = (
     "epochs", "batch", "imgsz", "workers", "optimizer", "lr0", "lrf",
     "momentum", "weight_decay", "warmup_epochs", "warmup_momentum",
     "warmup_bias_lr", "cos_lr", "amp", "cache", "rect", "single_cls",
     "patience", "close_mosaic", "save_period", "fraction", "seed",
-    "dropout",
+    "dropout", "hsv_h", "hsv_s", "hsv_v", "degrees", "translate",
+    "scale", "shear", "perspective", "flipud", "fliplr", "bgr",
+    "mosaic", "mixup", "cutmix", "copy_paste", "copy_paste_mode",
+    "overlap_mask", "mask_ratio",
 )
 
 #: The 8 keys of one device ledger row (spec §3.6; §3.7 adds running_jobs).
@@ -1514,8 +1519,9 @@ def test_ct26_capabilities_fixture_covers_every_declared_key(tmp_path):
         "cuda",
         "python",
     )
-    # param_schema is "exactly the 23 client settable parameters", and the
-    # client form must not grow a parameter of its own.
+    # param_schema is "exactly the 41 client settable parameters", and the
+    # client form must not grow a parameter of its own or lose one of
+    # the four groups' keys.
     assert tuple(payload["param_schema"]) == PARAM_KEYS
     assert set(config_ui.PARAM_SPECS) == set(PARAM_KEYS)
     assert tuple(config_ui.PARAM_LABELS) == PARAM_KEYS

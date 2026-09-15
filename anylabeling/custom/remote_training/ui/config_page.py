@@ -7,17 +7,22 @@ pickers, the parameter form driven by `capabilities.param_schema`, the
 split parameters with the seed box, the import / export of a training
 configuration, the split preview table and the local pre-check summary.
 
-Two rules of the specification shape this module:
+Three rules shape this module:
 
 - only the parameter keys the user actually set are part of a request or
   of an exported configuration (spec §3.8, §5.2.8) - hence the explicit
   `_explicit` bookkeeping instead of "read every widget";
 - the parameter form never offers the server injected keys and never
   offers the logging / artifact recording group (spec §3.8.1, §3.8.4);
-  `optimizer` is a preset drop down whose initial value is the first
-  entry (no value at all) and therefore never a choice of the user: an
-  untouched form sends no `optimizer` key and the server decides by its
-  own policy (spec §3.8.4, §5.2.2).
+- two defaults are *values* now, not absences (what you see is what you
+  send): `batch` is one fixed step of the four BATCH_CHOICES, and the
+  `optimizer` combo starts on its `auto` entry whenever the selected
+  family declares one.  Both therefore start explicit and reach the
+  request body of an untouched form (spec §3.8.4, §5.2.2).  The optimizer
+  policy entry (index 0) is still offered, and choosing it keeps the key
+  out of the body - `_preset_selection` carries that choice through a
+  rebuild (a late `capabilities` answer), where the widgets themselves
+  do not survive.
 """
 
 from __future__ import annotations
@@ -45,8 +50,7 @@ from .widgets import (
 )
 
 __all__ = [
-    "BATCH_AUTO_RATIO",
-    "BATCH_AUTO_VRAM",
+    "BATCH_CHOICES",
     "FALLBACK_PARAM_SCHEMA",
     "PARAM_GROUPS",
     "PARAM_LABELS",
@@ -59,14 +63,12 @@ __all__ = [
 # --------------------------------------------------------------------
 
 IMGSZ_CHOICES = (320, 416, 512, 640, 768, 896, 1024, 1280, 1536)
-#: The two auto spellings of `batch` (spec §3.8.2).
-BATCH_AUTO_VRAM = -1
-BATCH_AUTO_RATIO = 0.6
-BATCH_UNSET_TEXT = "不设置（服务端默认）"
-BATCH_AUTO_TEXT = "自动（按显存）"
-BATCH_RATIO_TEXT = "自动（按比例）"
-BATCH_MIN = 1
-BATCH_MAX = 128
+#: The four steps the `batch` drop down offers: a fixed, server
+#: independent choice, never a free number any more.
+BATCH_CHOICES = (8, 16, 32, 64)
+#: Step pre-selected on a freshly built form; it is explicit like any
+#: other choice of the four, so an untouched form does send it.
+BATCH_DEFAULT = 16
 
 PARAM_LABELS: Dict[str, str] = {
     "epochs": "训练轮数 epochs",
@@ -92,6 +94,24 @@ PARAM_LABELS: Dict[str, str] = {
     "fraction": "数据比例 fraction",
     "seed": "训练侧种子 seed",
     "dropout": "Dropout 比率 dropout",
+    "hsv_h": "HSV-H 色相 hsv_h",
+    "hsv_s": "HSV-S 饱和度 hsv_s",
+    "hsv_v": "HSV-V 明度 hsv_v",
+    "degrees": "旋转角度 degrees",
+    "translate": "平移比例 translate",
+    "scale": "缩放增益 scale",
+    "shear": "错切角度 shear",
+    "perspective": "透视变换 perspective",
+    "flipud": "垂直翻转概率 flipud",
+    "fliplr": "水平翻转概率 fliplr",
+    "bgr": "BGR 通道互换概率 bgr",
+    "mosaic": "Mosaic 增强概率 mosaic",
+    "mixup": "MixUp 增强概率 mixup",
+    "cutmix": "CutMix 增强概率 cutmix",
+    "copy_paste": "Copy-Paste 概率 copy_paste",
+    "copy_paste_mode": "Copy-Paste 模式 copy_paste_mode",
+    "overlap_mask": "合并实例掩码 overlap_mask",
+    "mask_ratio": "掩码下采样比例 mask_ratio",
 }
 
 #: Four visible groups (spec §5.1.3); the logging / artifact recording
@@ -112,7 +132,31 @@ PARAM_GROUPS: Sequence[Any] = (
             "cos_lr",
         ),
     ),
-    ("数据增强与训练控制", ("amp", "cache", "rect", "close_mosaic")),
+    (
+        "数据增强与训练控制",
+        (
+            "amp",
+            "cache",
+            "rect",
+            "close_mosaic",
+            "hsv_h",
+            "hsv_s",
+            "hsv_v",
+            "degrees",
+            "translate",
+            "scale",
+            "shear",
+            "perspective",
+            "flipud",
+            "fliplr",
+            "bgr",
+            "mosaic",
+            "mixup",
+            "cutmix",
+            "copy_paste",
+            "copy_paste_mode",
+        ),
+    ),
     (
         "训练控制与其它",
         (
@@ -122,6 +166,8 @@ PARAM_GROUPS: Sequence[Any] = (
             "fraction",
             "seed",
             "dropout",
+            "overlap_mask",
+            "mask_ratio",
         ),
     ),
 )
@@ -156,6 +202,35 @@ GROUP_BADGE_TEMPLATE = "{0}（已设置 {1} 项）"
 #: collapse to a 70 px strip at a 1000 px high window).
 PREVIEW_TABLE_MIN_HEIGHT = 150
 
+#: Width the vertical scroll bar of the content area reserves.  The
+#: column count is decided on the page width plus this reserve, never on
+#: the live viewport: a two column layout that overflows would show the
+#: bar, shrink the viewport and flip to a single column, which raises the
+#: content again and hides the bar - a cycle.
+SCROLL_RESERVE_WIDTH = 16
+#: `optimizer=auto` next to any of the seven hyper-parameters is a 422
+#: (spec §3.8.4): the client mirrors the server's own conflict table.
+AUTO_CONFLICTING_PARAMS = (
+    "lr0",
+    "lrf",
+    "momentum",
+    "weight_decay",
+    "warmup_epochs",
+    "warmup_momentum",
+    "warmup_bias_lr",
+)
+#: The advisory line the parameter box shows for that conflict.
+NOTICE_OPTIMIZER_AUTO = (
+    "优化器已选 auto，与 lr0 / lrf / momentum / weight_decay / "
+    "warmup_epochs / warmup_momentum / warmup_bias_lr 互斥"
+    "（同送会 422 OPTIMIZER_UNSUPPORTED），请先改选具体 preset。"
+)
+#: Import notice of a `batch` outside the four steps.
+BATCH_SNAP_TEMPLATE = "导入的 batch={0} 不在 8/16/32/64 内，已取 {1}"
+#: Sentinel of `_preset_selection` before the user ever touched the
+#: optimizer combo: the form starts on the `auto` entry then (the policy
+#: entry once the family declares no `auto`).
+_UNSET = object()
 
 def _round_up(value: Any, step: int = 20) -> int:
     """Round one pixel amount up to the next multiple of `step`."""
@@ -222,7 +297,7 @@ def _tight_form(box: QtWidgets.QWidget) -> QtWidgets.QFormLayout:
 #: answered: (type, min, max, exclusive_min, exclusive_max).
 PARAM_SPECS: Dict[str, Any] = {
     "epochs": ("int", 1, 1000, False, False),
-    "batch": ("int", BATCH_MIN, BATCH_MAX, False, False),
+    "batch": ("int", BATCH_CHOICES[0], BATCH_CHOICES[-1], False, False),
     "imgsz": ("enum", IMGSZ_CHOICES),
     "workers": ("int", 0, 16, False, False),
     "optimizer": ("preset",),
@@ -244,6 +319,41 @@ PARAM_SPECS: Dict[str, Any] = {
     "fraction": ("float", 0, 1, True, False),
     "seed": ("int", None, None, False, False),
     "dropout": ("float", 0, 1, False, False),
+    "hsv_h": ("float", 0, 1, False, False),
+    "hsv_s": ("float", 0, 1, False, False),
+    "hsv_v": ("float", 0, 1, False, False),
+    "degrees": ("float", 0, 180, False, False),
+    "translate": ("float", 0, 1, False, False),
+    "scale": ("float", 0, 1, False, False),
+    "shear": ("float", 0, 180, False, False),
+    "perspective": ("float", 0, 0.001, False, False),
+    "flipud": ("float", 0, 1, False, False),
+    "fliplr": ("float", 0, 1, False, False),
+    "bgr": ("float", 0, 1, False, False),
+    "mosaic": ("float", 0, 1, False, False),
+    "mixup": ("float", 0, 1, False, False),
+    "cutmix": ("float", 0, 1, False, False),
+    "copy_paste": ("float", 0, 1, False, False),
+    "copy_paste_mode": ("enum", ("flip", "mixup")),
+    "overlap_mask": ("bool",),
+    "mask_ratio": ("int", 1, 16, False, False),
+}
+
+#: Display values of the keys the ultralytics default config declares but
+#: `DEFAULT_TRAINING_CONFIG` does not carry.  They are the two backends'
+#: shared defaults; `_make_param` reads them before the training config,
+#: and nothing here ever forces a value into a request.
+PARAM_DISPLAY_DEFAULTS: Dict[str, Any] = {
+    "flipud": 0.0,
+    "fliplr": 0.5,
+    "bgr": 0.0,
+    "mosaic": 1.0,
+    "mixup": 0.0,
+    "cutmix": 0.0,
+    "copy_paste": 0.0,
+    "copy_paste_mode": "flip",
+    "overlap_mask": True,
+    "mask_ratio": 4,
 }
 
 #: Shape of `capabilities.param_schema` in the absence of a server
@@ -378,6 +488,53 @@ class _ParamWidget:
         return self.read()
 
 
+class _ContentScroll(QtWidgets.QScrollArea):
+    """The scroll area of the page content (spec §5.1.3 layout).
+
+    `sizeHint` follows the natural height of the content: the
+    `QScrollArea` default reports a viewport sized hint and the window
+    size computed from the page hint would be wrong.  The viewport itself
+    drives the column count, so the reflow also survives a scroll bar
+    appearing or disappearing.
+    """
+
+    def __init__(self, content: QtWidgets.QWidget) -> None:
+        super().__init__()
+        self.setObjectName("trainingContentScroll")
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.setWidget(content)
+        self.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched: Any, event: Any) -> bool:
+        """Schedule the page reflow when the viewport resizes.
+
+        Only the coalesced entry is called: a viewport resize arrives
+        once per pixel while a window edge is dragged, and a
+        synchronous `_resize_page` here would re-run the full layout of
+        all 41 controls that often.  The 0ms timer behind
+        `_tick_layout` folds a burst into one reflow.
+        """
+
+        if watched is self.viewport() and event.type() in (
+            QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.Show,
+        ):
+            page = self.parent()
+            if isinstance(page, ConfigPage):
+                page._tick_layout()
+        return super().eventFilter(watched, event)
+
+    def sizeHint(self) -> QtCore.QSize:  # noqa: N802 (Qt override)
+        content = self.widget()
+        if content is not None:
+            return content.sizeHint()
+        return super().sizeHint()
+
+
 class ConfigPage(QtWidgets.QWidget):
     """Collect the submit of one remote training task (spec §5.1.3)."""
 
@@ -396,6 +553,14 @@ class ConfigPage(QtWidgets.QWidget):
         self._families: Dict[str, Any] = {}
         self._default_presets: Dict[str, str] = {}
         self._preview: Any = None
+        # Latched advisories of the parameter box (import notices); the
+        # optimizer conflict is recomputed on every refresh.
+        self.notices: List[str] = []
+        # The untouched-form sentinel of the optimizer combo: a late
+        # capabilities answer rebuilds the widget, so the choice cannot
+        # live on the widget alone.
+        self._preset_selection: Any = _UNSET
+
         # --- presentation state (never part of the form semantics) -----
         # The folded groups, the current column count and the four
         # toggle buttons live on the instance: rebuild_params() destroys
@@ -411,15 +576,49 @@ class ConfigPage(QtWidgets.QWidget):
         self._label_width = _label_width(list(PARAM_LABELS.values()))
         self._badge_pending = False
         self._upper_stacked: Optional[bool] = None
+        # The scrollable content and the four fixed button rows.
+        self.content: QtWidgets.QWidget = None
+        self.scroll: _ContentScroll = None
+        self.buttons: QtWidgets.QWidget = None
         # One timer owned by the page: a pending refresh dies with it, a
         # static QTimer.singleShot would outlive a destroyed widget.
         self._badge_timer = QtCore.QTimer(self)
         self._badge_timer.setSingleShot(True)
         self._badge_timer.setInterval(0)
         self._badge_timer.timeout.connect(self._refresh_badges)
+        # A second one for the reflow: the geometry a resize event
+        # reports is the one of the *old* pass, so the columns and the
+        # content height are settled one event loop turn later.
+        self._layout_pending = False
+        self._layout_timer = QtCore.QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.setInterval(0)
+        self._layout_timer.timeout.connect(self._refresh_layout)
         self._build()
         self.rebuild_params()
         self._refresh_badges()
+
+    def _resize_page(self, page_width: int, page_height: int) -> None:
+        """Reflow the page from the page geometry.
+
+        The decision is taken on the *page* width, not on the live
+        viewport width: the viewport loses the scroll bar exactly when
+        a two column layout starts to overflow, and a decision made on
+        that narrower number would flip to one column, grow taller and
+        hide the bar again - a cycle.  The bar reserve is therefore
+        counted on top of the page width, whether the bar is visible
+        or not.  Only the coalesced `_refresh_layout` calls this.
+        """
+
+        del page_height
+        stacked = page_width < NARROW_PAGE_WIDTH + SCROLL_RESERVE_WIDTH
+        if stacked != self._upper_stacked:
+            self._upper_stacked = stacked
+            self._apply_upper_row(stacked)
+        columns = 1 if stacked else 2
+        if columns != self._param_columns:
+            self._apply_param_columns(columns)
+        self._sync_content_height()
 
     # ------------------------------------------------------------- build
 
@@ -428,14 +627,33 @@ class ConfigPage(QtWidgets.QWidget):
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(10)
 
-        self.status_row = StatusRow()
-        outer.addWidget(self.status_row)
+        # Everything except the button row scrolls: the four buttons
+        # stay pinned below the scroll area, at every window height.
+        shell = QtWidgets.QWidget()
+        shell_layout = QtWidgets.QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(10)
+        self.content = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout(self.content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
 
-        outer.addWidget(self._build_server_group())
-        outer.addWidget(self._build_upper_row())
-        outer.addWidget(self._build_params_group())
-        outer.addWidget(self._build_preview_group(), 1)
-        outer.addWidget(self._build_buttons())
+        self.status_row = StatusRow()
+        content_layout.addWidget(self.status_row)
+
+        content_layout.addWidget(self._build_server_group())
+        content_layout.addWidget(self._build_upper_row())
+        content_layout.addWidget(self._build_params_group())
+        # The preview keeps its natural height here: a stretch inside the
+        # scrolled widget would fill the viewport and could hide the
+        # scroll bar of a page whose natural height is larger.
+        content_layout.addWidget(self._build_preview_group())
+
+        self.scroll = _ContentScroll(self.content)
+        shell_layout.addWidget(self.scroll, 1)
+        self.buttons = self._build_buttons()
+        shell_layout.addWidget(self.buttons)
+        outer.addWidget(shell)
 
     def _build_server_group(self) -> QtWidgets.QWidget:
         """The connection fields, on one row (spec §5.1.3).
@@ -577,6 +795,13 @@ class ConfigPage(QtWidgets.QWidget):
         tool.setSpacing(8)
         self.params_hint_label = QtWidgets.QLabel("")
         tool.addWidget(self.params_hint_label)
+        # The yellow advisory line, next to the hint: the batch snap note
+        # of an import and the optimizer / hyper-parameter conflict.  It
+        # never changes a value on its own.
+        self.notice_label = QtWidgets.QLabel("")
+        self.notice_label.setWordWrap(True)
+        self.notice_label.setStyleSheet("color: #8a6d00;")
+        tool.addWidget(self.notice_label)
         tool.addStretch(1)
         self.expand_all_button = QtWidgets.QPushButton("全部展开")
         self.collapse_all_button = QtWidgets.QPushButton("全部折叠")
@@ -694,11 +919,15 @@ class ConfigPage(QtWidgets.QWidget):
             self.task_combo.addItem(_task_label(str(task)), str(task))
         self.task_combo.blockSignals(False)
         # The rebuild comes first: the preset combos are built from the
-        # family lists above, and the family switch runs afterwards on the
-        # fresh widgets so that they start on the server policy entry
-        # (spec §3.8.4, §5.2.2).
+        # family lists above, and the family switch runs afterwards on
+        # the fresh widgets so that they start on the family's initial
+        # entry (spec §3.8.4, §5.2.2).  `_preset_selection` is *not*
+        # touched: the choice of the user (the policy entry included)
+        # has to survive a late answer, and only `_fill_presets` reads
+        # it.
         self.rebuild_params()
         self._on_family_changed()
+        self._sync_content_height()
 
     def _refresh_models(self, payload: Optional[Mapping[str, Any]] = None
                         ) -> None:
@@ -759,18 +988,21 @@ class ConfigPage(QtWidgets.QWidget):
         self._refresh_models()
 
     def _on_family_changed(self, _index: int = -1) -> None:
-        """A family change re-filters weights and presets (§3.6, §3.8.4)."""
+        """A family change re-filters weights and presets (§3.6, §3.8.4).
+
+        The remembered choice of the user is never reset here, a
+        programmatic refresh included: `_fill_presets` resolves it
+        against the fresh list of the family now selected and only
+        *falls back* to the initial value when that family does not
+        offer it.  The fallback is a display / send level downgrade,
+        the memory itself is kept, so going back to a family that does
+        offer the value restores it (spec §3.8.4, §5.2.2).
+        """
 
         self._refresh_models()
         entry = self._params.get("optimizer")
         if entry is not None:
-            # Only a real preset choice of the old family is carried over;
-            # the first entry (None) falls back to the first entry of the
-            # new family, which is the server policy entry again (spec
-            # §3.8.4, §5.2.8).
-            self._fill_presets(
-                entry.widget, entry.widget.currentData(), explicit=True
-            )
+            self._fill_presets(entry.widget)
 
     def _family_presets(self, family: str) -> List[str]:
         """Presets of one family, or the global union as a fallback."""
@@ -782,37 +1014,53 @@ class ConfigPage(QtWidgets.QWidget):
             presets = list(self._presets)
         return sorted(dict.fromkeys(str(name) for name in presets))
 
-    def _fill_presets(
-        self,
-        widget: QtWidgets.QComboBox,
-        keep: Any = None,
-        explicit: bool = False,
-    ) -> None:
+    def _initial_preset(self, family: str) -> Any:
+        """The initial value rule of one family (spec §3.8.4).
+
+        The family's `auto` preset when it declares that preset, the
+        valueless server policy entry otherwise.
+        """
+
+        presets = self._family_presets(family)
+        return "auto" if "auto" in presets else None
+
+    def _preset_choice(self) -> Any:
+        """The preset a freshly built combo has to show.
+
+        `_UNSET` is the untouched form: the initial value rule of the
+        selected family.  `None` is the user's explicit "let the server
+        pick" and a string is his concrete choice.  Without this field a
+        rebuild (a late `capabilities` answer) would fall back to the
+        initial value and lose the choice of the user, because the
+        widget carrying it does not survive the rebuild.
+        """
+
+        if self._preset_selection is _UNSET:
+            family = self.model_family_combo.currentText()
+            return self._initial_preset(family)
+        return self._preset_selection
+
+
+    def _fill_presets(self, widget: QtWidgets.QComboBox) -> None:
         """Fill one preset combo for the selected family (spec §3.6).
 
-        The first entry means "let the server pick by preset_policy"
-        (spec §3.8.4): it carries no value at all and is never counted as
-        a choice of the user, so an untouched form sends no `optimizer`
-        key and the server decides by its own policy (spec §5.2.2).  The
-        remaining entries - `auto` included - are the real choices of
-        the user.  A preset of another family is never offered: it would
-        come back as 422 OPTIMIZER_UNSUPPORTED.
+        The first entry still means "let the server pick by
+        preset_policy" (spec §3.8.4): it carries no value at all and
+        `_make_param` keeps it out of the request.  The entries that
+        follow - `auto` included - are the real choices of the user, and
+        a preset of another family is never offered: it would come back
+        as 422 OPTIMIZER_UNSUPPORTED.
 
-        `keep` selects that value again (the family switch path); only a
-        real preset of the selected family survives the refill, the first
-        entry always means "server policy".  The index is looked up in
-        the freshly filled list, so the rule holds per selected family, a
-        switch included (spec §5.2.2).
+        The value shown comes from `_preset_choice()`, never from a
+        `keep` argument: a value that does not exist in the freshly
+        filled list (a preset of the family just left) falls back to the
+        initial value rule (spec §5.2.2).
         """
 
         family = self.model_family_combo.currentText()
         presets = self._family_presets(family)
         default = self._default_presets.get(family)
-        # The target *value* first, the index only after the items are in
-        # place: the item list still belongs to the family just left (or
-        # is empty on a freshly made combo), so an index resolved now
-        # would be stale and silently land on another entry.
-        wanted = keep if keep in presets else None
+        wanted = self._preset_choice()
         label = (
             PRESET_UNSET_TEMPLATE.format(default)
             if default in presets
@@ -830,9 +1078,9 @@ class ConfigPage(QtWidgets.QWidget):
         widget.blockSignals(False)
         entry = self._params.get("optimizer")
         if entry is not None and entry.widget is widget:
-            # The first entry never counts as a choice of the user; it is
-            # the server policy default and stays out of the request.
-            entry.explicit = bool(explicit and index > 0)
+            # An entry carrying a value is a choice of the user (the
+            # `auto` start included); the policy entry is not.
+            entry.explicit = widget.currentData() is not None
             self._tick_badge()
 
     def explicit_params(self) -> Dict[str, Any]:
@@ -856,9 +1104,9 @@ class ConfigPage(QtWidgets.QWidget):
         The explicit parameters are carried over: a rebuild triggered by a
         late `capabilities` answer must not silently drop what the user
         (or an imported configuration) already set.  The carry is
-        `explicit_params()`: the only valueless explicit parameter was
-        the preset combo's first entry, and that entry no longer counts as
-        a choice of the user (spec §3.8.4, §5.2.2).
+        `explicit_params()`; the preset combo is the one control whose
+        state is not a plain value, and `_preset_selection` carries it
+        across the rebuild (spec §3.8.4, §5.2.2).
         """
 
         carried = dict(keep) if keep is not None else self.explicit_params()
@@ -880,8 +1128,14 @@ class ConfigPage(QtWidgets.QWidget):
             )
         # The column count of the window is applied to the fresh
         # widgets; the folding state of the instance is what the new
-        # toggles start from.
+        # toggles start from.  The preset combo gets its value from
+        # `_preset_selection`, so a rebuild carries the choice the
+        # destroyed widget used to hold.
         self._apply_param_columns(self._param_columns)
+        entry = self._params.get("optimizer")
+        if entry is not None:
+            self._fill_presets(entry.widget)
+        self._sync_content_height()
         self._tick_badge()
         if carried:
             self.set_params(carried)
@@ -934,6 +1188,41 @@ class ConfigPage(QtWidgets.QWidget):
         button.setText(name)
         return button
 
+    def _content_height(self) -> int:
+        """The height the content layout asks for right now.
+
+        The minimum of the widget is dropped and the layout re-run first:
+        both the fold state and the column count change the answer, and a
+        cached `sizeHint` of the previous state would pin the widget to a
+        height that no longer matches what it holds.
+        """
+
+        content = self.content
+        layout = content.layout()
+        if layout is None:
+            return 0
+        content.setMinimumHeight(0)
+        layout.invalidate()
+        layout.activate()
+        return layout.sizeHint().height()
+
+    def _sync_content_height(self) -> None:
+        """Pin the real page height of the scrollable content.
+
+        `QScrollArea` hands the viewport height to its widget when the
+        widget is resizable, which would crush the parameter groups into
+        their minimum layout.  The minimum height is therefore the height
+        the layout itself asks for in the current column count and fold
+        state; beyond that the scroll bar takes over (it is the answer to
+        a window too small for the page, never a reason to squeeze the
+        page).  The viewport resize event repeats this pass, which is
+        what keeps the two in step while the window is dragged.
+        """
+
+        height = self._content_height()
+        if height > 0:
+            self.content.setMinimumHeight(height)
+
     def _on_group_toggled(self, name: str, checked: bool) -> None:
         """Fold / unfold one group; no parameter value is touched."""
 
@@ -948,6 +1237,7 @@ class ConfigPage(QtWidgets.QWidget):
                 if checked
                 else QtCore.Qt.ArrowType.RightArrow
             )
+        self._sync_content_height()
 
     def _param_grid(self, names: Sequence[str]) -> QtWidgets.QGridLayout:
         """Create the controls of one group inside a fresh grid.
@@ -1042,6 +1332,50 @@ class ConfigPage(QtWidgets.QWidget):
         self._badge_pending = True
         self._badge_timer.start()
 
+    def _tick_layout(self) -> None:
+        """Schedule one reflow of the scroll area (never re-entrant)."""
+
+        if self._layout_pending:
+            return
+        self._layout_pending = True
+        self._layout_timer.start()
+
+    def _refresh_layout(self) -> None:
+        """Re-run the page reflow on the settled geometry."""
+
+        self._layout_pending = False
+        self._resize_page(self.width(), self.height())
+
+    def _refresh_notices(self) -> None:
+        """Render the two advisories of the parameter box.
+
+        The optimizer conflict is recomputed from the form itself:
+        `auto` next to any of the seven hyper-parameters is a 422 (spec
+        §3.8.4), and the combo state is the only source of truth for it.
+        The batch notice is *latched* by the import path and cleared as
+        soon as the user picks a step himself.  This never touches an
+        explicit flag: it is a rendering pass, exactly like
+        `_refresh_badges` below.
+        """
+
+        messages: List[str] = []
+        optimizer = self._params.get("optimizer")
+        if (
+            optimizer is not None
+            and optimizer.explicit
+            and optimizer.value() == "auto"
+        ):
+            conflicting = [
+                name
+                for name in AUTO_CONFLICTING_PARAMS
+                if self._params.get(name) is not None
+                and self._params[name].explicit
+            ]
+            if conflicting:
+                messages.append(NOTICE_OPTIMIZER_AUTO)
+        messages.extend(self.notices)
+        self.notice_label.setText("\\n".join(messages))
+
     def _refresh_badges(self) -> None:
         """Render the "N set" hints of the box and of every group.
 
@@ -1051,6 +1385,7 @@ class ConfigPage(QtWidgets.QWidget):
         """
 
         self._badge_pending = False
+        self._refresh_notices()
         counts = {group: 0 for group, _names in PARAM_GROUPS}
         total = 0
         for group, names in PARAM_GROUPS:
@@ -1077,22 +1412,37 @@ class ConfigPage(QtWidgets.QWidget):
         Only a real change of the geometry touches the layout: a drag
         of the window edge that keeps the same column count and the
         same stacked / side by side choice returns right away and never
-        runs a relayout per pixel.
+        runs a relayout per pixel.  The scroll viewport runs the same
+        reflow through its own event filter, because the width the
+        parameter grid really gets is the viewport width.
         """
 
         super().resizeEvent(event)
-        stacked = int(event.size().width()) < NARROW_PAGE_WIDTH
+        width = int(event.size().width())
+        stacked = width < NARROW_PAGE_WIDTH + SCROLL_RESERVE_WIDTH
         if stacked != self._upper_stacked:
             self._upper_stacked = stacked
             self._apply_upper_row(stacked)
         columns = 1 if stacked else 2
-        if columns == self._param_columns:
-            return
-        self._apply_param_columns(columns)
+        if columns != self._param_columns:
+            self._apply_param_columns(columns)
+        # Deferred: `event.size()` is already the new geometry, but the
+        # viewport and the scroll bar are laid out one turn later, and
+        # the content height has to follow *that* number.
+        self._tick_layout()
 
     def _make_param(self, name: str) -> _ParamWidget:
         shape = self._schema.get(name) or fallback_spec(name)
         default = DEFAULT_TRAINING_CONFIG.get(name)
+        if default is None:
+            # Ten new keys are not part of the training config table;
+            # their display value is the two backends' shared default.
+            default = PARAM_DISPLAY_DEFAULTS.get(name)
+        if name == "batch":
+            # Tested before the shape dispatch on purpose: the four
+            # steps stay a drop down even if a server ever declares
+            # `batch` as an enum.
+            return self._make_batch_param()
         if shape[0] == "bool":
             widget = QtWidgets.QCheckBox()
             widget.setChecked(bool(default))
@@ -1117,26 +1467,22 @@ class ConfigPage(QtWidgets.QWidget):
             return entry
         if shape[0] == "preset":
             widget = QtWidgets.QComboBox()
-            self._fill_presets(widget)
             entry = _ParamWidget(
                 name, widget, False, lambda w=widget: w.currentData()
             )
-            # The initial value is the first entry, which carries no
-            # value at all (spec §3.8.4): it hands the choice to the
-            # server policy, so it never counts as a choice of the user
-            # and an untouched form sends no `optimizer` key (spec
-            # §5.2.2).  Only a later user (or import) selection marks the
-            # entry explicit.
-            entry.explicit = False
+            self._fill_presets(widget)
+            # `auto` (or, without it, the policy entry) is the start value
+            # of the form; a real preset value is explicit, so an
+            # untouched form really sends `optimizer: auto`.
+            entry.explicit = widget.currentData() is not None
             widget.currentIndexChanged.connect(
-                lambda _row, e=entry: self._mark_explicit(e)
+                lambda _row, e=entry: self._on_preset_changed(e)
             )
             return entry
-        if name == "batch":
-            return self._make_batch_param()
         if shape[0] == "int":
             widget = QtWidgets.QSpinBox()
             _apply_range(widget, shape, default, int)
+            widget.setSingleStep(1)
             entry = _ParamWidget(
                 name, widget, False, lambda w=widget: int(w.value())
             )
@@ -1155,28 +1501,43 @@ class ConfigPage(QtWidgets.QWidget):
         return entry
 
     def _make_batch_param(self) -> _ParamWidget:
-        """`batch` with its two auto spellings (spec §3.8.2)."""
+        """`batch`: one non editable drop down of four fixed steps.
+
+        The default is the 16 step and it is explicit from the start
+        (what you see is what you send): an untouched form sends
+        `batch: 16` (spec §3.8.2, §5.2.2).
+        """
 
         widget = QtWidgets.QComboBox()
-        widget.setEditable(True)
-        widget.addItem(BATCH_UNSET_TEXT, None)
-        widget.addItem(BATCH_AUTO_TEXT, BATCH_AUTO_VRAM)
-        widget.addItem(BATCH_RATIO_TEXT, BATCH_AUTO_RATIO)
-        widget.setCurrentIndex(0)
+        widget.setEditable(False)
+        for value in BATCH_CHOICES:
+            widget.addItem(str(value), value)
+        _select_value(widget, BATCH_DEFAULT)
 
-        def read() -> Any:
-            return _read_batch(widget)
-
-        entry = _ParamWidget("batch", widget, False, read)
+        entry = _ParamWidget(
+            "batch", widget, False, lambda w=widget: _read_batch(w)
+        )
+        entry.explicit = True
         widget.currentIndexChanged.connect(
             lambda _row, e=entry: self._mark_explicit(e)
         )
-        line = widget.lineEdit()
-        if line is not None:
-            line.textEdited.connect(
-                lambda _text, e=entry: self._mark_explicit(e)
-            )
+        # Only a real user change clears the import notice; the
+        # programmatic call of `_assign_param` has to keep it visible.
+        widget.activated.connect(lambda _row: self._clear_batch_notice())
         return entry
+
+    def _on_preset_changed(self, entry: _ParamWidget) -> None:
+        """Remember and mark one optimizer choice of the user.
+
+        The combo outlives nothing: every rebuild (a late
+        `capabilities` answer) destroys it, so the choice has to be
+        copied out here.  `_fill_presets` runs its own
+        `setCurrentIndex` under `blockSignals`, so a programmatic fill
+        never calls this and never overwrites the remembered choice.
+        """
+
+        self._preset_selection = entry.widget.currentData()
+        self._mark_explicit(entry)
 
     def _mark_explicit(self, entry: _ParamWidget) -> None:
         entry.explicit = True
@@ -1250,13 +1611,45 @@ class ConfigPage(QtWidgets.QWidget):
             self.set_params(params)
 
     def set_params(self, params: Mapping[str, Any]) -> None:
-        """Backfill the parameter form from an imported file (§5.2.8)."""
+        """Backfill the parameter form from an imported file (§5.2.8).
+
+        A `batch` outside the four steps is snapped onto the closest of
+        them and earns the yellow notice of the parameter box; the value
+        is never silently kept and never silently dropped.
+        """
 
         for name, value in params.items():
             entry = self._params.get(name)
             if entry is None:
                 continue
-            _assign_param(entry.widget, name, value)
+            notice = _assign_param(entry.widget, name, value)
+            if notice is not None:
+                self.notices = [
+                    kept
+                    for kept in self.notices
+                    if "batch" not in kept
+                ]
+                self.notices.append(notice)
+            if name == "optimizer":
+                # The *request* value is remembered, never the resolved
+                # display: `rebuild_params` carries the explicit
+                # parameters through this same method, and reading
+                # `currentData()` back would overwrite the memory with
+                # whatever the combo happens to show (spec §3.8.4).
+                # `None` keeps its policy meaning.
+                self._preset_selection = value
+                widget = entry.widget
+                if value is not None and widget.currentData() != value:
+                    # The selected family does not offer that preset:
+                    # show - and send - the policy entry, exactly like a
+                    # family switch does, and keep the value in the
+                    # memory for the family that does offer it.  This
+                    # also keeps the rebuild carry honest: it transports
+                    # `explicit_params()`, which no longer holds a stale
+                    # display value that could clobber the memory.
+                    widget.blockSignals(True)
+                    widget.setCurrentIndex(0)
+                    widget.blockSignals(False)
             entry.explicit = True
         self._tick_badge()
 
@@ -1361,6 +1754,16 @@ class ConfigPage(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ browse
 
+    def _clear_batch_notice(self) -> None:
+        """A user picked a step himself: the import advisory is over."""
+
+        self.notices = [
+            notice
+            for notice in self.notices
+            if "batch" not in notice
+        ]
+        self._tick_badge()
+
     def browse_dataset(self) -> str:
         path = browse_directory(
             self, "选择数据来源目录（只读）", self.dataset_edit.text()
@@ -1393,60 +1796,79 @@ def parse_seed(text: Any) -> Optional[int]:
         raise ValueError("seed 必须是整数") from exc
 
 
-def _read_batch(widget: QtWidgets.QComboBox) -> Any:
-    """Parse the batch control into `None` / int / auto value."""
+def _read_batch(widget: QtWidgets.QComboBox) -> int:
+    """Read the batch drop down: one int of BATCH_CHOICES, never None.
 
-    index = widget.currentIndex()
-    if index >= 0:
-        data = widget.itemData(index)
-        if data is not None and widget.currentText() in (
-            BATCH_UNSET_TEXT,
-            BATCH_AUTO_TEXT,
-            BATCH_RATIO_TEXT,
-        ):
-            return None if data is None else data
-    text = widget.currentText().strip()
-    if not text or text == BATCH_UNSET_TEXT:
-        return None
-    if text == BATCH_AUTO_TEXT:
-        return BATCH_AUTO_VRAM
-    if text == BATCH_RATIO_TEXT:
-        return BATCH_AUTO_RATIO
-    try:
-        number = float(text)
-    except ValueError as exc:
-        raise ValueError("batch 必须是整数或 auto 取值") from exc
-    if number < 0:
-        return BATCH_AUTO_VRAM
-    if 0 < number < 1:
-        return number
-    return int(number)
+    The combo is not editable any more, so there is no half typed text
+    to parse and no auto spelling to fold: every item carries one of the
+    four steps as its data (spec §3.8.2).
+    """
+
+    data = widget.currentData()
+    if data is None:
+        return BATCH_DEFAULT
+    return int(data)
 
 
-def _assign_param(widget: Any, name: str, value: Any) -> None:
+def _is_number(value: Any) -> bool:
+    """True for the int / float a JSON document can carry.
+
+    `bool` is a subclass of `int` in Python but never a batch value: a
+    document spelling `true` has to snap to the default, not to 1.
+    """
+
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _snap_batch(value: Any) -> int:
+    """Snap one imported `batch` onto the closest of the four steps.
+
+    A whole number goes to the nearest step (a tie takes the smaller
+    one); an outside-of-domain spelling - the historical -1 and the
+    0 < ratio < 1 auto form - becomes the 16 default (spec §3.8.2).
+    """
+
+    if _is_number(value) and float(value) == int(value):
+        number = int(value)
+        if number in BATCH_CHOICES:
+            return number
+        if number >= 1:
+            return min(
+                BATCH_CHOICES,
+                key=lambda choice: (abs(choice - number), choice),
+            )
+    return BATCH_DEFAULT
+
+
+def _assign_param(widget: Any, name: str, value: Any) -> Optional[str]:
+    """Backfill one control; returns the notice the value earned.
+
+    Only `batch` can earn one: an imported value outside the four steps
+    is snapped onto the closest of them (a tie takes the smaller) and
+    the caller shows the yellow line.  The value is never silently kept
+    as it was.
+    """
+
     if isinstance(widget, QtWidgets.QCheckBox):
         widget.setChecked(bool(value))
-        return
+        return None
     if isinstance(widget, QtWidgets.QComboBox):
         if name == "batch":
-            if value is None:
-                widget.setCurrentIndex(0)
-            elif value == BATCH_AUTO_VRAM or (
-                isinstance(value, (int, float)) and value == -1
+            snapped = _snap_batch(value)
+            _select_value(widget, snapped)
+            if snapped == value or (
+                _is_number(value) and float(value) == snapped
             ):
-                widget.setCurrentIndex(1)
-            elif isinstance(value, float) and 0 < value < 1:
-                widget.setCurrentIndex(2)
-            else:
-                widget.setEditText(str(value))
-            return
+                return None
+            return BATCH_SNAP_TEMPLATE.format(value, snapped)
         _select_value(widget, value)
-        return
+        return None
     if isinstance(widget, QtWidgets.QSpinBox):
         widget.setValue(int(value))
-        return
+        return None
     if isinstance(widget, QtWidgets.QDoubleSpinBox):
         widget.setValue(float(value))
+    return None
 
 
 def _select_value(widget: QtWidgets.QComboBox, value: Any) -> None:
@@ -1477,10 +1899,30 @@ def _select_text(widget: QtWidgets.QComboBox, text: str) -> None:
 def _apply_range(
     widget: Any, shape: Any, default: Any, caster: Any
 ) -> None:
+    """Apply the local fallback range to one numeric control.
+
+    Both the normalised tuple and the raw `param_schema` mapping are
+    accepted, so the caller can hand in whatever `self._schema` holds.
+    A float control steps by a hundredth of its own span: without that a
+    single arrow click moves `perspective` from 0 to its 0.001 ceiling
+    at once.
+    """
+
+    if isinstance(shape, Mapping):
+        low = shape.get("min")
+        high = shape.get("max")
+    else:
+        low = shape[1] if len(shape) > 1 else None
+        high = shape[2] if len(shape) > 2 else None
     if shape[0] == "float":
         widget.setDecimals(5)
-    low = shape[1] if len(shape) > 1 else None
-    high = shape[2] if len(shape) > 2 else None
+        if low is not None and high is not None:
+            span = float(high) - float(low)
+            widget.setSingleStep(
+                max(1e-05, span / 100) if span > 0 else 0.001
+            )
+        else:
+            widget.setSingleStep(0.001)
     if low is not None:
         widget.setMinimum(caster(low))
     else:
