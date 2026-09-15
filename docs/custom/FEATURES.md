@@ -975,8 +975,8 @@ Tool 菜单里的「重命名」：按标注主分类把一份扁平数据集里
 
 ### 测试
 
-`QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/rename_tool -v`
-（需 PyQt6；本工作区 271 个用例全部通过）。
+`QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/rename_tool -v`
+（用仓库根下的 .venv/bin/python 跑；需 PyQt6；本工作区 276 个用例全部通过）。
 
 ### 已知坑
 
