@@ -412,8 +412,55 @@ class TestKeyEscape:
         assert seen == [(-1, -1)]
 
 
+def _render(view):
+    """Render the widget the way the screen shows it."""
+
+    image = QtGui.QImage(
+        view.viewport().size(), QtGui.QImage.Format.Format_ARGB32
+    )
+    image.fill(QtGui.QColor(255, 255, 255))
+    painter = QtGui.QPainter(image)
+    view.render(painter)
+    painter.end()
+    return image
+
+
+def _count_image_pixels(image):
+    """Count sampled pixels carrying the red of the test image."""
+
+    step = 3
+    count = 0
+    for y in range(0, image.height(), step):
+        for x in range(0, image.width(), step):
+            color = image.pixelColor(x, y)
+            if color.red() > 150 and color.green() < 120:
+                count += 1
+    return count
+
+
 class TestPainting:
-    """Every overlay layer can be painted without raising."""
+    """Every layer reaches the screen, not only the item list."""
+
+    def test_the_image_itself_is_painted(self, qapp, ct_dir):
+        view = _view()
+        path = os.path.join(ct_dir, "red.png")
+        PIL.Image.new("RGB", SRC_SIZE, (220, 30, 30)).save(path)
+        assert view.load_image(path) is True
+        view.show()
+        qapp.processEvents()
+        assert _count_image_pixels(_render(view)) > 0
+
+    def test_a_cleared_view_paints_no_image(self, qapp, ct_dir):
+        view = _view()
+        path = os.path.join(ct_dir, "red.png")
+        PIL.Image.new("RGB", SRC_SIZE, (220, 30, 30)).save(path)
+        assert view.load_image(path) is True
+        view.show()
+        qapp.processEvents()
+        assert _count_image_pixels(_render(view)) > 0
+        view.clear_image()
+        qapp.processEvents()
+        assert _count_image_pixels(_render(view)) == 0
 
     def test_draw_foreground(self, ct_dir):
         view = _view()

@@ -8,8 +8,8 @@ feeds.
 
 The output directory is the only value with a computed default: it is
 the current working directory, fetched on every read and never
-written back. The input directory has no default at all and stays
-empty until the user picks a folder.
+written back. The source folder is not stored at all: the dialog
+keeps it in memory only, so the window always opens empty.
 
 The store is handed to the constructor, so a test can give the
 wrapper an INI file of its own instead of the store of the user.
@@ -111,11 +111,6 @@ class CropSettings:
             return stored
         return crop_core.default_output_dir()
 
-    def input_dir(self) -> str:
-        """Return the source directory, empty when none is stored."""
-
-        return self._read_text("input_dir")
-
     def set_width(self, value) -> None:
         """Store the crop width in pixels."""
 
@@ -140,8 +135,3 @@ class CropSettings:
         """Store the output directory."""
 
         self._settings.setValue(KEY_PREFIX + "output_dir", str(value))
-
-    def set_input_dir(self, value) -> None:
-        """Store the source directory."""
-
-        self._settings.setValue(KEY_PREFIX + "input_dir", str(value))

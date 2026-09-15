@@ -218,13 +218,15 @@ class CropDialog(QtWidgets.QDialog):
         )
         self._entries = []
         self._crops = {}
+        self._input_dir = ""
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
         self.setMinimumSize(*MIN_WINDOW_SIZE)
         self.setAcceptDrops(True)
         self._build_ui()
         self._init_values()
-        self._restore_input_dir()
+        self._refresh_path_labels()
+        self._show_empty_hint()
 
     # ---------------------------------------------------------------- UI
 
@@ -368,9 +370,14 @@ class CropDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ 目录
 
     def set_input_dir(self, directory) -> list:
-        """Open a source folder, scan it and show its first image."""
+        """Open a source folder, scan it and show its first image.
 
-        self._settings.set_input_dir(directory)
+        The folder lives in memory only: nothing about it is stored,
+        so the window always opens empty and never reopens a folder
+        the user picked in an earlier session.
+        """
+
+        self._input_dir = osp.abspath(directory) if directory else ""
         self._refresh_path_labels()
         self._entries = self._scan()
         self.rebuild_crops()
@@ -382,9 +389,9 @@ class CropDialog(QtWidgets.QDialog):
         return list(self._entries)
 
     def input_dir(self) -> str:
-        """Return the source folder currently open."""
+        """Return the source folder currently open, '' when none."""
 
-        return self._settings.input_dir()
+        return self._input_dir
 
     def output_dir(self) -> str:
         """Return the folder the crops are written into."""
@@ -547,6 +554,7 @@ class CropDialog(QtWidgets.QDialog):
         self.viewer.center_crop()
         self.viewer.set_marks(self.marks_of_current())
         self._refresh_status()
+        self._update_size_hint()
         return True
 
     def next_image(self) -> bool:
@@ -577,25 +585,6 @@ class CropDialog(QtWidgets.QDialog):
             self.status_bar.showMessage(BAD_DIR_TEXT % source)
             return
         self.status_bar.showMessage(NO_IMAGES_TEXT)
-
-    def _restore_input_dir(self) -> None:
-        """Open the stored source folder again, if it still exists."""
-
-        stored = self.input_dir()
-        if not stored or not osp.isdir(stored):
-            self._refresh_path_labels()
-            self._show_empty_hint()
-            return
-        self._entries = self._scan()
-        self.rebuild_crops()
-        self._fill_list()
-        if self._entries:
-            self.show_image(0)
-            self.status_bar.showMessage(
-                INDEX_FORMAT % (1, self.image_count())
-            )
-        else:
-            self._show_empty_hint()
 
     # ------------------------------------------------------------ 裁切
 
@@ -732,6 +721,30 @@ class CropDialog(QtWidgets.QDialog):
         self.box_label.setText(BOX_FORMAT % self.viewer.crop_size())
         self._elide_paths()
 
+    def _update_size_hint(self) -> None:
+        """Show or withdraw the small image hint of the status bar.
+
+        The box keeps its width and height across images, so the
+        current image can be smaller than the box at any time; the
+        hint then says that the right and the bottom band are filled
+        with 0. An empty view is not a small image: without an image
+        the hint is only ever withdrawn, never raised. The hint is
+        withdrawn only while the status bar still shows that very
+        text, so a parallel message such as "已保存: x" is kept.
+        """
+
+        width, height = self.viewer.image_size()
+        box_width, box_height = self.viewer.crop_size()
+        if width <= 0 or height <= 0:
+            if self.status_bar.currentMessage() == SMALL_IMAGE_TEXT:
+                self.status_bar.clearMessage()
+            return
+        if width < box_width or height < box_height:
+            self.status_bar.showMessage(SMALL_IMAGE_TEXT)
+            return
+        if self.status_bar.currentMessage() == SMALL_IMAGE_TEXT:
+            self.status_bar.clearMessage()
+
     # ------------------------------------------------------------ 参数
 
     def _sync_crop_size(self) -> None:
@@ -740,6 +753,7 @@ class CropDialog(QtWidgets.QDialog):
         self.viewer.set_crop_size(
             self.width_box.value(), self.height_box.value()
         )
+        self._update_size_hint()
 
     def _sync_pad(self) -> None:
         """Push the two padding spin boxes into the view."""

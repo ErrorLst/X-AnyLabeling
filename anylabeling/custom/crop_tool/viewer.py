@@ -598,6 +598,20 @@ class CropView(QtWidgets.QGraphicsView):
         pen.setJoinStyle(QtCore.Qt.PenJoinStyle.MiterJoin)
         return pen
 
+    def drawBackground(self, painter, rect) -> None:
+        """Paint the image itself, below the overlay layers.
+
+        The scene is one unit per image pixel and its rectangle is
+        exactly the image, so the pixmap is drawn at the scene
+        origin; the crop box, the padding bands and the marks are
+        painted later, by drawForeground, on top of it.
+        """
+
+        super().drawBackground(painter, rect)
+        if self._pixmap is None:
+            return
+        painter.drawPixmap(QtCore.QPointF(0.0, 0.0), self._pixmap)
+
     def drawForeground(self, painter, rect) -> None:
         """Paint the marks, the padding bands and the crop box."""
 

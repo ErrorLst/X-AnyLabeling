@@ -41,11 +41,6 @@ class TestDefaults:
             "pad_height": 0,
         }
 
-    def test_directories_start_empty(self, ct_store):
-        settings, _ini = ct_store
-        assert settings.input_dir() == ""
-
-
 class TestRoundTrip:
     """Every parameter survives a write and a read."""
 
@@ -62,9 +57,7 @@ class TestRoundTrip:
 
     def test_directories(self, ct_store):
         settings, _ini = ct_store
-        settings.set_input_dir("/data/in")
         settings.set_output_dir("/data/out")
-        assert settings.input_dir() == "/data/in"
         assert settings.output_dir() == "/data/out"
 
     def test_keys_carry_the_prefix(self, ct_store):

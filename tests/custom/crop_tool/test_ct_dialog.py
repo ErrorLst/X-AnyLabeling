@@ -395,6 +395,84 @@ class TestParameters:
         assert ct_dialog.SMALL_IMAGE_TEXT == "图片小于裁切框，右侧/下侧填 0"
 
 
+class TestSmallImageHint:
+    """The status bar says so while the box is larger than the image."""
+
+    def test_small_image_is_reported(self, ct_dir, ct_store):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        assert dialog.viewer.image_size() == SIZE
+        assert dialog.viewer.crop_size() != SIZE
+        assert dialog.status_bar.currentMessage() == (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+
+    def test_a_box_that_fits_stays_silent(self, ct_dir, ct_store):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.width_box.setValue(SIZE[0])
+        dialog.height_box.setValue(SIZE[1])
+        assert dialog.status_bar.currentMessage() != (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+
+    def test_switching_to_a_big_image_takes_the_hint_back(
+        self, ct_dir, ct_store
+    ):
+        write_pil(ct_dir, "a.png", (40, 30))
+        write_pil(ct_dir, "b.png", (200, 200))
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.width_box.setValue(100)
+        dialog.height_box.setValue(100)
+        assert dialog.current_path().endswith("a.png")
+        assert dialog.status_bar.currentMessage() == (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+        assert dialog.show_image(1) is True
+        assert dialog.current_path().endswith("b.png")
+        assert dialog.status_bar.currentMessage() != (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+
+    def test_enlarging_the_box_raises_the_hint(self, ct_dir, ct_store):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.width_box.setValue(BOX[0])
+        dialog.height_box.setValue(BOX[1])
+        assert dialog.status_bar.currentMessage() != (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+        dialog.width_box.setValue(SIZE[0] + 1)
+        assert dialog.viewer.crop_size() == (SIZE[0] + 1, BOX[1])
+        assert dialog.status_bar.currentMessage() == (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+
+    def test_no_image_never_raises_the_hint(self, ct_store):
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings)
+        assert dialog.viewer.image_size() == (0, 0)
+        dialog.width_box.setValue(1000)
+        dialog.height_box.setValue(1000)
+        assert dialog.status_bar.currentMessage() != (
+            ct_dialog.SMALL_IMAGE_TEXT
+        )
+
+    def test_a_foreign_message_is_never_withdrawn(self, ct_dir, ct_store):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.width_box.setValue(BOX[0])
+        dialog.height_box.setValue(BOX[1])
+        dialog.status_bar.showMessage("已保存: x.png")
+        dialog.height_box.setValue(BOX[1] + 1)
+        assert dialog.status_bar.currentMessage() == "已保存: x.png"
+
+
 class TestCrop:
     """The right button path writes exactly one crop."""
 
@@ -588,7 +666,7 @@ class TestOutputDir:
         write_pil(ct_dir, "a.png", SIZE)
         settings, _ini = ct_store
         dialog = _make_dialog(settings, ct_dir)
-        settings.set_input_dir("")
+        dialog.set_input_dir("")
         assert dialog.rescan() == []
         assert dialog.current_index() == -1
 
@@ -923,25 +1001,33 @@ class TestSourceStaysReadOnly:
         ]
 
 
-class TestRestore:
-    """The stored source folder reopens with the window."""
+class TestStartup:
+    """The window opens empty: no folder is picked for the user."""
 
-    def test_stored_folder_is_restored(self, ct_dir, ct_store):
+    def test_no_folder_is_opened(self, ct_dir, ct_store):
         write_pil(ct_dir, "a.png", SIZE)
         settings, _ini = ct_store
-        settings.set_input_dir(ct_dir)
-        dialog = _make_dialog(settings)
-        assert dialog.image_count() == 1
-        assert dialog.current_index() == 0
-
-    def test_missing_folder_shows_the_hint(self, ct_dir, ct_store):
-        settings, _ini = ct_store
-        settings.set_input_dir(os.path.join(ct_dir, "gone"))
         dialog = _make_dialog(settings)
         assert dialog.image_count() == 0
-        assert dialog.status_bar.currentMessage() == (
-            ct_dialog.BAD_DIR_TEXT % os.path.join(ct_dir, "gone")
-        )
+        assert dialog.current_index() == -1
+        assert dialog.viewer.has_image() is False
+        assert dialog.input_dir() == ""
+        assert dialog.status_bar.currentMessage() == ct_dialog.EMPTY_HINT
+
+    def test_a_folder_left_in_the_store_is_ignored(
+        self, ct_dir, ct_store
+    ):
+        """An older build stored the last folder; it must not reopen."""
+
+        write_pil(ct_dir, "a.png", SIZE)
+        settings, ini = ct_store
+        raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+        raw.setValue("custom/crop_tool/input_dir", ct_dir)
+        raw.sync()
+        dialog = _make_dialog(settings)
+        assert dialog.image_count() == 0
+        assert dialog.input_dir() == ""
+        assert dialog.status_bar.currentMessage() == ct_dialog.EMPTY_HINT
 
     def test_no_folder_shows_the_hint(self, ct_store):
         settings, _ini = ct_store
