@@ -117,7 +117,7 @@ PARAM_LABELS: Dict[str, str] = {
 #: Four visible groups (spec §5.1.3); the logging / artifact recording
 #: keys are deliberately not part of any group.
 PARAM_GROUPS: Sequence[Any] = (
-    ("常用参数", ("epochs", "batch", "imgsz", "workers")),
+    ("常用参数", ("epochs", "batch", "imgsz", "workers", "patience")),
     (
         "学习率与优化器",
         (
@@ -161,7 +161,6 @@ PARAM_GROUPS: Sequence[Any] = (
         "训练控制与其它",
         (
             "single_cls",
-            "patience",
             "save_period",
             "fraction",
             "seed",
