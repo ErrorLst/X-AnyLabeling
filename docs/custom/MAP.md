@@ -35,7 +35,7 @@
 
 自研功能的挂载点绝大多数落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
 与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有五处：模型验证的菜单动作与
-方法定义、重命名工具与裁图工具的 Tool 菜单动作追加、标签过滤的 Tool 菜单运行时追加
+方法定义、重命名工具与裁图工具的 Tool 菜单动作追加、预览工具与标签过滤的 Tool 菜单运行时追加
 （`menus.tool.addAction`）与 `LabelingWidget.import_image_folder` 的实例级包装，
 换图复位视图的 `load_file` 实例级包装，
 以及崩溃日志的第五处——`anylabeling/app.py` **模块顶层**挂载（1 行 import + 1 行调用，
@@ -55,11 +55,11 @@
 远端子链固定打在 Server 的 `/v1/models`、`/v1/predict`（视频系列走 `/v1/video/*`），
 URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url` 拼出。
 
-## 热文件表（快照行数 = 2026-09-14）
+## 热文件表（快照行数 = 2026-09-15）
 
 | 文件 | 行数 | 说明 |
 |---|---|---|
-| `anylabeling/views/labeling/label_widget.py` | 7308 | 主窗口逻辑 + 全部挂载点 |
+| `anylabeling/views/labeling/label_widget.py` | 7314 | 主窗口逻辑 + 全部挂载点 |
 | `anylabeling/views/labeling/widgets/canvas.py` | 5541 | 画布：绘制、缩放、编辑、滚轮 |
 | `anylabeling/views/labeling/ppocr/editors.py` | 4801 | PPOCR 编辑面板 |
 | `anylabeling/services/auto_labeling/model_manager.py` | 2716 | 模型注册与加载 |
@@ -70,14 +70,14 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 | `anylabeling/services/auto_labeling/remote_server.py` | 878 | 远端模型客户端 |
 | `anylabeling/resources/resources.py` | 109255 | **生成物：禁止打开 / 扫描 / 全树搜索** |
 
-## 目录清单（快照 2026-09-14）
+## 目录清单（快照 2026-09-15）
 
-- `anylabeling/views/labeling/`：111 个 .py / 77325 行，含 8 个子包
+- `anylabeling/views/labeling/`：111 个 .py / 77331 行，含 8 个子包
   （`chatbot`、`classifier`、`ppocr`、`settings`、`utils`、`video_classifier`、`vqa`、`widgets`）。
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
-- `anylabeling/custom/`：69 个 .py / 37449 行（目录内全部 .py；FEATURES.md 登记其中
-  8 个自研功能，另有未登记的 `remote_training`）。
+- `anylabeling/custom/`：88 个 .py / 45078 行（目录内全部 .py；FEATURES.md 登记其中
+  10 个自研功能，另有未登记的 `remote_training`）。
 - `anylabeling/custom/model_validation/`：24 个 .py / 12543 行（关键文件：`ui/` 下的
   `dialog.py` 1188、`results_page.py` 2008、`image_view.py` 1280，以及
   `main_window_bridge.py` 689、`async_scan.py` 189、`multilabel.py` 360）；本轮新增
@@ -85,7 +85,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   `inference.py`（508 行）只做接线；「编辑搬到主窗口」那一轮新增
   `main_window_bridge.py`（现 689 行，跳主窗口 + 保存回写）与 `async_scan.py`（189 行，
   异步目录扫描），删除 `label_dialog.py`（内置标签弹窗）。
-- `tests/custom/`：85 个 .py / 41068 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
+- `tests/custom/`：103 个 .py / 48487 行（含契约自检脚本 `tests/custom/test_fork_contract.py`）。
 
 ## 想改 X 该看哪里
 
@@ -97,6 +97,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 | 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
 | 固定框裁图（数据集逐张裁切） | `anylabeling/custom/crop_tool/`（Tool 菜单「裁图工具」：拖入目录、W×H 固定框、右键裁切、A/D 换图、文件名即记录、Del 经确认删自己的裁切子图；默认输出 = `os.getcwd()`） |
 | 按标签分类过滤文件列表 | `anylabeling/custom/label_filter/`（Tool 菜单「标签过滤」运行时追加，实例级包装 `import_image_folder` 做二道过滤） |
+| 图片目录快速预览 / 标注叠加 / 按得分·尺寸·类别筛选 / 拷到 picked 与移入 dsh-trash | `anylabeling/custom/preview_tool/`（Tool 菜单「预览工具」，QDialog 独立窗口；过滤语义见 `core.filter_images`，按图 toggle 与移除口径见 `pick_core.py` 与 FEATURES.md） |
 | 崩溃 / 运行日志（无控制台取证） | `anylabeling/custom/crash_log/`（挂载 `anylabeling/app.py:23-24`；日志 `~/.xanylabeling/logs/xany-YYYYMMDD.log`，保留 14 份；`XANY_LOG_DIR` 改目录、`XANY_LOG_DISABLE=1` 关闭） |
 | 快捷键 | `anylabeling/views/labeling/label_widget.py` 的动作定义（快捷键表取自 `self._config["shortcuts"]`，即 `.xanylabelingrc`） |
 | 标注文件读写（json / LabelFile） | `anylabeling/views/labeling/label_file.py`；保存入口是 `label_widget.py` 的 `save_labels` |

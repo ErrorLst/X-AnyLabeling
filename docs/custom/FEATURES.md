@@ -31,6 +31,7 @@
 | crash_log | 崩溃与运行日志落盘 `~/.xanylabeling/logs/xany-*.log`（faulthandler + 异常钩子 + Qt 钩子；异常退出检测） | `anylabeling/custom/crash_log/` | `tests/custom/crash_log/` | 1 个（1 行 import + 1 行调用） | 0 |
 | reset_view_on_switch | 换到另一张图片时画布缩放/滚动复位成首图初始态（有意压过 keep_prev_scale；同文件重载不复位） | `anylabeling/custom/reset_view_on_switch/` | 同目录 `tests/custom/reset_view_on_switch/` | 1 个（1 行 import + 1 行调用） | 1 |
 | crop_tool | 拖入目录后用固定 W×H 裁切框逐张裁图：右键裁切、A/D 换图、文件名即记录、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
+| preview_tool | 拖入图片目录按文件名自然排序预览并叠加 LabelMe 标注；按得分/尺寸/类别过滤（总开关），把当前图与边车 json 拷进 picked/ 或把同 stem 副本移入 dsh-trash | `anylabeling/custom/preview_tool/` | `tests/custom/preview_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -481,9 +482,10 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 
 ### 代码与体量
 
-`anylabeling/custom/smudge_tool/`（4 个文件 2474 行：`texture_fill.py` 算法、
-`operations.py` 读写/备份/几何、`smudge_filter.py` Qt 层、`__init__.py` 导出）；
-测试 `tests/custom/smudge_tool/`（6 个文件 3382 行，含写回编码参数、TIFF
+`anylabeling/custom/smudge_tool/`（4 个文件 2717 行：`texture_fill.py` 算法 584 行、
+`operations.py` 读写/备份/几何 501 行、`smudge_filter.py` Qt 层 1569 行、
+`__init__.py` 导出）；
+测试 `tests/custom/smudge_tool/`（6 个文件 3804 行，含写回编码参数、TIFF
 Orientation 与画布绘制态的回归）。
 
 ### 入口符号
@@ -582,12 +584,35 @@ Orientation 与画布绘制态的回归）。
   `_work_info` 仍是读入时的参数，下次写回会再试一次原参数（只多一次被拒的
   尝试，不影响像素）。
 - **几何门槛**：ROI 小于 6 像素拒绝执行；源点必须先右键选；没有磁盘文件的图像拒绝写回。
+- **外边界自适应羽化**：ROI 最外圈与**原始像素**交界处用 `1 - raised cosine` 交叉
+  淡化（`texture_fill.edge_feather`，它是块间羽化 `feather_alpha` 的**补集**，两者
+  相加恒为 1），宽度 `r = edge_ramp_for(高, 宽) = clamp(round(min(高, 宽) / 10), 0, 8)`
+  （`50×40` 的框 → 4px、短边 50 → 5px、短边 ≥80 → 8px）。`fill_roi` 在两种场合把
+  自动宽度压成 0：短边 ≤ 10 像素，以及短边小于一个纹理块（24 像素）——后者整框由
+  「对齐贴片」1:1 取源窗口像素，羽化会破坏这个承诺；`r == 0` 时结果与旧实现
+  **逐字节相同**。羽化只改最外一圈内侧：`edge_feather` 为 0 处（短边 ≤10 时处处为 0）
+  权重与旧实现完全一致，那些像素逐位等于旧结果；互补权重同样缩放在**已写过**的像素上，
+  所以后续块无法再把纹理盖回最外一圈。宽度可经 `fill_roi(..., edge_ramp=...)` 显式
+  指定（默认 `None` = 按尺寸自适应），Qt 层不传、永远用自适应值。「对齐贴片」（小框）
+  与「匹配块」走同一条 `_blend_block`，`r > 0` 时同样获得这一圈羽化。
+- **源点在框内：提示且不处理**：判定 = 源点取整后落在半开 ROI 内
+  （`operations.point_in_box`：`x0 <= int(x) < x1` 且 `y0 <= int(y) < y1`，正好落在
+  右/下边界上的源点不算框内）。命中时 `SmudgeController._execute` 在 `_target_file`、
+  `_busy`、覆盖光标、读图、`validate_roi`、`before` 快照、`_source_window_for`
+  （会写 `_source_box` 并驱动覆盖层重画）、`fill_roi`、`_write`（备份的唯一入口）、
+  `_remember`、`_refresh_view` **之前**返回，只发一条 `_status` 提示（不是 `_error`）：
+  磁盘字节、`_history`、`_backups`、光标与 `_source_box` 都不动。守卫只能这么窄：
+  源窗口**必含**源点（居中后整体 `np.clip` 平移、绝不裁短），且 ROI 装得进图像时窗口
+  尺寸**恰等于** ROI——源点在框内就意味着窗口 ≈ 框本身、候选全被拒、静默零变化；
+  而「源点在框外、窗口仍与框重叠」是常态路径，与前者在几何上不可区分，不能整体拦下。
 - **小框填充（对齐贴片）**：ROI 两边都 <= 17 像素时它小于一个纹理块（块 24 像素），
   匹配窗口里没有任何已确定像素：这类块不再被跳过（跳过会留下缺陷像素），而是按
   「块在 ROI 内的相对偏移」从源窗口同位置取同尺寸贴片（源窗口与 ROI 同尺寸，所以
   小框等价于把源点处的同尺寸纹理 1:1 盖过来）。贴片同样记入「已确定像素」，后续块
-  据此恢复正常的匹配路径。贴片落回 ROI 自身（源点就在框内、窗口与框重叠）、源窗口
-  装不下对齐贴片、或根本没有源窗口时仍然跳过；整框仍可能报「未发生变化」。
+  据此恢复正常的匹配路径。贴片落回 ROI 自身（源窗口与框重叠、对齐位置落在框内）、
+  源窗口装不下对齐贴片、或根本没有源窗口时仍然跳过。**源点落在框内**（窗口就是框
+  本身）这一情形现在由上面的守卫在更早处拦下并提示，不再落进「未发生变化」；
+  源点在别处、窗口仍与框相交时照常走这条路径，整框仍可能报「未发生变化」。
 - **源点标记**：右键当下就在覆盖层上画绿色十字（不依赖后续填充或画布重绘）；
   源窗口矩形只在尺寸已知时才画（拖框中或填充过一次之后）。
 - **标记坐标**：覆盖层的十字与源窗口矩形都用画布局部坐标表示，`paintEvent`
@@ -697,22 +722,33 @@ Orientation 与画布绘制态的回归）。
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider tests/custom/smudge_tool -v`
-（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，全套 169 个用例：
-`test_st_operations.py` 28 + `test_st_texture_fill.py` 39 + `test_st_filter.py` 49 +
+（需 PyQt6 + numpy + OpenCV；本工作区用仓库里的 `.venv`，全套 197 个用例：
+`test_st_operations.py` 28 + `test_st_texture_fill.py` 62（本轮 +23：羽化宽度区间表 /
+补集关系与形状 dtype / 大框最外圈变化与小框逐字节相同 / `edge_ramp=0` 即旧基准 /
+平坦底与活动纹理两条接缝统计 / 贴角框四边都变化 / uint8·uint16 × 1·3·4 通道 /
+对齐贴片羽化与旧 state 向后兼容）+
+`test_st_filter.py` 54（本轮 +3：源点在框内零痕迹、Ctrl+Z 撤的是上一步正常填充 /
+源点正好在右·下边界上不被拦 / 源点在框外但窗口与框相交照常执行）+
 `test_st_jpeg_metadata.py` 22（含 TIFF 逐字节 + Orientation 5~8 与 MPO）+
 `test_st_draw_mode.py` 31（进入接管 / 按键与按钮切走 / 不递归 / 连接成对 /
 退出回编辑态与三级 fallback（含禁用动作退到 widget 回退）/ 图像外按下不画形状 /
 双击被吞 / 菜单条目经 `triggered` 接管、真菜单点击一次执行 / 编辑条目一次执行 /
 接管不残留 `_handing_over` 标志、下次退出仍弹栈 / 让路退出不代跑上游编辑动作 /
 真实 QAction 上下游处理器恰好执行一次：工具栏、快捷键、菜单、编辑动作，两种
-槽位顺序各钉一遍，退出后真实动作上只剩上游的槽）；本轮复跑后两个文件共 80 个
-用例通过）。
+槽位顺序各钉一遍，退出后真实动作上只剩上游的槽）。
+本文件此前记的 `test_st_filter.py` 49 与全套 169 是笔误，这里按实测重记）。
 
 ### 已知坑
 
 - 所有软挂载都在实例上，不在类上：上游同步后必须逐条核对，contract.json 的
   `soft_mounts` 是这份清单的唯一事实源。
 - 备份目录永不清理，长期使用会累积原图副本（有意为之：撤销与追溯优先）。
+- **外边界羽化会在边缘带里保留最多 8 像素的原始像素**：一个大缺陷的最外圈因此可能
+  残留极细痕迹。这是「接缝平整」与「边缘残留」之间的固有取舍，宽度随短边自适应
+  （短边 ≤10 像素或小于一个纹理块时为 0，即这两类框逐字节等于旧实现）。
+- **`feather_alpha(..., ramp=RAMP)` 与 `fill_roi(..., ramp=RAMP)` 的默认值在定义期
+  绑定**：运行时改 `texture_fill.RAMP` 对已经定义好的默认参数无效（本轮有意不动，
+  要换块间羽化宽度必须重载模块或显式传参）。
 - 细长碎块（ROI 某边减去 12 后剩 1~5 像素，例如 29x29 的 5 像素条带、40x30 的
   4 像素条带）仍走 `MIN_SIDE=6` 的跳过分支，那条带会保留缺陷像素；对齐贴片机制
   本可覆盖它，但会改变 40x30 这类「正常尺寸」ROI 的结果，属独立决策。
@@ -1414,6 +1450,164 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 - 裁切丢 EXIF 与 ICC（只写像素与 mode，不搬元数据）。
 - 解析只按 stem 归属：不同输入目录下的同名 stem 会共享标记与徽标。
 - 与上游「保存裁剪图像」（按标注形状批量裁切）是两件事：本功能按固定框裁，不读标注。
+
+## preview_tool
+
+### 职责
+
+拖入（或经 Ctrl+O 选择）一个图片目录，按**文件名自然排序**逐张预览，并把同名 LabelMe
+json 的标注叠加在图上（矩形可按设定像素外扩）；第二行工具栏是过滤：总开关打开后，
+**得分轴**与**尺寸轴（4 模式）**必须同时通过，**类别轴**（候选 = 全部 label 并上伪类别
+「背景」）独立判定。挑选是按当前图的**双向开关**：未挑选时把图与边车 json 拷进
+<输出目录>/picked/，已挑选时把 picked/ 里该 stem 的**全部副本移入 dsh-trash**
+（移动，不是删除）。另有「全部拷贝」。窗口是非模态 QDialog，参数走 QSettings 持久化，
+**没有历史栈**：源图永不被改动，反向操作随时可以再执行一次。
+
+### 代码与体量
+
+`anylabeling/custom/preview_tool/`（13 个文件 5142 行：`dialog.py` 1470 行是窗口与交互，
+`pick_core.py` 515 行是不依赖 Qt 的挑选与移除文件层（`dsh-trash` 的移动、stem 家族
+匹配与探测），`viewer.py` 505 行是缩放与平移视图，`worker.py` 464 行是目录扫描与
+QImage 预加载，`core.py` 417 行是扫描、标注解析与过滤（纯数据层），`settings.py`
+444 行是 QSettings 包装，`overlay.py` 338 行是标注层与矩形外扩，`pick_worker.py`
+330 行是拷贝、移除与探测线程，`category_filter.py` 266 行是多选类别菜单，
+`list_panel.py` 221 行是带对钩的文件列表，`installer.py` 75 行、`__init__.py`
+50 行、`launcher.py` 47 行只做入口与挂载）；测试
+`tests/custom/preview_tool/`（8 个文件 3492 行，共 226 个用例，其中 1 个图标用例在
+offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`，行数取 `wc -l`。
+
+本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以
+`docs/custom/contract.json` 为准。
+
+### 入口符号
+
+`anylabeling.custom.preview_tool` 导出的 `install_preview_tool`（幂等安装：重复
+调用不会加出第二个 Tool 菜单项）与 `launch_preview_tool`（惰性导入窗口、每个 widget
+一个实例，第二次调用只把已有窗口再抬起来并请它重扫目录）。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom.preview_tool import install_preview_tool`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`，在
+  `reset_view_on_switch.install_reset_view_on_switch(self)  # 换图复位缩放/视图` 与
+  `install_crop_tool(self)  # 裁图工具` 之间）：`install_preview_tool(self)`
+- 软挂载（两条）：`widget._preview_tool_dialog` 由 `launch_preview_tool` 在
+  `anylabeling/custom/preview_tool/launcher.py` 里读写（第二次打开复用同一个窗口，
+  `destroyed` 时清空引用）；键盘事件过滤器由 `PreviewDialog.eventFilter` 在
+  `anylabeling/custom/preview_tool/dialog.py` 里装到**窗口自己**身上。
+- **只改上游两行**：本功能对上游文件的全部影响就是这两行挂载点（Tool 菜单项在包内的
+  `installer.py` 里运行时追加），锚点原文必须**恰好命中 1 行**才是「装上了」。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.menus` | direct | 运行时把「预览工具」动作追加进 Tool 菜单（无静态菜单挂载点） |
+| `LabelingWidget.last_open_dir` | direct | 新窗口的初始目录 |
+| `anylabeling/views/labeling/utils/qt.py` 的 `new_action` | direct | 构造菜单动作 |
+| `anylabeling/views/labeling/utils/qt.py` 的 `new_icon_path` | direct | 取菜单动作图标（资源 `anylabeling/resources/images/image.svg`） |
+
+上游把 `LabelingWidget.menus` / `last_open_dir` 改名、或 `new_action` /
+`new_icon_path` 换名或换签名时，契约自检立刻报 FAIL；菜单或初始目录出错只影响入口，
+预览与挑选的文件层不受影响。
+
+### 行为级契约（不可机器校验）
+
+- **R1 排序与扫描范围**：只扫目录**顶层**（不递归）；排序**永远**是文件名自然排序
+  （数字段按数值比较，`image_2` 在 `image_10` 之前；只有 ASCII 十进制数字段按
+  数值走，其它字符逐字符小写比较），没有「按修改日期」这个选项。
+- **R2 过滤总开关**：默认**关闭**；关闭 = 三项全部不生效，列表就是目录里的全部图片。
+- **R3 三个轴的合成关系**：`keep = (无标注 且 勾了「背景」) 或 (至少一个命中勾选类别的
+  shape 通过得分轴 且 至少一个通过尺寸轴)`；两根轴可以不是同一个 shape（与参考实现
+  `should_filter = all_low_score or not any_size_match` 逐字等价）。**已知副作用
+  （有意为之，不是 bug）**：得分阈值调到 0.00 只放宽得分轴，放宽不了尺寸轴；反之亦然。
+- **R4 得分轴**：默认 0.45，范围 0..1、步进 0.05；缺失 score（XAL 手工标注）等价于不满足
+  任何大于 0 的阈值（数值上与参考实现的 `None` 当 0.0 一致），叠加文本显示 `-`
+  而不是 `0.00`；阈值 0.00 时得分轴关闭（该轴恒真）。
+- **R5 尺寸轴 4 模式**：宽或高大于 / 宽和高都大于 / 宽或高小于 / 宽和高都小于；比较是
+  **严格**小于 / 严格大于（正好等于阈值的 shape 两根轴都不通过）；阈值标签随模式在
+  `宽大于` / `宽小于` 之间切换；宽、高阈值各自可调。
+- **R6 类别轴**：候选 = 全部 label 并上伪类别 `背景`；`背景` = 无标注（label
+  集合为空）的图片，**默认勾选**，它替代了参考实现里那个独立的「无标注」开关（两个控件
+  会互相打架，故合并成一个）；全部勾选 = 不做类别过滤；**一个分类都不勾（菜单「清空」）
+  会把全部图片过滤掉、列表为空**（该状态会被按目录持久化）。
+- **R7 标注叠加与外扩**：拓展像素 `expand_px` 0..100（默认 5），**只对 rectangle
+  生效**；文本标签跟随外扩后的左上角。其它 shape 类型按 LabelMe 的形态绘制。
+- **R8 长按连发**：按左右方向键（或 A/D）首次按键**立即**翻 1 张；按住 500 ms 判定为
+  长按后按 `speed`（1..30 张/秒，默认 5）连发；没有「步长」参数。
+- **R9 挑选（拷贝）**：`pick_one` 把图拷到 `<输出目录>/picked/`，同名边车
+  `.json` 一并拷贝（存在才拷）；**绝不覆盖**同名文件，重名改 `stem_1.ext` /
+  `stem_2.ext`…；`picked/` 不存在则自动创建；目标名用 `open(target, "xb")`
+  **原子占名** + `shutil.copy2`，不创建任何待删的占位文件；输出目录默认
+  `os.getcwd()`（**每次现取、不回写**），一旦用户显式选择就持久化
+  （`anylabeling/custom/preview_tool/settings.py` 的 `output_dir` 键）。
+- **R10 移除 = 移入 dsh-trash，不是删除**：`unpick_one` / `unpick_stem` 用
+  `shutil.move` 把 picked/ 里的文件移到系统临时目录的 `dsh-trash`
+  下、命名为 <时间戳>-<原名>；预览工具在任何路径上**都不调用** `os.remove` /
+  `os.unlink` / `Path.unlink` / `shutil.rmtree`；状态行与日志双写
+  「已移除 N 个文件」并附每个**完整目标路径**（可从该目录恢复）。
+- **R11 全部拷贝**：只处理列表里**尚未挑选**的图（同名即跳过、计入 skipped）；后台线程池
+  并行 + 进度 + 可取消，开跑前有确认框（列出待拷张数，默认答「否」）。
+- **R12 按图双向开关（每张图各自可撤回，无历史栈）**：工具栏第 1 行只有一个随状态切换的
+  按钮，当前图不在 picked/ 时显示「拷贝到 picked」、已在时显示「移入 dsh-trash」；
+  换图 / 勾选 / 拷贝完成 / 移除完成后立即刷新（与行内对钩同步）。判定口径 =
+  `pick_core.pick_state`（按 stem 家族匹配、忽略扩展名差异；只看图片扩展名白名单，
+  **只有边车 json 不算已挑选**）。撤销**不需要历史栈**：源图从不被改动，反向操作随时
+  可以再执行一次，「拷到 → 移除 → 再拷」的状态往返就是每图独立可逆的验收点，且与操作
+  先后顺序、与其它图片的状态完全无关。
+- **R13 移除范围 = 该 stem 的全部副本**：`unpick_stem` 移走 picked/ 中所有 stem 家族
+  匹配的图片（`a`、`a_1`、`a_2`…）及各自边车。因为 picked/ 是**扁平**
+  目录；若只移走序号最小的那个，`pick_state` 仍为 True、按钮状态不翻转，开关就会
+  是坏的。
+- **R14 快捷键**：Space = 上述 toggle；Delete = **只做移除**（当前图不在 picked/ 时只写
+  状态行提示，零文件操作）；← / → 与 A / D 翻图、Ctrl+O 打开目录、B 按住隐藏标注、
+  Home / End 首末张、Esc 关窗；**没有 Ctrl+Z**。快捷键只在预览窗口激活时生效（事件
+  过滤器装在 QDialog 自己身上且要求 `isActiveWindow()`）；数值 / 文本输入控件里按键
+  一律放行。
+- **R15 已挑选标记（探测）**：打开目录后、每次拷贝 / 移除后、输出目录变更后**后台探测**
+  picked/，命中的行加对钩前缀；扫描期间到达的探测请求由 250 ms 合并处理，只跑一次。
+- **R16 持久化**：8 项参数（过滤总开关、得分阈值、尺寸模式、宽阈值、高阈值、拓展像素、
+  长按速度、输出目录）写在 `anylabeling/custom/preview_tool/settings.py` 的
+  键前缀 `KEY_PREFIX` 之下（即 settings 键名的 custom/preview_tool 前缀），
+  存储用 `QSettings("anylabeling", "anylabeling")`；类别勾选**按目录**存储，最多 32 个
+  目录，每目录的键做百分号转义成单段。
+- **R17 千张级目录**：扫描 / 标注解析、预加载、拷贝 / 移除 / 探测全部在后台线程；
+  改阈值 / 勾类别**不重新读盘**——过滤是对目录快照做的纯计算。
+
+### 测试
+
+`python -m pytest -p no:cacheprovider tests/custom/preview_tool -v`
+（本工作区用 `.venv/bin/python` 跑；offscreen 由 conftest 设置）
+（需 PyQt6）。目录里实际落地 **226 个用例**（225 passed + 1 skipped）：
+`test_pt_core.py` 覆盖自然排序、扫描范围、标注解析与三轴过滤，`test_pt_pick.py`
+覆盖拷贝与移入 dsh-trash（含 `xb` 占名、重名跳号、stem 家族与不可逆性防护），
+`test_pt_settings.py` 覆盖 8 项默认值与按目录类别键，`test_pt_worker.py` 覆盖
+扫描、预加载线程与取消，`test_pt_dialog.py` 与 `test_pt_ui.py` 覆盖窗口、开关
+按钮、快捷键与状态行，`test_pt_mount.py` 覆盖挂载点两行、菜单项幂等安装与每个
+widget 一个窗口。
+
+### 已知坑
+
+- 上游 `shape.py` 的 `score` 可能为 `None`：**不要**写
+  `float(shape.get("score"))`；数值上按 0.0 比较、显示成 `-`。
+- 得分轴与尺寸轴是「与」：两根轴由**不同** shape 满足也算通过，调低一根轴的阈值
+  **放宽不了**另一根轴（有意设计，不是 bug）。
+- 删除必须走 `shutil.move` 到 `dsh-trash`；`os.remove` / `unlink` /
+  `rmtree` 在本仓库一律禁止，移动后要把每个**完整路径**报给用户。
+- 参考实现的 `pick_manager.pick` 用 `os.remove` 删占位文件、`unpick` 用
+  `os.remove` 删文件，**不可照抄**。
+- 扁平目录 + stem 家族匹配会把**非本工具**放入的同 stem 文件也视为已挑选并移入
+  `dsh-trash`（不加确认框，改为在状态行与日志里报出每个完整路径）。
+- 工作线程里不能建 `QPointF` / `QGraphicsItem`；
+  `ImageEntry.shapes[].points` 是 `tuple[tuple[float, float]]`。
+- `QImage(path)` 可以**在线程池里**解码，而 `QPixmap` **只能**在主线程建。
+- 事件过滤器只能装在预览窗口**自己**身上：装到 `QApplication` 上会吞掉主窗口的
+  快捷键。
+- 上游 `QSettings` 键名会做百分号转义，每目录的类别键必须转义成**单段**，否则
+  Windows 路径会串键。
+- 只有边车 json 不构成已挑选：判定只看图片扩展名白名单。
+- Qt 资源 `export.svg` / `trash.svg` 只在 app 启动时注册，offscreen 测试下
+  `QIcon` 为空，图标用例因此 skip。
 
 ## 变更台账
 
