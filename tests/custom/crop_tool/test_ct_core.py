@@ -254,8 +254,10 @@ class TestCropImage:
         with pytest.raises(core.CropError, match="输出目录不可写"):
             core.crop_image(source, 0, 0, 2, 2)
 
-    def test_default_output_dir_is_the_cwd(self):
-        assert core.default_output_dir() == os.getcwd()
+    def test_default_output_dir_is_the_cwd_subdirectory(self):
+        assert core.default_output_dir() == os.path.join(
+            os.getcwd(), core.OUTPUT_SUBDIR
+        )
 
 
 class TestNoGuiDependency:

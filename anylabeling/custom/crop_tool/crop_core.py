@@ -47,6 +47,7 @@ __all__ = [
     "MAX_IMAGE_PIXELS",
     "MAX_NAME_ATTEMPTS",
     "MAX_NAME_BYTES",
+    "OUTPUT_SUBDIR",
     "PART_SUFFIX",
     "PASSTHROUGH_MODES",
     "SAVE_FORMATS",
@@ -98,6 +99,9 @@ MAX_NAME_BYTES = 240
 
 #: Marker that opens the coordinate block of a crop name.
 CROP_MARK = "__x"
+
+#: Subdirectory of the default output directory the crops land in.
+OUTPUT_SUBDIR = "crop"
 
 #: Suffix of the temporary file a crop is written to first.
 PART_SUFFIX = ".part"
@@ -230,11 +234,14 @@ def natural_key(value: str) -> List[Tuple[int, object]]:
 def default_output_dir() -> str:
     """Return the output directory of a run that has none configured.
 
-    The current working directory is fetched on every call: the
-    default is deliberately never cached and never written back.
+    The crops land in a crop/ subdirectory of the current working
+    directory, so a run never drops its files straight into the
+    folder the application was started from. The working directory
+    is fetched on every call: the default is deliberately never
+    cached and never written back.
     """
 
-    return os.getcwd()
+    return os.path.join(os.getcwd(), OUTPUT_SUBDIR)
 
 
 def output_extension(source_path: str) -> str:

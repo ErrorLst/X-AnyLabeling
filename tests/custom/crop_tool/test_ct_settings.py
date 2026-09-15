@@ -79,7 +79,7 @@ class TestRoundTrip:
 
 
 class TestOutputDefault:
-    """The output directory default is the cwd, fetched every time."""
+    """The default output directory is cwd/crop, fetched every time."""
 
     def test_cwd_is_fetched_on_every_read(self, ct_store, monkeypatch):
         settings, _ini = ct_store
@@ -90,14 +90,14 @@ class TestOutputDefault:
             return "/ct-cwd/{}".format(len(calls))
 
         monkeypatch.setattr(os, "getcwd", fake_getcwd)
-        assert settings.output_dir() == "/ct-cwd/1"
-        assert settings.output_dir() == "/ct-cwd/2"
+        assert settings.output_dir() == "/ct-cwd/1/crop"
+        assert settings.output_dir() == "/ct-cwd/2/crop"
 
     def test_empty_value_falls_back_to_the_cwd(self, ct_store, monkeypatch):
         settings, _ini = ct_store
         settings.set_output_dir("")
         monkeypatch.setattr(os, "getcwd", lambda: "/ct/cwd")
-        assert settings.output_dir() == "/ct/cwd"
+        assert settings.output_dir() == "/ct/cwd/crop"
 
 
 class TestClamping:

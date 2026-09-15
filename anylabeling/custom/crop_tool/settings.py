@@ -6,10 +6,11 @@ raises on a read: a missing, empty or malformed value falls back to
 the default of its key and is clamped to the range of the spin box it
 feeds.
 
-The output directory is the only value with a computed default: it is
-the current working directory, fetched on every read and never
-written back. The source folder is not stored at all: the dialog
-keeps it in memory only, so the window always opens empty.
+The output directory is the only value with a computed default: it
+is the crop/ subdirectory of the current working directory, fetched
+on every read and never written back. The source folder is not
+stored at all: the dialog keeps it in memory only, so the window
+always opens empty.
 
 The store is handed to the constructor, so a test can give the
 wrapper an INI file of its own instead of the store of the user.
@@ -104,7 +105,7 @@ class CropSettings:
         )
 
     def output_dir(self) -> str:
-        """Return the output directory, the cwd when none is stored."""
+        """Return the output directory, cwd/crop when none is stored."""
 
         stored = self._read_text("output_dir")
         if stored:

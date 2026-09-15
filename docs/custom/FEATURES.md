@@ -1457,7 +1457,7 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   每次裁切成功（append 新记录）、每次 Del 后（整表重建）；同名 stem 视为同一原图（与徽标同口径）。
 - **R12 持久化、默认值与线程**：`QSettings("anylabeling", "anylabeling")` 的
   `custom/crop_tool/{width,height,pad_width,pad_height,output_dir}`；默认 640/640/0/0；
-  `output_dir` 未设置时每次取 `os.getcwd()`（不缓存、不写回），只有用户显式选择才持久化；
+  `output_dir` 未设置时每次取 `os.getcwd()/crop`（不缓存、不写回），只有用户显式选择才持久化；
   输入目录**只存在于内存、不持久化**，窗口永远空着打开（旧版本留下的 `input_dir` 键被忽略）；
   填充固定 0，不持久化；不用线程（扫描与重建标记各一次 `scandir`），非模态窗口 + 每主窗口
   单实例复用（`widget._crop_tool_dialog` + `destroyed` 清理），无取消按钮。
@@ -1477,7 +1477,7 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   下一次裁切跳到 `__2`。
 - 输入目录里若有文件名**恰好符合模板**（用户自己命名的），会被当成自家产物跳过，不再出现在列表里。
 - 输出目录 == 输入目录时，靠模板名排除自家产物；裁完要**重扫**才刷新列表。
-- 默认输出目录 = `os.getcwd()`：从快捷方式或只读目录启动时裁切会报「输出目录不可写」（不崩溃；
+- 默认输出目录 = `os.getcwd()/crop`：从快捷方式或只读目录启动时裁切会报「输出目录不可写」（不崩溃；
   改一次输出目录即持久化）。
 - 扫描集合不含 heic/heif：这类图片不会被列出。
 - 裁切丢 EXIF 与 ICC（只写像素与 mode，不搬元数据）。
