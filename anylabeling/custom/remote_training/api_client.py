@@ -27,9 +27,11 @@ Timeouts and retry
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import os.path as osp
+import re
 import time
 from dataclasses import dataclass
 from typing import (
@@ -44,6 +46,7 @@ from typing import (
     Sequence,
     Tuple,
 )
+from urllib.parse import urlsplit
 
 import requests
 
@@ -52,6 +55,7 @@ __all__ = [
     "BACKOFF_LADDER",
     "BACKOFF_MAX_SECONDS",
     "CONSUMED_ROUTE_KEYS",
+    "DEFAULT_BODY_EXCERPT_LIMIT",
     "HEALTH_STATE_OK",
     "HEALTH_STATE_TRAINING_DISABLED",
     "HEALTH_STATE_UNAUTHORIZED",
@@ -59,6 +63,8 @@ __all__ = [
     "INSTALL_COMMAND",
     "JOBS_BATCH_LIMIT_DEFAULT",
     "NON_CONSUMED_ROUTE_KEYS",
+    "NO_PROXY_MAPPING",
+    "PROXY_POLICY_NOTE",
     "RED_BAR_NO_RESPONSE_THRESHOLD",
     "RESUME_MODES",
     "ROUTES",
@@ -86,6 +92,7 @@ __all__ = [
     "JobArtifactsExpiredError",
     "JobNotFoundError",
     "JobNotResumableError",
+    "NonJsonResponseError",
     "LabelChecksumMismatchError",
     "MalformedResponseError",
     "ManifestMismatchError",
@@ -122,13 +129,18 @@ __all__ = [
     "backoff_delay",
     "chunked",
     "error_type_for",
+    "host_is_loopback",
     "is_safe_method",
     "map_error",
     "normalize_base_url",
     "probe_health_states",
+    "redact_secret",
+    "request_proxies",
     "raise_for_envelope",
     "require_streaming_multipart",
     "reset_multipart_cache",
+    "response_body_excerpt",
+    "response_category",
     "route",
     "submit_warnings",
     "upload_warnings",
@@ -187,6 +199,10 @@ class MalformedResponseError(TransportError):
     received, so ``RetryPolicy`` never mistakes a gateway HTML page
     for "no HTTP response" (spec §5.5.6: any HTTP response clears the
     no-response counter and only 5xx keeps climbing the ladder).
+
+    The same status is what makes a response that failed to decode
+    distinguishable (see ``NonJsonResponseError``): the message text
+    stays identical to v1 on purpose.
     """
 
     def __init__(
@@ -196,6 +212,55 @@ class MalformedResponseError(TransportError):
         self.http_status: Optional[int] = (
             int(http_status) if http_status is not None else None
         )
+
+
+class NonJsonResponseError(MalformedResponseError):
+    """A response that carried no decodable JSON envelope.
+
+    The message and ``http_status`` are unchanged from v1
+    (``"HTTP <status>: response is not JSON"``), so nothing that
+    branches on the text or on ``RetryPolicy.retryable`` changes.  The
+    class adds machine readable discriminators instead of new prose:
+
+    content_type
+        Lower case media type without parameters ("" when absent).
+    category
+        "proxy" when a middlebox most likely answered instead of the
+        training service, "port" when the target answered with something
+        that is not the contract, "other" otherwise.  See
+        ``response_category``.
+    body_excerpt
+        Sanitised, truncated start of the body; never a header and never
+        a credential (``redact_secret`` ran over it).
+    url
+        Full request URL when the caller could supply it.
+    loopback
+        True when the request went to a loopback / local address.
+
+    Everything here is per-instance: ``str(exc)`` is unchanged.
+    """
+
+    def __init__(
+        self,
+        response: Any = None,
+        message: Optional[str] = None,
+        *,
+        secret: Optional[str] = None,
+        url: Optional[str] = None,
+    ) -> None:
+        status = getattr(response, "status_code", None)
+        if message is None:
+            message = f"HTTP {status}: response is not JSON"
+        if url is None:
+            url = getattr(response, "url", None)
+        self.content_type: str = _content_type(response)
+        self.body_excerpt: str = redact_secret(
+            response_body_excerpt(response), secret
+        )
+        self.url: Optional[str] = None if url is None else str(url)
+        self.loopback: bool = host_is_loopback(self.url)
+        self.category: str = response_category(response)
+        super().__init__(message, status)
 
 
 class MissingDependencyError(RemoteTrainingError):
@@ -1188,14 +1253,188 @@ def normalize_base_url(base_url: str) -> str:
     return text.rstrip("/")
 
 
-def _decode_json(response: Any) -> Any:
+def _decode_json(response: Any, secret: Optional[str] = None) -> Any:
     try:
         return response.json()
     except ValueError as exc:
-        raise MalformedResponseError(
-            f"HTTP {response.status_code}: response is not JSON",
-            response.status_code,
-        ) from exc
+        raise NonJsonResponseError(response, secret=secret) from exc
+
+
+# --------------------------------------------------------------------
+# Proxy policy and non-JSON diagnostics
+# --------------------------------------------------------------------
+
+#: Characters of a body kept in NonJsonResponseError.body_excerpt.
+DEFAULT_BODY_EXCERPT_LIMIT = 200
+
+#: This client never uses an HTTP/HTTPS proxy: every request carries
+#: this pair of empty mappings explicitly, so neither the environment
+#: nor a system (WinINET) configuration can route it - the loopback
+#: address included.
+NO_PROXY_MAPPING: Dict[str, None] = {"http": None, "https": None}
+
+#: One line description of the policy, for callers that display it.
+PROXY_POLICY_NOTE = "本客户端从不使用 HTTP / HTTPS 代理（逐请求显式禁代理）"
+
+#: Key/value pairs that must never reach a message or an excerpt.
+#: The value side runs to the end of the line on purpose: a
+#: "Bearer <token>" credential must not leave its first word behind.
+_REDACT_PATTERN = re.compile(
+    r"(?i)(authorization|token|cookie|set-cookie"
+    r"|x-api-key|api[_-]?key)\b\s*[:=]\s*\S.*"
+)
+
+
+def request_proxies(url: Any = None) -> Dict[str, None]:
+    """Always return a copy of NO_PROXY_MAPPING.
+
+    Loopback and non-loopback hosts are treated identically: this
+    client simply never uses a proxy (recorded user decision).
+    """
+
+    return dict(NO_PROXY_MAPPING)
+
+
+def host_is_loopback(url: Any) -> bool:
+    """True only for the loopback / local address forms the client names.
+
+    Used for diagnostics and wording only; it never selects a proxy
+    policy (that is request_proxies, which is proxy free for every
+    host).  Accepted: "localhost", "*.localhost", dotted quads
+    "127.<x>.<y>.<z>" (every octet digits only), "0.0.0.0", "::1" and
+    "[::1]".  Scheme-less input is treated as a host and port.
+    """
+
+    if not url:
+        return False
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:  # pragma: no cover - urlsplit rarely raises
+        return False
+    if not parts.scheme and not parts.netloc:
+        parts = urlsplit("//" + str(url))
+    host = str(parts.hostname or "").strip().strip("[]").lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    if host in ("::1", "0.0.0.0"):
+        return True
+    octets = host.split(".")
+    if len(octets) != 4 or octets[0] != "127":
+        return False
+    return all(octet.isdigit() for octet in octets)
+
+
+def redact_secret(text: Any, secret: Any = None) -> str:
+    """Strip credentials and the caller's token out of free text.
+
+    Two passes: header style "Key: value" pairs, then the client token
+    itself (when it is a non-empty string of at least 4 characters).
+    Never raises: a diagnostic must not become a new failure mode.
+    """
+
+    try:
+        out = str(text)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    try:
+        out = _REDACT_PATTERN.sub(r"\1: ***", out)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if secret is not None:
+        token = str(secret)
+        if len(token) >= 4:
+            try:
+                out = re.sub(re.escape(token), "***", out)
+            except Exception:  # pragma: no cover - defensive
+                pass
+    return out
+
+
+def _body_text(response: Any) -> str:
+    """Decode the first body representation the response offers."""
+
+    raw = getattr(response, "content", None)
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw).decode("utf-8", "replace")
+    if raw is not None:
+        return str(raw)
+    text = getattr(response, "text", None)
+    if text is not None:
+        return str(text)
+    try:
+        payload = response.json()
+    except Exception:
+        return ""
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:  # pragma: no cover - defensive
+        return str(payload)
+
+
+def _clean_excerpt(text: str) -> str:
+    """HTML comment / tag strip + whitespace fold of a short fragment."""
+
+    try:
+        text = html.unescape(html.unescape(text))
+        text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+        text = re.sub(r"<[^>]*>", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+    except Exception:  # pragma: no cover - defensive
+        return text
+
+
+def response_body_excerpt(
+    response: Any, limit: int = DEFAULT_BODY_EXCERPT_LIMIT
+) -> str:
+    """Sanitised, bounded start of a response body (never a header).
+
+    The body is cut to ``limit`` characters *before* it is cleaned, so
+    both the work and the result stay bounded.  Cleaning is
+    html.unescape -> drop "<!-- ... -->" -> drop "<...>" -> fold
+    whitespace -> strip; a cut fragment gains a trailing ellipsis.
+    """
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        limit = DEFAULT_BODY_EXCERPT_LIMIT
+    if limit <= 0:
+        return ""
+    try:
+        text = _body_text(response)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    truncated = len(text) > limit
+    cleaned = _clean_excerpt(text[:limit])
+    if truncated and cleaned:
+        cleaned += "\u2026"
+    return cleaned
+
+
+def response_category(response: Any) -> str:
+    """Classify a response that is not a decodable contract envelope.
+
+    "proxy"  the status and media type of an intercepting middlebox
+             (403, 407, 502, 503, 504 with an HTML body).
+    "port"   something unrelated answered on this port: an explicit
+             missing/unsupported/unimplemented status, or a short
+             non-HTML body no training service would return.
+    "other"  anything left over.
+    """
+
+    status = int(getattr(response, "status_code", 0) or 0)
+    content_type = _content_type(response)
+    excerpt = response_body_excerpt(response)
+    is_html = "html" in content_type or excerpt.lstrip()[:1] == "<"
+    if status in (403, 407, 502, 503, 504) and is_html:
+        return "proxy"
+    if status in (404, 426, 501):
+        return "port"
+    if not is_html and len(excerpt) < 200:
+        return "port"
+    return "other"
 
 
 class _DrainedBody:
@@ -1326,6 +1565,18 @@ class RemoteTrainingClient:
         timeout: Optional[Tuple[float, float]] = None,
         stream: bool = False,
     ) -> Any:
+        """One transport call for every route of this client.
+
+        The proxy policy is applied here and nowhere else: the
+        ``proxies`` argument is always ``request_proxies(url)``,
+        i.e. proxy free for loopback and non-loopback hosts alike.
+        ``trust_env`` / an injected session are left untouched; the
+        explicit per-request mapping is what overrides both the
+        environment and a system proxy configuration.
+        Any connection error message is redacted (Token header and
+        credential shaped fields) before it reaches TransportError.
+        """
+
         url = self.url_for(path.format(**(path_params or {})))
         merged = self.auth_headers()
         if headers:
@@ -1340,9 +1591,12 @@ class RemoteTrainingClient:
                 headers=merged,
                 timeout=timeout or self.timeouts.json_request(),
                 stream=stream,
+                proxies=request_proxies(url),
             )
         except requests.RequestException as exc:
-            raise TransportError(f"{method} {url}: {exc}") from exc
+            raise TransportError(
+                redact_secret(f"{method} {url}: {exc}", self.api_key)
+            ) from exc
 
     def _json(
         self,
@@ -1371,7 +1625,7 @@ class RemoteTrainingClient:
                     data=data,
                     headers=headers,
                 )
-                payload = _decode_json(response)
+                payload = _decode_json(response, self.api_key)
                 return raise_for_envelope(
                     payload, response.status_code, key, response.headers
                 )
@@ -1409,7 +1663,7 @@ class RemoteTrainingClient:
         if response.status_code >= 400:
             try:
                 if content_type == "application/json":
-                    payload = _decode_json(response)
+                    payload = _decode_json(response, self.api_key)
                     raise_for_envelope(
                         payload, response.status_code, key, response.headers
                     )
@@ -1532,7 +1786,7 @@ class RemoteTrainingClient:
             except UploadCancelledError:
                 self.discard_session()
                 raise
-            payload = _decode_json(response)
+            payload = _decode_json(response, self.api_key)
             return raise_for_envelope(
                 payload,
                 response.status_code,
