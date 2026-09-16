@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from .. import dataset
+from .. import history
 from .. import records as records_module
 from ..app_config import (
     RATIO_MODE,
@@ -30,6 +31,7 @@ from ..main_window_bridge import MainWindowBridge
 from ..pipeline import STAGE_STAGING, ValidationWorker
 from ..report import build_report
 from .config_page import ConfigPage
+from .history_page import HistoryPage
 from .progress_page import ProgressPage
 from .results_page import ResultsPage
 
@@ -73,6 +75,29 @@ FOLLOW_DEBOUNCE_MS = 200
 # directory: the pair count of that folder is not known yet.
 SCAN_PENDING_TEXT = "扫描中…"
 
+# The debounce of the state file write: a burst of marks or of record
+# switches costs one write of the state.json of the run once the user
+# stopped, never one per click.
+STATE_SAVE_DEBOUNCE_MS = 800
+
+# What the window says about a history command it refuses because the
+# run on screen still owns the staging folder.
+HISTORY_BUSY_STATUS = "运行或导出进行中，历史记录暂不可用"
+# What the window says about a start pressed while the history page is
+# the entry point on screen.
+HISTORY_OPEN_STATUS = "历史记录已打开，请先关闭历史记录再开始验证"
+# What the window says about a history entry it cannot restore.
+HISTORY_MISSING_STATUS = "找不到该运行目录，无法恢复"
+# What the history page says while its scan thread walks the folder.
+HISTORY_SCAN_FAILED_TEMPLATE = "扫描历史失败：{message}"
+
+# The one bounded wait a history scan thread gets before the window
+# stops owning it. A walk of a busy temporary directory can take longer
+# than this, and the close must not freeze on it: what is left running
+# is detached from the window and finishes on its own (see
+# _detach_history_scan).
+HISTORY_SCAN_WAIT_MS = 3000
+
 
 def stack_minimum_size(stack: QtWidgets.QStackedWidget) -> QtCore.QSize:
     """Return the size every page of a stacked widget needs.
@@ -101,6 +126,63 @@ def initial_window_height(content_height: int, available_height: int) -> int:
     if available_height > 0:
         wanted = min(wanted, int(available_height))
     return max(wanted, MINIMUM_HEIGHT)
+
+
+# Every scan thread that was detached from its window while it was
+# still walking the temporary directory. The set is the one owner of
+# those threads: Qt destroys the QThread of a window with its parented
+# children, and destroying a live one aborts the process, so a worker
+# that outlived its window is unparented, kept here - which is what
+# keeps its Python and C++ side alive - and asks to be released on its
+# own finished signal.
+_ORPHAN_SCANS: set = set()
+
+
+def _orphan_scan_finished(worker: Any) -> None:
+    """Release a detached scan thread once it left its run().
+
+    The worker is handed in by the connection that made it an orphan:
+    QtCore.QObject.sender() is not usable from a plain Python callable.
+    Only the reference the registry holds is dropped here - the worker
+    is never deleted from inside its own emission; a finished QThread
+    is collected by itself once nothing points at it.
+    """
+
+    _ORPHAN_SCANS.discard(worker)
+    waiter = getattr(worker, "wait", None)
+    if callable(waiter):
+        try:
+            waiter(0)
+        except TypeError:
+            pass
+
+
+class _HistoryScanWorker(QtCore.QThread):
+    """Walk the temporary directory for the staging folders, off the UI.
+
+    The walk belongs to a thread of its own because a temporary
+    directory full of old runs costs one readdir plus one stat per
+    candidate, and the window must keep painting while that happens.
+    Nothing but the scan runs here and no exception may leave run():
+    an error is reported on failed instead of aborting the process.
+    """
+
+    ready = QtCore.pyqtSignal(list)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, temp_root: Optional[str] = None, parent=None) -> None:
+        super().__init__(parent)
+        self.temp_root = temp_root
+
+    def run(self) -> None:
+        """List the runs of the temporary directory, never raising."""
+
+        try:
+            runs = history.list_runs(self.temp_root)
+        except Exception as error:  # noqa: BLE001
+            self.failed.emit(str(error))
+            return
+        self.ready.emit(list(runs))
 
 
 class ModelValidationDialog(QtWidgets.QDialog):
@@ -145,14 +227,41 @@ class ModelValidationDialog(QtWidgets.QDialog):
         # the window whose activation lifts this one, and that holds the
         # event filter of this dialog (see _install_activate_filter)
         self._activate_filter_target: Optional[Any] = None
+        # the history page and the scan thread that fills it: the thread
+        # is held here so a walk still running while the next one is
+        # asked for is waited for instead of being destroyed alive
+        self._history_scan: Optional[_HistoryScanWorker] = None
+        # the summaries of the last finished scan: a restore looks its
+        # run up here, and only a restorable entry is ever accepted
+        self._history_runs: List[history.RunSummary] = []
+        # scan threads that finished their run but were not waited for
+        # yet: they are kept alive until the window closes, because
+        # destroying a live QThread aborts the process
+        self._detached_history_scans: List[_HistoryScanWorker] = []
+        # True while the history page is the entry point on screen: it
+        # blocks the start of a run, and both exits - a restore and the
+        # close of the page - clear it again
+        self._history_mode: bool = False
+        # the debounced write of the state.json of the current run: a
+        # burst of marks costs one write (see _schedule_state_save)
+        self._state_dirty: bool = False
+        self._state_timer = QtCore.QTimer(self)
+        self._state_timer.setSingleShot(True)
+        self._state_timer.setInterval(STATE_SAVE_DEBOUNCE_MS)
+        self._state_timer.timeout.connect(self._save_state_now)
 
         self.stack = QtWidgets.QStackedWidget()
         self.config_page = ConfigPage()
         self.progress_page = ProgressPage()
         self.results_page = ResultsPage()
+        # the history is the fourth page: the configuration, the progress
+        # and the results page keep the indexes the window and its tests
+        # have always used
+        self.history_page = HistoryPage()
         self.stack.addWidget(self.config_page)
         self.stack.addWidget(self.progress_page)
         self.stack.addWidget(self.results_page)
+        self.stack.addWidget(self.history_page)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.stack)
@@ -184,6 +293,14 @@ class ModelValidationDialog(QtWidgets.QDialog):
         self.results_page.current_record_changed.connect(
             self._on_current_record_changed
         )
+
+        # the history page asks for the three things it cannot do itself:
+        # the scan of the temporary directory, a restore and the way back
+        # to the form
+        self.config_page.history_requested.connect(self.show_history)
+        self.history_page.refresh_requested.connect(self.refresh_history)
+        self.history_page.restore_requested.connect(self.restore_run)
+        self.history_page.close_requested.connect(self._close_history)
 
         # the enumeration of the source folder runs behind a worker
         # thread and a debounce: the slot that watches the path line edit
@@ -497,6 +614,464 @@ class ModelValidationDialog(QtWidgets.QDialog):
             return
         self.results_page.reload_record(str(record_id))
         self.refresh_export_summary()
+        self._schedule_state_save()
+
+    # -------------------------------------------------------------- history
+    def _history_guard(self, require_mode: bool = False) -> bool:
+        """Return True while a history command may run.
+
+        The history is refused while an export owns the event loop or
+        while a worker of a run is still alive: both keep writing the
+        very staging folder the history would replace, and the restore
+        would detach the watcher of a run that is not finished. The
+        restore is confined to the history page as well, so a stale
+        signal can never swap the run under the user's feet.
+        """
+
+        if self._exporting or not self._history_idle():
+            self._show_status_message(self.tr(HISTORY_BUSY_STATUS))
+            return False
+        if require_mode and not self._history_mode:
+            return False
+        return True
+
+    def _history_idle(self) -> bool:
+        """Return True while no worker of this window is still running."""
+
+        return self.worker is None and not self._detached_workers
+
+    def show_history(self) -> None:
+        """Open the history page and scan the temporary directory.
+
+        The list is filled behind a thread of its own: the window walks
+        thousands of folders on a busy temporary directory and would
+        freeze for the whole walk if the scan ran in this slot.
+        """
+
+        if not self._history_guard():
+            return
+        self._history_mode = True
+        self.history_page.show_runs(
+            [], current_root=self.staging_root, scanning=True
+        )
+        self.history_page.set_busy(True)
+        self.stack.setCurrentWidget(self.history_page)
+        self._start_history_scan()
+
+    def refresh_history(self) -> None:
+        """Scan the temporary directory again for the page on screen.
+
+        A refresh is the same path as the first scan, minus the page
+        switch: the user is already looking at the list, and switching
+        away and back would only blink.
+        """
+
+        if not self._history_guard():
+            return
+        self._history_mode = True
+        self.history_page.show_runs(
+            self._history_runs,
+            current_root=self.staging_root,
+            scanning=True,
+        )
+        self.history_page.set_busy(True)
+        self._start_history_scan()
+
+    def _start_history_scan(self) -> None:
+        """Start the thread that lists the runs of the temp folder."""
+
+        self._retire_history_scan()
+        worker = _HistoryScanWorker(parent=self)
+        worker.ready.connect(self._on_history_ready)
+        worker.failed.connect(self._on_history_failed)
+        worker.finished.connect(self._on_history_scan_finished)
+        self._history_scan = worker
+        worker.start()
+
+    def _retire_history_scan(
+        self, timeout_ms: int = HISTORY_SCAN_WAIT_MS
+    ) -> None:
+        """Cut a running scan off and wait for it to leave run().
+
+        The signals of the retired thread are dropped first: its answer
+        describes the folder of a request the window no longer waits
+        for. The wait is polling, because a QThread that overrides run()
+        has no event loop to quit and the only way it ends is finishing
+        the walk - an unbounded wait would freeze the window for as long
+        as the walk takes.
+
+        A wait that timed out never loses the thread: the worker is
+        detached from this window and handed to the module level set
+        that owns it until it finishes (see _detach_history_scan), so
+        the window can be destroyed while the walk is still running.
+        """
+
+        worker = self._history_scan
+        self._history_scan = None
+        if worker is not None:
+            for signal in (worker.ready, worker.failed, worker.finished):
+                try:
+                    signal.disconnect()
+                except TypeError:
+                    # a worker whose signals were never connected
+                    pass
+            self._wait_thread(worker, timeout_ms)
+            if self._thread_running(worker):
+                self._detach_history_scan(worker)
+        for retired in list(self._detached_history_scans):
+            self._wait_thread(retired, timeout_ms)
+            self._forget_detached(retired)
+
+    def _wait_thread(self, worker: Any, timeout_ms: int) -> bool:
+        """Wait for one thread, answering whether it left its run().
+
+        A worker without a usable wait() - a stub of a test, a platform
+        that refuses the call - counts as finished: there is nothing
+        left to wait for, and the window must never be frozen by it.
+        """
+
+        waiter = getattr(worker, "wait", None)
+        if not callable(waiter):
+            return True
+        try:
+            return bool(waiter(int(timeout_ms)))
+        except TypeError:
+            # a wait() that takes no timeout
+            try:
+                return bool(waiter())
+            except TypeError:
+                return True
+
+    def _thread_running(self, worker: Any) -> bool:
+        """Return True while a thread is still inside its run()."""
+
+        probe = getattr(worker, "isRunning", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe())
+        except RuntimeError:
+            # the C++ side is already gone: nothing runs any more
+            return False
+
+    def _detach_history_scan(self, worker: Any) -> None:
+        """Hand a timed out scan thread over to the module level set.
+
+        This is what keeps the promise of the close handler: a window
+        that is destroyed with a walk still running would delete the
+        QThread underneath it, and Qt aborts the whole application for
+        that. The thread is unparented - so the window owns no running
+        thread any more - remembered in _ORPHAN_SCANS, and released from
+        there on its own finished signal (see _orphan_scan_finished).
+        """
+
+        try:
+            worker.setParent(None)
+        except (AttributeError, RuntimeError):
+            pass
+        try:
+            worker.finished.disconnect()
+        except (AttributeError, TypeError):
+            pass
+        try:
+            # the argument is bound here: a plain Python slot cannot ask
+            # Qt for the sender of the signal
+            worker.finished.connect(
+                lambda: _orphan_scan_finished(worker)
+            )
+        except (AttributeError, RuntimeError):
+            pass
+        _ORPHAN_SCANS.add(worker)
+
+    def _forget_detached(self, worker: Any) -> None:
+        """Let go of one retired thread, once it really stopped.
+
+        The thread is dropped from the list while it is known to have
+        finished. One that is still running after the second wait is
+        detached like a fresh timeout: this window may not keep it.
+        """
+
+        running = self._thread_running(worker)
+        if running:
+            # the wait above timed out again: the thread keeps walking
+            # and stays owned by the module level set
+            self._detach_history_scan(worker)
+            return
+        try:
+            self._detached_history_scans.remove(worker)
+        except ValueError:
+            pass
+
+    def _on_history_ready(self, runs: list) -> None:
+        """Fill the history page with the finished scan."""
+
+        if self._history_scan is None:
+            return
+        self._history_runs = list(runs)
+        # a run the folder no longer holds is not restorable any more,
+        # so the current root is only highlighted while it is listed
+        current = (
+            self.staging_root
+            if any(
+                run.staging_root == self.staging_root
+                for run in self._history_runs
+            )
+            else ""
+        )
+        self.history_page.show_runs(
+            self._history_runs, current_root=current, scanning=False
+        )
+        self.history_page.set_busy(False)
+        self._show_status_message(
+            self.tr("找到 {count} 个历史运行目录").format(
+                count=len(self._history_runs)
+            )
+        )
+
+    def _on_history_failed(self, message: str) -> None:
+        """Report a scan that could not list the temp folder."""
+
+        if self._history_scan is None:
+            return
+        self._history_runs = []
+        self.history_page.show_runs(
+            [], current_root=self.staging_root, scanning=False
+        )
+        self.history_page.set_busy(False)
+        self.history_page.set_note(
+            self.tr(HISTORY_SCAN_FAILED_TEMPLATE).format(message=message)
+        )
+        self._show_status_message(
+            self.tr(HISTORY_SCAN_FAILED_TEMPLATE).format(message=message)
+        )
+
+    def _on_history_scan_finished(self) -> None:
+        """Release the scan thread once it left its run().
+
+        The Python side of a finished QThread is dropped without a
+        blocking wait: the walk is over by the time this slot runs, so
+        the thread is reclaimed here and waited for in closeEvent.
+        """
+
+        worker = self._history_scan
+        if worker is None:
+            return
+        self._history_scan = None
+        try:
+            worker.finished.disconnect()
+        except TypeError:
+            pass
+        self._detached_history_scans.append(worker)
+
+    def _running_history_scans(self) -> list:
+        """Return every scan thread this window still owns and runs.
+
+        Both owners are read: the scan that is in flight and the threads
+        that finished their work but were not waited for yet. A thread
+        that outlasted the bounded wait is deliberately not one of them:
+        it was unparented by _detach_history_scan and belongs to the
+        module level set from then on, so this window owns no running
+        thread any more - which is exactly what the close needs to hold.
+        """
+
+        found = [
+            worker
+            for worker in self._detached_history_scans
+            if self._thread_running(worker)
+        ]
+        current = self._history_scan
+        if current is not None and self._thread_running(current):
+            found.append(current)
+        return found
+
+    def _close_history(self) -> None:
+        """Leave the history page and go back to the form.
+
+        The flag that blocks a start has to be cleared here as well as
+        after a restore: a page the user closed is not the entry point
+        on screen any more, and keeping the flag would refuse every
+        later run of the window.
+        """
+
+        self._history_mode = False
+        self.show_config()
+
+    def restore_run(self, staging_root: str) -> bool:
+        """Rebuild one finished run on the results page.
+
+        The staging folder of that run becomes the one this window
+        works on: the records, the class table and the exports all
+        follow it, and the state it carried - the verdicts and the
+        marks - is what the page shows. The parameters of the form are
+        deliberately not restored: a restore brings a result back, it
+        never rewrites the configuration of the next run.
+        """
+
+        if not self._history_guard(require_mode=True):
+            return False
+        root = str(staging_root or "")
+        run = next(
+            (
+                entry
+                for entry in self._history_runs
+                if entry.staging_root == root
+            ),
+            None,
+        )
+        if run is None or not run.restorable:
+            self._show_status_message(self.tr(HISTORY_MISSING_STATUS))
+            return False
+        # the class table of the run on disk wins: a restore brings the
+        # run back as it was validated, and the form of the next run is
+        # not its business. Only a run that recorded no table at all
+        # falls back to the classes the window holds right now.
+        classes = self._run_classes(run.staging_root) or list(self.classes)
+        records, report = history.restore_records(run, classes)
+        restored = list(report["classes"]) or list(self.classes)
+        self.staging_root = str(report["staging_root"] or root)
+        self.records = list(records)
+        self.classes = list(restored)
+        self.meta = self._read_run_meta(self.staging_root)
+        self.model_info = {}
+        self.augment_summary = {}
+        # a restored run is a new run for everything that follows it:
+        # the warnings of the previous one are not its warnings
+        self.warnings = []
+        # the follow is re-armed exactly like a new run arms it (see
+        # start_validation): ResultsPage.set_records announces its first
+        # record again, and the same record id as the previous run - the
+        # typical restore of the same dataset - must not be answered
+        # with "already followed", which would leave the main window on
+        # the picture of the old staging folder while the edits travel
+        # to the restored one
+        self.follow_timer.stop()
+        self._pending_record_id = ""
+        self._followed_record_id = ""
+        self.results_page.set_context(list(restored), self.staging_root)
+        self.results_page.set_model_note({})
+        # the page opens on NG, and a run whose verdicts are not written
+        # yet would show an empty table under it: the filter is widened
+        # to 全部 *before* the records are handed over, so the one build
+        # the restore needs is also the one that selects the first record
+        # of the restored run (and not a left over row of the old one)
+        self.results_page.filter_combo.setCurrentIndex(0)
+        self.results_page.set_records(self.records)
+        # the note of the restore goes to the form and to the history
+        # page alone: the summary line of the results page belongs to
+        # the export formula, which the next call writes there (see
+        # refresh_export_summary)
+        text = self._restore_status_text(report)
+        self.config_page.set_status(text)
+        self.history_page.set_note(text)
+        self.refresh_export_summary()
+        self.stack.setCurrentWidget(self.results_page)
+        self.bridge.attach(self.staging_root, self.records)
+        # the history page is left behind by this switch: a later start
+        # has to be allowed again
+        self._history_mode = False
+        self._schedule_state_save()
+        return True
+
+    def _run_classes(self, staging_root: str) -> List[str]:
+        """Return the class table the state file of a run recorded.
+
+        The table is what the run was validated with; a folder without
+        a usable state file answers an empty list and the caller falls
+        back to the classes the window holds itself.
+        """
+
+        state = history.read_restore_state(staging_root)
+        if not state.get("readable"):
+            return []
+        return [str(item) for item in state.get("classes", []) or []]
+
+    def _read_run_meta(self, staging_root: str) -> Dict[str, Any]:
+        """Read the meta.json of a run folder, {} when there is none.
+
+        The meta of a restored run is only used by the paths that still
+        describe the run - a report, a follow, an export - and a folder
+        that lost its meta.json is a normal, half cleaned run: it is
+        answered with an empty mapping instead of raising.
+        """
+
+        path = osp.join(staging_root, dataset.META_FILENAME)
+        try:
+            meta = dataset.read_json(path)
+        except (OSError, ValueError):
+            return {}
+        return dict(meta) if isinstance(meta, dict) else {}
+
+    def _restore_status_text(self, report: Dict[str, Any]) -> str:
+        """Return the status line of a finished restore.
+
+        The note of the report is written first and in full: it is the
+        one line that explains a run restored without judgement data.
+        """
+
+        root = osp.basename(str(report.get("staging_root", "")))
+        parts = [self.tr("已恢复历史运行：{root}").format(root=root)]
+        note = str(report.get("note", "") or "")
+        if note:
+            parts.append(note)
+        parts.append(
+            self.tr("记录 {count}（判定 {judged} / 跳过 {skipped}）").format(
+                count=int(report.get("record_count", 0)),
+                judged=int(report.get("judged", 0)),
+                skipped=int(report.get("skipped", 0)),
+            )
+        )
+        return "；".join(parts)
+
+    # ------------------------------------------------------- state on disk
+    def _schedule_state_save(self) -> None:
+        """Ask for the debounced write of the state of the current run."""
+
+        if not self.staging_root or not self.records:
+            return
+        self._state_dirty = True
+        self._state_timer.start()
+
+    def _save_state_now(self) -> None:
+        """Write the state.json of the current run, never raising.
+
+        A staging folder that was removed under the running window is a
+        normal end of a run, not a failure of the window: the OSError of
+        the write is reported on the status line and the run keeps going
+        with everything it holds in memory.
+        """
+
+        self._state_timer.stop()
+        dirty = self._state_dirty
+        self._state_dirty = False
+        if not dirty or not self.staging_root:
+            return
+        record = self.results_page.displayed_record()
+        shown = str(record.record_id) if record is not None else ""
+        try:
+            history.save_restore_state(
+                self.staging_root,
+                self.records,
+                classes=self.classes,
+                source_display=self._state_source_display(),
+                shown_record_id=shown,
+            )
+        except OSError as error:
+            self._show_status_message(
+                self.tr("保存运行状态失败：{message}").format(
+                    message=str(error)
+                )
+            )
+
+    def _state_source_display(self) -> str:
+        """Return the source shown in the state file of the current run."""
+
+        text = str(self.meta.get("source_display", "") or "")
+        if text:
+            return text
+        for record in self.records:
+            if record.source_display:
+                return str(record.source_display)
+        return ""
 
     # ------------------------------------------------------------ validation
     def validate_config(self, config: ValidationConfig) -> List[str]:
@@ -662,6 +1237,12 @@ class ModelValidationDialog(QtWidgets.QDialog):
     def start_validation(self) -> None:
         """Validate the form and start the worker thread."""
 
+        if self._history_mode:
+            # the history page is the entry point on screen: a start
+            # from here would leave the list the user is browsing and
+            # overwrite the run the page is about to restore
+            self._show_status_message(self.tr(HISTORY_OPEN_STATUS))
+            return
         config = self.config_page.collect_config()
         problems = self.validate_config(config)
         if problems:
@@ -855,6 +1436,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
         # watcher of this folder: it has to watch the records of this very
         # run
         self.bridge.attach(self.staging_root, self.records)
+        self._schedule_state_save()
         # the jump to the first record of the run is the debounced follow
         # of the results page itself (see _follow_current_record): one
         # path, not a second call that would jump twice
@@ -880,6 +1462,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
             )
         )
         self.refresh_export_summary()
+        self._schedule_state_save()
 
     def on_toggle_export(self, record_ids: list, include: bool) -> None:
         """Toggle the export flag of the given augmented records."""
@@ -891,6 +1474,7 @@ class ModelValidationDialog(QtWidgets.QDialog):
             [record.record_id for record in changed]
         )
         self.refresh_export_summary()
+        self._schedule_state_save()
 
     def refresh_export_summary(self) -> None:
         """Update the export formula counters of the results page.
@@ -1083,6 +1667,11 @@ class ModelValidationDialog(QtWidgets.QDialog):
     def show_config(self) -> None:
         """Switch back to the configuration page."""
 
+        # leaving the history page - wherever the call comes from - is
+        # the entry point of the next run: a flag left standing would
+        # refuse every start of this window (see start_validation)
+        if self.stack.currentWidget() is self.history_page:
+            self._history_mode = False
         self.results_page.set_records(self.records)
         self.stack.setCurrentWidget(self.config_page)
         self._refresh_preview()
@@ -1090,6 +1679,8 @@ class ModelValidationDialog(QtWidgets.QDialog):
     def show_results(self) -> None:
         """Switch to the results page."""
 
+        if self.stack.currentWidget() is self.history_page:
+            self._history_mode = False
         self.stack.setCurrentWidget(self.results_page)
 
     # ------------------------------------------------------------------ size
@@ -1153,12 +1744,23 @@ class ModelValidationDialog(QtWidgets.QDialog):
             event.ignore()
             return
         self.bridge.detach()
+        # a state write that is still waiting is flushed before the
+        # window goes: the verdicts and the marks of the run are what the
+        # history restores later, and a folder that cannot be written any
+        # more must not abort the close
+        self._state_timer.stop()
+        self._save_state_now()
         # the filter lives on the main window: the close has to take it
         # off, a stale dialog must never raise itself again
         self._remove_activate_filter()
         # a follow that is still waiting must not reach into the close
         self.follow_timer.stop()
         self.scan_scheduler.shutdown(1000)
+        # a walk of the temporary directory is waited for with the one
+        # bounded budget, and a walk that outlasts it is detached from
+        # this window: destroying a live QThread aborts the process,
+        # while the detached one finishes on its own
+        self._retire_history_scan(HISTORY_SCAN_WAIT_MS)
         for worker in self._running_workers():
             worker.cancel()
         for worker in self._running_workers():
@@ -1171,9 +1773,15 @@ __all__ = [
     "EXPORT_GUARD_STATUS",
     "EXPORT_PROGRESS_STYLE",
     "FOLLOW_DEBOUNCE_MS",
+    "HISTORY_BUSY_STATUS",
+    "HISTORY_MISSING_STATUS",
+    "HISTORY_OPEN_STATUS",
+    "HISTORY_SCAN_FAILED_TEMPLATE",
+    "HISTORY_SCAN_WAIT_MS",
     "MINIMUM_HEIGHT",
     "MINIMUM_WIDTH",
     "ModelValidationDialog",
+    "STATE_SAVE_DEBOUNCE_MS",
     "WINDOW_SIZE",
     "WINDOW_TITLE",
     "initial_window_height",

@@ -352,10 +352,10 @@ def test_every_configuration_control_has_a_tooltip(dialog):
 
     page = dialog.config_page
     controls = interactive_controls(page)
-    # 3 source line edits, 3 browse buttons + the start button, 3
-    # thresholds, the judge checkbox, the augment checkbox, the ratio and
-    # the ten parameter controls of the grid
-    assert len(controls) == 23
+    # 3 source line edits, 3 browse buttons + the history and the start
+    # button, 3 thresholds, the judge checkbox, the augment checkbox,
+    # the ratio and the ten parameter controls of the grid
+    assert len(controls) == 24
     assert {type(control).__name__ for control in controls} == {
         "QLineEdit",
         "QSpinBox",
@@ -1191,10 +1191,11 @@ def test_the_file_dialogs_speak_chinese(dialog, monkeypatch):
         ("选择类别表 classes.txt", "类别表 (*.txt);;所有文件 (*)"),
         ("选择 ONNX 模型", "ONNX 模型 (*.onnx);;所有文件 (*)"),
     ]
-    # the browse buttons of the form read Chinese as well
+    # the browse buttons of the form read Chinese as well, and the
+    # history entry sits between them and the start it belongs beside
     assert [
         button.text() for button in page.findChildren(QtWidgets.QPushButton)
-    ] == ["浏览…", "浏览…", "浏览…", "开始验证"]
+    ] == ["浏览…", "浏览…", "浏览…", "历史记录…", "开始验证"]
 
     monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", fake_dialog)
     dialog.staging_root = "/staging"

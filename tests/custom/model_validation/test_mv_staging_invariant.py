@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from anylabeling.custom.model_validation import dataset
+from anylabeling.custom.model_validation import history
 from anylabeling.custom.model_validation import inference as inference_module
 from anylabeling.custom.model_validation import records as records_module
 from anylabeling.custom.model_validation.app_config import (
@@ -432,3 +433,44 @@ def test_augment_summary_reports_the_skipped_images(tmp_path):
     assert summary["planned"] == 0
     assert summary["augmentable_originals"] == 1
     assert summary["skipped_no_label"] == 1
+
+
+def test_saving_the_run_state_never_touches_the_source_dataset(tmp_path):
+    """Invariant I-1 for the history: the state file stays in staging.
+
+    The verdicts and the marks of a run are written into the staging
+    folder of that very run, so the snapshot of the source dataset is
+    the same before and after the write.
+    """
+
+    source = str(tmp_path / "source")
+    write_pair(source, "a")
+    write_pair(source, "b")
+    before = dataset.snapshot_directory(source)
+
+    staging = staging_layout(str(tmp_path))
+    record = staged_original(staging, "a.png")
+    record.verdict = records_module.OK
+    record.judged = True
+    history.save_restore_state(
+        staging, [record], classes=["car"], source_display=source
+    )
+
+    assert osp.isfile(osp.join(staging, history.STATE_FILENAME))
+    after = dataset.snapshot_directory(source)
+    assert after == before
+
+
+def test_listing_the_history_creates_no_file(tmp_path):
+    """A scan lists the temp folder, it never writes into it.
+
+    The mirror of the same invariant: history.list_runs is a read only
+    pass over the candidates, so an empty scratch directory stays empty
+    and answers an empty list.
+    """
+
+    scratch = osp.join(str(tmp_path), "scratch")
+    os.makedirs(scratch, exist_ok=True)
+
+    assert history.list_runs(temp_root=scratch) == []
+    assert os.listdir(scratch) == []

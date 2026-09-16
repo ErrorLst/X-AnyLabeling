@@ -251,6 +251,10 @@ class ConfigPage(QtWidgets.QWidget):
     """Collect the dataset, model and augmentation options."""
 
     start_requested = QtCore.pyqtSignal()
+    # the request of the history page: the window lists the run folders
+    # that are still in the system temporary directory and may restore
+    # one of them. The page owns no scan of its own (see ui/history_page).
+    history_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent: Optional[Any] = None) -> None:
         super().__init__(parent)
@@ -333,6 +337,18 @@ class ConfigPage(QtWidgets.QWidget):
         outer.addStretch(1)
         buttons = QtWidgets.QHBoxLayout()
         buttons.addStretch(1)
+        # the history sits left of the start: it is the second way into
+        # the tool, not a second way to start a run
+        self.history_button = QtWidgets.QPushButton(
+            self.tr("历史记录…")
+        )
+        self.history_button.setToolTip(
+            self.tr(
+                "列出系统临时目录里的历次验证，可恢复到某次的判定与标记。"
+            )
+        )
+        self.history_button.clicked.connect(self.history_requested.emit)
+        buttons.addWidget(self.history_button)
         self.start_button = QtWidgets.QPushButton(self.tr("开始验证"))
         self.start_button.setToolTip(
             self.tr(

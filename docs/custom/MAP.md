@@ -79,10 +79,12 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 - `anylabeling/custom/`：88 个 .py / 46310 行（目录内全部 .py；FEATURES.md 登记其中
   10 个自研功能，另有未登记的 `remote_training`；快照 2026-09-15 14:00 +0800，
   有并发会话在途写入，重测命令见下）。
-- `anylabeling/custom/model_validation/`：24 个 .py / 12902 行（关键文件：`ui/` 下的
-  `dialog.py` 1181、`results_page.py` 2205、`image_view.py` 1280，以及
+- `anylabeling/custom/model_validation/`：26 个 .py / 15368 行（关键文件：`ui/` 下的
+  `dialog.py` 1789、`results_page.py` 2237、`image_view.py` 1609，以及
   `main_window_bridge.py` 689、`async_scan.py` 189、`multilabel.py` 360、
-  `anylabeling/custom/model_validation/ui/config_page.py` 978）；本轮新增
+  `anylabeling/custom/model_validation/ui/config_page.py` 994、
+  `anylabeling/custom/model_validation/history.py` 935、
+  `anylabeling/custom/model_validation/ui/history_page.py` 546）；本轮新增
   `multilabel.py`（360 行：整图类无关 NMS 的合并、每类一行的展开与 IoU），
   `inference.py`（508 行）只做接线；「编辑搬到主窗口」那一轮新增
   `main_window_bridge.py`（现 689 行，跳主窗口 + 保存回写）与 `async_scan.py`（189 行，
@@ -94,9 +96,14 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
   的「单图增强参数（本轮收敛）」）；本轮（参数面版式微调）只改
   `anylabeling/custom/model_validation/ui/config_page.py`：参数网格是 9 项 3 列 × 3 行，
   `select_prob`（选中概率 p）排在数量行、紧挨「比例 r」，不在网格里；
-  测试目录 47 个 .py / 22179 行，上一轮新增
+  测试目录 54 个 .py / 25291 行，上一轮新增
   `tests/custom/model_validation/test_mv_augment_selection.py`（7 例），本轮新增
-  `tests/custom/model_validation/test_mv_results_augment_column.py`（7 例）。
+  `tests/custom/model_validation/test_mv_results_augment_column.py`（7 例）；
+  本轮（历史记录）新增 `tests/custom/model_validation/test_mv_history_scan.py`（12 例）、
+  `test_mv_history_state.py`（11 例）、`test_mv_history_restore.py`（18 例）、
+  `test_mv_history_page.py`（27 例）、`test_mv_dialog_history.py`（20 例）共 88 例，
+  `tests/custom/model_validation/test_mv_staging_invariant.py` 由 7 例增到 9 例、
+  `tests/custom/model_validation/test_mv_ui_dialog.py` 只同步控件计数（仍 40 例）。
 - `tests/custom/`：106 个 .py / 51309 行（含契约自检脚本 `tests/custom/test_fork_contract.py`；
   快照 2026-09-15 14:00 +0800，有并发会话在途写入，重测命令见下）。
 
@@ -104,7 +111,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 由并发会话在途写入，只作数量级参考；重测口径与命令：
 `find <dir> -type f -name '*.py' -not -path '*__pycache__*' | wc -l` 与
 `find <dir> -type f -name '*.py' -not -path '*__pycache__*' -print0 | xargs -0 wc -l | tail -1`。
-`model_validation` 自己的两条数字按同一口径重测过（2026-09-15 14:37 +0800，见
+`model_validation` 自己的两条数字按同一口径重测过（2026-09-15 20:42 +0800，见
 FEATURES.md 的「代码与体量」）；该目录同样有并发会话在途写入，只作数量级参考。
 
 ## 想改 X 该看哪里

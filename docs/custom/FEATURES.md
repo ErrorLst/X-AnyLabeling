@@ -170,14 +170,17 @@
 窗口本身**不带标注编辑器**：需要改标注时由主窗口**自动跟随**结果页的当前记录打开
 （点选 / `A` / `D` / 过滤器切换 / 推理结束，200ms 去抖，无需按键），主窗口保存的结果
 由文件监听同步回暂存标签，验证页只重新读盘。
+「历史记录」页把系统临时目录里**既有的**运行目录列出来，选一条恢复到结果页继续查看、
+标记与导出：历史 = 这些运行目录本身，**没有独立的历史索引或归档**；恢复能带回该次运行的
+判定与标记，但**不还原配置页参数**。
 
 ### 代码与体量
 
-`anylabeling/custom/model_validation/`（24 个文件 12902 行，含 `ui/` 子包）；
-测试 `tests/custom/model_validation/`（47 个文件 22179 行）。（口径：目录内全部 `*.py`、
+`anylabeling/custom/model_validation/`（26 个文件 15368 行，含 `ui/` 子包）；
+测试 `tests/custom/model_validation/`（54 个文件 25291 行）。（口径：目录内全部 `*.py`、
 排除 `__pycache__`，行数取 `wc -l`；实测命令与时间：
 `find <dir> -type f -name '*.py' -not -path '*__pycache__*' -print0 | xargs -0 wc -l`，
-2026-09-15 14:37 +0800。）「编辑搬到主窗口」那一轮新增
+2026-09-15 20:42 +0800。）「编辑搬到主窗口」那一轮新增
 `main_window_bridge.py`（跳主窗口 + 保存回写）与 `async_scan.py`（189 行：
 异步目录扫描），并删掉 `ui/` 下的 `label_dialog.py`（内置标签弹窗整个文件移除）；
 「固定 0.25 + 多标签 + 低分 NG」那一轮只改既有文件，新增测试
@@ -187,8 +190,18 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
 接线，`ui/` 下的 `results_page.py` 涨到 1934 行；本轮（「切换过滤卡 UI」修复）
 `anylabeling/custom/model_validation/ui/results_page.py` 2205 行、
 `anylabeling/custom/model_validation` 下的 `main_window_bridge.py` 689 行，
-`dialog.py` 仍是 1181 行（在 `ui/` 子包里；跟随闸门改非模态 + 合并式延迟重建 +
+`dialog.py` 当时仍是 1181 行（在 `ui/` 子包里；跟随闸门改非模态 + 合并式延迟重建 +
 重建改在隐藏状态下完成，见下节「行为级契约」）。
+
+本轮（历史记录）新增两个实现文件与 5 个测试文件：`history.py`（935 行：运行目录发现 +
+`state.json` 读写 + 恢复装配，纯标准库，不 import PyQt6 也不 import 数值栈）、
+`ui/` 下的 `history_page.py`（546 行：历史页 7 列 = 时间 / 数据来源 / 原图 / 增强 / 判定 /
+标记 / 状态，双击恢复），`ui/` 下的 `dialog.py` 涨到 1789 行、`config_page.py` 涨到 994 行
+（「历史记录…」按钮 + `history_requested` 信号）；新增测试 `test_mv_history_scan.py`
+（12 例）、`test_mv_history_state.py`（11 例）、`test_mv_history_restore.py`（18 例）、
+`test_mv_history_page.py`（27 例）、`test_mv_dialog_history.py`（20 例，其中 4 例由随后的
+修复轮补上），共 88 例，`test_mv_staging_invariant.py` 由 7 例增到 9 例，
+`test_mv_ui_dialog.py` 只同步控件计数与按钮文本（仍 40 例）。
 
 ### 入口符号
 
@@ -325,7 +338,7 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   不从信号里再触发跳转（当前记录没变就不发 `current_record_changed`，因此也不会重开）；
   `attach(staging_root, records)` 在 `on_worker_finished` 装上，
   `start_validation` 与 `closeEvent` 时 `detach`。
-- **内置编辑能力已拆除**：`image_view.py`（2200→1127 行，现 1280 行）画布只读，不再有任何编辑
+- **内置编辑能力已拆除**：`image_view.py`（2200→1127 行，当时 1280 行）画布只读，不再有任何编辑
   信号/方法/常量（`set_edit_mode`、`editable_shapes`、`box_handles`、`hit_test`、
   `resize_points`、`_draw_edit_overlay` 等全删）；结果页删除编辑模式、编辑提示条与
   标签弹窗调用（`EDIT_*` 符号与 `__all__` 条目一并删）；`records.py` 删除
@@ -499,6 +512,44 @@ NMS + 一框多标签 + 框色聚合）新增 `multilabel.py`（360 行：整图
   geometry（按住右键也不再重置用户设置过的缩放与平移：`begin_parent_preview` 与
   `end_parent_preview` 改调 `_refresh_canvases_keeping_view()`，预览前后逐一还原绝对缩放与中心；
   切行仍按既有语义重新拟合）。
+- **一次验证 = 一条历史，事实源就是运行目录本身**：历史页列的就是系统临时目录里
+  `xal_validation_*`（`dataset.STAGING_PREFIX`，由 `dataset.create_staging_root()` 建）
+  的运行目录，**没有独立的历史索引、归档或数据库**。`history.list_runs()` 只做一遍
+  `readdir` + 每候选一次 `stat`，按 mtime 倒序，默认最多取 `DEFAULT_SCAN_LIMIT`（400）
+  条、超出时列表尾部标「已显示前 N 条（历史较多被截断）」；这趟遍历在
+  `_HistoryScanWorker(QThread)` 里跑，UI 线程不遍历临时目录（dialog 用
+  `_start_history_scan` / `_retire_history_scan` 起停与退休线程）。
+- **运行目录内的 `state.json` 是判定与标记的唯一磁盘事实源**：它在运行目录根部、与
+  `meta.json` 同级（`history.STATE_FILENAME`，`STATE_VERSION = 1`），是紧凑 JSON
+  （`separators=(",", ":")`）、每条记录经 `json_safe.sanitize` 后写盘、用 `os.replace`
+  原子换入；记的是 `summary`（judged / skipped / marked / verdicts）、`records` 的判定 /
+  标记 / `aug_detail`、类表与 `shown_record_id`。它**不复制任何图片**，也**没有第二份
+  索引**；落盘由 dialog 的 800 ms 去抖（`STATE_SAVE_DEBOUNCE_MS`、`_state_timer`）触发，
+  `closeEvent` 里先停表再 flush 一次。写失败只写一行状态说明（`OSError` 不往上抛，运行
+  照常），临时文件名 `state.json.tmp` 有意留着、由下一次保存覆盖。
+- **旧目录恢复成「有图有框、无判定」，绝不重跑推理**：`state.json` 缺失或读不动时
+  `read_restore_state` 降级成 `readable=False`（**不抛异常、不让图片不可达**），
+  `restore_records` 只用 `meta.json` 与 labels / images 两棵树重建记录，每条都从
+  `PENDING` 起，状态行与页内提示如实写「该历史没有判定数据（仅图片与标签）」；
+  恢复过程不碰推理引擎，也不顺手补写一份 `state.json`。暂存图片已不在的记录只被计数
+  丢弃（`dropped_missing_images`），被清理了一半的运行目录照样能打开。
+- **恢复不还原配置页参数**：`restore_run` 只把该次运行的 `staging_root`、`records`、
+  类表（优先用 `state.json` 里记的 `classes`，没有才退回窗口当前的类表）与 `meta.json`
+  接回结果页，配置页上的模型路径 / 数据来源 / 增强参数 / 阈值**一个字都不改**——恢复是
+  「把那次结果拿回来看」，不是「重放上一次的表单」，下一次运行仍按表单当前的值跑。
+- **恢复与运行互斥**：`_history_guard()` 在导出进行中（`_exporting`）或本窗口还有活着的
+  worker（`_history_idle()`：`worker is None and not _detached_workers`，即上一次运行
+  仍在收尾）时拒绝，只写一行「运行或导出进行中，历史记录暂不可用」；`restore_run` 额外
+  要求历史页就是当前页（`_history_mode`），迟到的信号不可能在用户脚下换掉正在看的那一轮；
+  反过来，停在历史页时 `start_validation` 也被 `_history_mode` 拒绝：它写一行
+  `HISTORY_OPEN_STATUS`（「历史记录已打开，请先关闭历史记录再开始验证」）后**直接返回**，
+  **不创建 worker**、stack 仍停在历史页，不会一边浏览列表一边把马上要恢复的目录覆盖掉。
+- **历史只读**：列表、打开目录与恢复都不删除、不隐藏、不移动任何运行目录——目录里唯一
+  「不可逆」的操作（删掉一次运行）**有意不提供**。恢复后 `record_id`（`kind::relpath`）、
+  `staging_image_path` / `staging_label_path` 与 `dataset.staging_paths()` 的公式仍然
+  自洽，所以导出公式（暂存路径 → zip 内路径）不变、导出汇总照旧；`refresh_from_roots`
+  只把「文件没了」翻译成「记录没了」，或按同目录 / 同后缀 / 同 `_augN` 序号唯一匹配到
+  一次重命名时**改指**该记录，判定与标记都保留。
 
 ### 单图增强参数（本轮收敛）
 
@@ -641,13 +692,38 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
 本轮把 3 个测试文件里 11 条「按作者机器绝对像素写死」的断言改成按平台字体度量推导
 （`test_mv_label_placement.py` 7 条、`test_mv_image_view.py` 3 条、
 `test_mv_border_modes.py` 1 条）：口径是亮像素盒 ≠ 几何 ink 盒（见「已知坑」）。
-**目录合计 636 例全绿带一个前提**：带 `HOME`（fontconfig 命中 Microsoft YaHei、
+**当时目录合计 636 例全绿带一个前提**：带 `HOME`（fontconfig 命中 Microsoft YaHei、
 `config_page.sizeHint()` 571）时 636 全绿；剥离 `HOME`（DejaVu Sans、`sizeHint()`
 532）时 `test_mv_ui_dialog.py` 的
 `test_the_window_height_follows_the_configuration_page` 会红
 （`dialog.height()` 600 落不进 `hint + 56` = 588），这是既有现象、超出本轮改动
 范围；`test_mv_border_modes.py` 的同类窗口高度断言本轮已与 600px 下限对齐，
 两种字体环境下都绿。
+
+本轮（历史记录）新增 5 个测试文件共 **88 例**（`--collect-only -q` 逐个文件实测）：
+`test_mv_history_scan.py`（12 例：只列 `xal_validation_*`、mtime 倒序与 `scan_limit`
+截断标记、大 `meta.json` 只读文件头也给出计数、四种 reason（目录消失 / 缺 meta / meta
+损坏 / 没有已拷贝标签））、`test_mv_history_state.py`（11 例：`state.json` 的紧凑写盘与
+`os.replace` 原子换入、读回逐键相等、`staging_root` 不一致与更高 `schema_version` 的
+降级提示、暂存图片已不在的记录被丢弃并计数（`dropped_missing_images`，正例在本文件）、
+写失败抛 `OSError` 而旧文件仍完整）、`test_mv_history_restore.py`（18 例：无 `state.json`
+时的 PENDING 重建、判定与标记的回带、`_augN` 父链与唯一重命名的改指、缺图或缺标签的
+增强记录仍被保留（丢弃计数为 0））、`test_mv_history_page.py`（27 例：7 列口径与冻结的
+原因枚举、双击 / 「恢复选中」只在可恢复行上发信号、扫描中与空列表的提示行）、
+`test_mv_dialog_history.py`（20 例、833 行：后台扫描线程（关窗时仍未结束的扫描交给
+模块级孤儿集合、不再算窗口的子线程；超时后提前结束的线程仍被跟踪）、三条拒绝路径、
+历史页上按开始只写 `HISTORY_OPEN_STATUS` 且不起 worker、恢复接回结果页与状态行、
+同一 `record_id` 恢复后跟随重新武装、800 ms 去抖落盘与关窗 flush；其中 4 例由随后的
+修复轮补上）。
+另在 `test_mv_staging_invariant.py` 追加 2 例（`state.json` 的写入不动源数据集、
+`list_runs` 不落盘，7 → 9 例），在 `test_mv_ui_dialog.py` 同步控件计数（23 → 24）与按钮
+文本列表（仍 40 例）。**目录合计 54 个文件 728 例**（`HOME=/home/zhoujin
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -p no:cacheprovider
+tests/custom/model_validation --collect-only -q` 实测）；上面各轮的 627 / 636 是那一轮的
+口径，现状以本段为准。跑法（带 `HOME` 与 offscreen，逐个文件或几个一起）：
+`HOME=/home/zhoujin QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest
+-p no:cacheprovider tests/custom/model_validation/test_mv_history_scan.py -q`；
+本轮 7 个文件一起跑 **137 passed**（12 + 11 + 18 + 27 + 20 + 9 + 40，8.50 s）。
 
 ### 已知坑
 
@@ -705,6 +781,32 @@ tests/custom/model_validation -v`（需 PyQt6 + numpy，本工作区用仓库里
   切换当前行标记），挂在页面里的其它按钮同理；`QComboBox` 下拉弹窗打开时由
   弹窗自己拿键，页面快捷方式不抢。这是有意的作用域取舍，不是缺陷；要改回按钮的
   空格行为就得给该按钮更高的短路优先级。
+- **包内禁止删除，`dataset_dir` / `source_dir` 是受限字样**：
+  `test_mv_staging_invariant.py` 的 `test_static_module_scanning_rules` 对
+  `anylabeling/custom/model_validation/` 下每个 `.py` 拦 `shutil.rmtree` /
+  `os.remove` / `os.unlink` 的调用（`tests/custom/model_validation/` 下的测试同样
+  只拦这一条），并把除白名单（`dataset.py`、`report.py`、`app_config.py`、
+  `pipeline.py`，以及 `ui/` 下的 `config_page.py` 与 `dialog.py`）之外出现 `dataset_dir` /
+  `source_dir` 字样的文件判成违规（`exporter.py` 另有一条单独的规则）。新模块要写
+  数据来源，用 `source_display` 这类既有字段，别起这两个名字；只有 `x: str` / `x=`
+  这种形参写法不算命中。
+- **labels 树的文件名 = images 树的文件名，没有 `.json` 后缀**：暂存把标签写在
+  `labels/<relpath>`，最后一段就是图片自己的文件名（`a.jpg` 的标签也叫 `a.jpg`，
+  不是 `a.json`），所以配对**只能按 relpath**：任何「把 `.json` 换成图片后缀」或
+  「按后缀找配对」的写法都会失配；`history._list_relpaths` 两边各列一遍、只按 relpath
+  建立集合对应关系。
+- **真实 images 树里混着杂散 `.json`**（主窗口另存留下的标注文档；真机两轮运行分别有 194
+  与 379 个），所以增强记录的发现是「**labels 树不过滤 + images 树按
+  `labelme_io.IMAGE_EXTENSIONS` 过滤**」（`history._augmented_relpaths`）：labels 是权威
+  （标签可能不带任何已知后缀），images 只贡献真图片。两边都不过滤时，一次运行会凭空多出
+  成百条伪记录。
+- **pytest 默认带 `--doctest-modules`**：`pyproject.toml` 的
+  `[tool.pytest.ini_options]` 里 `addopts = "--doctest-modules ..."`，新模块不要写
+  `>>>` 形式的示例——它们会被当成用例执行，写错一条就让目录测试变红。
+- **`state.json` 随运行目录落在系统临时目录**：系统清理临时目录（重启、磁盘清理、手工
+  清空 `/tmp`）之后，那条历史只剩一行「临时文件已失效」（`REASON_MISSING` 经
+  `REASON_STATES` 映射），目录整个不在时 `list_runs` 干脆不再列出它；判定与标记**只此
+  一份**，没有归档副本可以找回。要长期留存就导出 zip，别指望历史页。
 
 ## smudge_tool
 
