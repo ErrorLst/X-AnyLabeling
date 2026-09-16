@@ -1004,8 +1004,18 @@ def test_ct40_dataset_and_workspace_are_written_by_nothing(
 
 
 def test_ct40_no_write_goes_to_the_user_configuration_tree(tmp_path):
-    """The ledger is the only writer: a fresh HOME stays empty."""
+    """The ledger is the only writer of the work directory.
 
+    Inside the work directory the ledger files are the only legitimate
+    writers; the single legitimate write outside it is the per-user
+    ~/.xanylabeling/remote_training/server.json of spec §5.3.3.  The
+    fake_home below is a plain directory of this test: it is neither the
+    real home nor the per-user directory the conftest fixture points
+    Store()'s default at.
+    """
+
+    # An empty directory of this test, not a HOME: the per-user
+    # server.json of §5.3.3 goes to the fixture directory instead.
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     store = Store(str(tmp_path / "elsewhere"))

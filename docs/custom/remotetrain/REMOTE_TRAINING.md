@@ -3113,7 +3113,7 @@ def reject(self):
 | 免于回收集合（**硬性、优先**） | **仍被任何 pending 条目（`planned` / `uploading` / `committed` / `submitting`）引用的 staging 目录与持久化目录一律免于回收**——既不受 TTL 影响，也不受任何条数 / 容量上限影响，直到该条目**对账完成**（`submitted`）或**显式作废**（`void`，含用户手动作废）为止。判定依据是 `tasks.json` 的 pending 条目里的 `pending_dir` 与 `staging_dir` 两个字段（§5.3.2），**不是** `owner.json`。该集合**逐目录实时求值**（每判定一个目录之前重新读一次台账），**不得**用扫描开始时的快照 |
 | TTL（固定 **7 天**，写死） | 非豁免目录中超期的**一律回收**：按 `owner.json.started_at` 判定，缺失 / 不可解析时按目录 `mtime`。本 TTL 是**固定常量**，**不受 `settings.json` 任何键控制**，与 `pending_ttl_days` 的**缺省值**同值但**不共用键**，也**不是**第四个键（§5.3.3） |
 | 日志 | 每次扫描后记「回收 M 个遗留目录，释放 X MB」，便于用户确认没有堆积 |
-| 不写工作区 / 用户数据目录 | staging、zip、导出配置的中转文件全部落系统临时目录；台账落 `get_work_directory()`（§5.3.1）——两者都不写工作区 |
+| 不写工作区 / 用户数据目录 | staging、zip、导出配置的中转文件全部落系统临时目录；台账落 `get_work_directory()`（§5.3.1）——两者都不写工作区。**唯一例外**是 `server.json`（每用户目录 `.xanylabeling/remote_training/`，§5.3.3） |
 
 **调试信息区（结果页底部，逐字保留）**：结果页底部固定存在一个只读 `QPlainTextEdit`（`setReadOnly(True)`，与 `anylabeling/custom/model_validation/ui/progress_page.py` 同款；窗口内恒存在、**不随结果是否存在而消失**），其**标题文字为「调试信息」**、`objectName` 为 `debugInfoEdit`（供用例按名定位），内容为**只增不改**的多行文本（保留路径一行、其余为生命周期摘要）。「该路径可选中 / 可复制」由 `setReadOnly(True)` + 默认文本交互标志（`Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard`）保证：**不得**设 `NoTextInteraction`、**不得**把它做成不可选标签。**不新增**「帮助 → 打开调试产物目录」这类上游菜单入口——那会是第 5 处上游改动，与 §5.1.1 的四处清单冲突；路径的可见性完全由「日志 + 对话框自有的调试信息区」承担。
 
@@ -3504,12 +3504,13 @@ zip 的**协议侧**规格与安全项（zip-slip、文件名编码、扩展名�
 
 #### §5.3.1 台账落点树
 
+**工作目录（台账侧）**——`tasks.json` / `settings.json` / `pending/` 仍留在工作目录：
+
 ```text
 <get_work_directory()>/xanylabeling_data/remote_training/
-  server.json      # {"server_url": "...", "api_key": "...", "updated_at": "..."}（§5.3.3）
   tasks.json       # 本地任务台账 + pending 台账（§5.3.2）
   tasks.json.bak   # 上一次成功写入的备份（损坏回退用，§5.3.4）
-  settings.json    # 三个本地配置键（§5.3.3）：与 server.json 同级、不进协议、不导出
+  settings.json    # 三个本地配置键（§5.3.3）：不进协议、不导出
   pending/<id>/    # 可重放数据（四文件，见下）
 ```
 
@@ -3522,7 +3523,15 @@ zip 的**协议侧**规格与安全项（zip-slip、文件名编码、扩展名�
 | `submit_request.json` | 提交请求的快照（`POST /jobs` 的请求体原文） | 提交前写入（§5.4） |
 | `meta.json` | 该条目的本地元信息（`upload_token` / `client_submission_id` / 创建时间 / 摘要） | 与条目同批写入 |
 
-- `get_work_directory()` 见 `anylabeling/config.py`；`xanylabeling_data` 子目录约定与本地 Ultralytics 训练一致（`anylabeling/services/auto_training/ultralytics/config.py`）。
+**每用户目录（配置侧）**——`server.json` **不在**工作目录，「工作目录」那套约定**不适用于它**：
+
+```text
+<每用户目录>/.xanylabeling/remote_training/
+  server.json      # {"server_url": "...", "api_key": "...", "updated_at": "..."}（§5.3.3）
+```
+
+- `get_work_directory()` 见 `anylabeling/config.py`；`xanylabeling_data` 子目录约定与本地 Ultralytics 训练一致（`anylabeling/services/auto_training/ultralytics/config.py`）——**该约定只适用于 `tasks.json` / `settings.json` / `pending/`**。
+- `server.json` 落**每用户目录** `~/.xanylabeling/remote_training/`（fork 既有约定，同 `anylabeling/custom/crash_log/paths.py` 的 `~/.xanylabeling/logs`；Windows 下 `~` 即 `%USERPROFILE%`），**与工作目录解耦** ⇒ 换工作目录仍记得地址与 Token；老位置（工作目录）的文件在首次读取时复制过去，**老文件保留不删**（迁移细则见 §5.3.3）。
 - `server.json` 单独存放 Token，避免 Token 混进可被导出的任务台账。
 - **v1 单服务器**：`server.json` 只保存一套 `server_url` + `api_key`，**不做多服务器切换**；`tasks.json` 每条记录已带 `server_url`，将来若要支持多台训练机，只需再引入 `server_id`，**不改现有字段语义**。
 - `pending/` **不在**系统临时目录、**不**匹配 `xal_remote_training_*` 前缀，因此 §5.1.5 的 owner marker 扫描、TTL 回收与 `keep_staging` **都不作用于它**；它的生命周期由 §5.4 的清理时机单独规定。反向约束同样成立：只要仍被 pending 条目引用，它**免于任何回收路径**。
@@ -3696,10 +3705,13 @@ void_reason（取值集合；每条取值对应的转移与清理时机归 §5.4
 {"server_url": "http://10.0.0.5:8000", "api_key": "<Token>", "updated_at": "2026-01-01T10:00:00Z"}
 ```
 
-- 权限：`os.chmod(<path>, 0o600)`（一行，Linux 唯一实现）。
+- 落点：`~/.xanylabeling/remote_training/server.json`（**每用户目录**，非工作目录；Windows 下 `~` 即 `%USERPROFILE%`）。目录不存在时创建（`os.makedirs(..., exist_ok=True)`）。
+- 逃生阀环境变量：`XANY_REMOTE_TRAINING_SERVER_DIR`（**取值即目录**，支持 `~`；与既有 `XANY_LOG_DIR` 同款，`anylabeling/custom/crash_log/paths.py`）。优先级：`Store(server_dir=…)` > 环境变量 > 默认 `~/.xanylabeling/remote_training/`。
+- 迁移（**每次读取只判定一次**，顺序写死）：① 新位置已有 `server.json` ⇒ **不动**；② 老位置 `<get_work_directory()>/xanylabeling_data/remote_training/server.json` 存在、且是**合法 JSON 对象** ⇒ **字节复制**到新位置并 `chmod 0600`，**老文件保留不删**；③ 老文件损坏 / 非 JSON 对象 ⇒ **不迁移**（按「无配置」处理）；④ 新位置目录不可建 / 不可写 ⇒ 记一条 `WARNING`，**读回落老文件**；写侧同样**回落到老位置**。
+- 权限：`os.chmod(<path>, 0o600)`（一行，Linux 唯一实现）；Windows 上 `chmod` 失败**只记日志**，不让读写失败。
 - Token 属敏感信息：**不进协议**、**不导出**（§5.2.8）；v1 单服务器口径见 §5.3.1。
 
-**`settings.json`**（三个键，**同处一个文件、都在顶层、互不嵌套**）：
+**`settings.json`**（落**工作目录** `xanylabeling_data/remote_training/`，**不与 `server.json` 同级**；三个键**同处一个文件、都在顶层、互不嵌套**）：
 
 | 键 | 默认 | 语义 |
 | --- | --- | --- |
@@ -3755,7 +3767,7 @@ anylabeling/custom/remote_training/
   __init__.py          # 只导出 launch_remote_training（§5.1.2）
   launcher.py          # 惰性单实例 launcher（§5.1.2）
   api_client.py        # /custom/train/* 的 requests 封装（Token 头、超时、错误 → 异常映射；契约见 §3）
-  store.py             # server.json / tasks.json / settings.json 的读写（原子写、损坏恢复、pending 台账、owner marker 扫描）（§5.1.5 / §5.3.1–§5.3.4）
+  store.py             # server.json（每用户目录，§5.3.3）/ tasks.json / settings.json 的读写（原子写、损坏恢复、pending 台账、owner marker 扫描）（§5.1.5 / §5.3.1–§5.3.4）
   scanner.py           # 根目录扫描 + N1 校验矩阵 + 完整 schema 校验（§5.2.3–§5.2.5）
   converter.py         # LabelConverter 封装 + 计数与警告（逐文件 try/except，§5.2.4 / §5.2.6）
   splitter.py          # 按类别分层划分（§5.2.7 伪码的唯一实现）
@@ -4295,7 +4307,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | CT37 | 静默重试、退避与重连 | 按请求时刻断言：首失 0 s 静默重发，此后 `5 → 10 → 20 → 30 s`（`c ≥ 5` 恒 30 s）；连续 3 次无响应显示红条、任意响应隐藏 |
 | CT38 | 取消 / 恢复的错误分支与响应写回 | `resume` 的 409 `JOB_NOT_RESUMABLE`（三 reason）与 409 `JOB_ARTIFACTS_EXPIRED`（两 reason）逐支文案正确；成功响应写回台账并清徽标 |
 | CT39 | 终态页发现「外部手动恢复」 | 外部 resume 置回 `queued`：最迟 **60 s**（手动刷新 / 重进即刻）发现并恢复高频轮询；结果页**跃迁那次 tick 补发一次** `files` |
-| CT40 | 数据集源目录严格只读 + 工作区零写入 | 数据集目录前后哈希（含 `mtime`）**逐字节未变**；除台账 / `pending/` / 配置外不写工作区与用户数据目录 |
+| CT40 | 数据集源目录严格只读 + 工作区零写入 | 数据集目录前后哈希（含 `mtime`）**逐字节未变**；除台账 / `pending/` 外不写工作区，除「配置」（= §5.3.3 的**每用户** `server.json`，与工作目录解耦）外不写用户数据目录 |
 | CT41 | 上传中退出应用不留「线程仍运行」 | 上传中关主窗口 / `QApplication.quit()`：`Event.set()` 唤醒并等 worker `isFinished()`，无 `QThread` 告警 |
 | CT42 | 磁盘写入失败 / 半写 `owner.json` 容错 | 原子写前强杀或人为写盘失败：残留目录被回收并记日志；写盘失败**不进入下一阶段**并报错 |
 | CT43 | 调试产物路径可见性（不新增挂载点） | `keep_staging: true` 后正常结束 3 次：UI 给出**可复制的完整路径**（保留目录**无份数上限**，只受 7 天固定 TTL 约束，§5.1.5） |
@@ -4351,7 +4363,7 @@ GET {client_base_url}/jobs?ids=job_a,job_b,...,job_n&limit=50   # 每批 ≤ lim
 | 4 | **不做数据集管理页**：`GET /datasets`、`DELETE /datasets/{dataset_id}`、`GET /cache/stats` **不消费**；413 **优先**提示「服务端已触发自动回收，请稍后重试」；**仅当回收无法解除**才提示联系管理员手工清理（§4.1.7、§5.6）。 |
 | 5 | 参数表单**除日志与产物记录类外全部可配**，分四组（常用参数 / 学习率与优化器 / 数据增强与训练控制 / 训练控制与其它）由 `param_schema` 驱动（**41 键；`param_schema` 不按家族下发，18 个增强键是两后端 `cfg/default.yaml` 的交集**）；**未主动设置的参数不发送**。 |
 | 6 | **不做本地显存预估**，改为**服务端预估**；客户端只展示服务端给出的 `vram_estimate_mb` / `batch_assumed` / `resolved_params` / `warnings[]`。 |
-| 7 | **单服务器**：`server.json` 只保存一个 `server_url`，暂不考虑多服务器切换（`pending_dir` 仍持久化原始 `server_url`）。 |
+| 7 | **单服务器**：`server.json` 只保存一个 `server_url`（**落每用户目录 `~/.xanylabeling/remote_training/server.json`，与工作目录解耦**，§5.3.3），暂不考虑多服务器切换（`pending_dir` 仍持久化原始 `server_url`）。 |
 
 ### §7.2 服务端未定义项的降级行为
 

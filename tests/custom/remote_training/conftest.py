@@ -17,6 +17,24 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6 import QtCore, QtWidgets  # noqa: E402  (after the env var)
 
 
+@pytest.fixture(autouse=True)
+def isolated_server_home(tmp_path, monkeypatch):
+    """Keep the per-user server.json out of the real home (§5.3.3).
+
+    The window writes server.json as soon as one is open, and every
+    Store() without an explicit server_dir resolves the per-user
+    directory - without this redirect a drill would write into the
+    developer's own ~/.xanylabeling and read the Token back from it.
+    A function scoped fixture (tmp_path is function scoped) is enough:
+    every test that touches the file builds its own Store inside it.
+    """
+
+    monkeypatch.setenv(
+        "XANY_REMOTE_TRAINING_SERVER_DIR",
+        str(tmp_path / "home" / ".xanylabeling" / "remote_training"),
+    )
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """One offscreen QApplication for the whole session."""

@@ -2,8 +2,11 @@
 
 Client-side persistence only:
 
-* server.json / tasks.json / settings.json under the work directory,
-* the pending/<id>/ replay tree,
+* server.json in the per-user directory (spec §5.3.3), the one
+  convention crash_log already uses for ~/.xanylabeling/logs; the
+  Token must not follow a user changeable work directory,
+* tasks.json / settings.json under the work directory and the
+  pending/<id>/ replay tree (spec §5.3.1),
 * the staging owner marker and its TTL reclamation.
 
 Atomic write and corruption recovery follow spec §5.3.4: write
@@ -39,6 +42,8 @@ __all__ = [
     "PENDING_DIRNAME",
     "PENDING_PHASES",
     "PHASES",
+    "SERVER_DIRNAME",
+    "SERVER_DIR_ENV",
     "PendingSubmission",
     "PendingUpload",
     "RECORD_STATUSES",
@@ -65,6 +70,7 @@ __all__ = [
     "canonical_json_bytes",
     "create_staging_root",
     "default_ledger_dir",
+    "default_server_dir",
     "directory_size_bytes",
     "fsync_directory",
     "lock_hash",
@@ -72,6 +78,7 @@ __all__ = [
     "pending_dir_name",
     "read_json_file",
     "read_owner_marker",
+    "USER_DIRNAME",
     "sha256_hex",
     "utc_now",
     "utc_now_iso",
@@ -87,6 +94,15 @@ TASKS_BACKUP_FILENAME = "tasks.json.bak"
 SETTINGS_FILENAME = "settings.json"
 OWNER_FILENAME = "owner.json"
 PENDING_DIRNAME = "pending"
+#: Per-user directory of server.json (spec §5.3.3).  The convention is
+#: the fork's own ~/.xanylabeling, the one crash_log writes its
+#: ~/.xanylabeling/logs into (anylabeling/custom/crash_log/paths.py);
+#: a Token must not follow a user changeable work directory.
+USER_DIRNAME = ".xanylabeling"
+SERVER_DIRNAME = "remote_training"
+#: Escape hatch for troubleshooting and tests, like XANY_LOG_DIR: the
+#: value is the directory itself and `~` is expanded.
+SERVER_DIR_ENV = "XANY_REMOTE_TRAINING_SERVER_DIR"
 
 #: Staging folders live in the system temp dir under this prefix and are
 #: scanned by prefix only (spec §5.1.5).
@@ -272,6 +288,15 @@ def default_ledger_dir() -> str:
     return osp.join(
         get_work_directory(), WORK_DATA_DIRNAME, LEDGER_DIRNAME
     )
+
+
+def default_server_dir() -> str:
+    """Per-user home of server.json (spec §5.3.3)."""
+
+    requested = os.environ.get(SERVER_DIR_ENV, "").strip()
+    if requested:
+        return osp.abspath(osp.expanduser(requested))
+    return osp.join(osp.expanduser("~"), USER_DIRNAME, SERVER_DIRNAME)
 
 
 #: The three array-valued top-level keys of tasks.json (spec §5.3.2).
@@ -869,13 +894,27 @@ class ReclaimReport:
 
 
 class Store:
-    """Ledger reader / writer for one work directory."""
+    """Ledger reader / writer for one work directory.
+
+    Every path belongs to that directory except server.json: the URL
+    and the Token are the user's, not the work directory's (spec
+    §5.3.3), so they live in server_dir.
+    """
 
     def __init__(
-        self, base_dir: Optional[str] = None, *, log: Optional[Any] = None
+        self,
+        base_dir: Optional[str] = None,
+        *,
+        log: Optional[Any] = None,
+        server_dir: Optional[str] = None,
     ) -> None:
         self.base_dir = (
             osp.abspath(base_dir) if base_dir else default_ledger_dir()
+        )
+        self.server_dir = (
+            osp.abspath(osp.expanduser(server_dir))
+            if server_dir
+            else default_server_dir()
         )
         self.log = log or _LOGGER
 
@@ -883,6 +922,18 @@ class Store:
 
     @property
     def server_path(self) -> str:
+        """The live server.json (per-user, spec §5.3.3)."""
+
+        return osp.join(self.server_dir, SERVER_FILENAME)
+
+    @property
+    def legacy_server_path(self) -> str:
+        """The pre §5.3.3 server.json inside the work directory.
+
+        Kept readable forever: the one time migration below copies its
+        bytes to server_path but never moves or removes it.
+        """
+
         return osp.join(self.base_dir, SERVER_FILENAME)
 
     @property
@@ -1097,38 +1148,119 @@ class Store:
 
     # -- server.json / settings.json --------------------------------
 
-    def load_server(self) -> ServerConfig:
-        if not osp.isfile(self.server_path):
-            return ServerConfig()
+    def _read_server_file(self, path: str) -> Optional[ServerConfig]:
+        """Parse one server.json; a missing / unreadable file is None.
+
+        Silent on purpose: the caller owns the wording of the warning,
+        because "the legacy file is corrupt" and "the live file is
+        corrupt" are two different messages (spec §5.3.3).
+        """
+
+        if not osp.isfile(path):
+            return None
         try:
-            raw = read_json_file(self.server_path)
-        except (OSError, ValueError) as exc:
-            self.log.warning(
-                "%s is unreadable (%s); using an empty configuration",
-                SERVER_FILENAME,
-                exc,
-            )
-            return ServerConfig()
+            raw = read_json_file(path)
+        except (OSError, ValueError):
+            return None
         if not isinstance(raw, Mapping):
-            self.log.warning(
-                "%s is not a JSON object; using an empty configuration",
-                SERVER_FILENAME,
-            )
-            return ServerConfig()
+            return None
         return ServerConfig.from_dict(raw)
 
-    def save_server(self, config: ServerConfig) -> ServerConfig:
-        payload = config.to_dict()
-        if not payload.get("updated_at"):
-            payload["updated_at"] = utc_now_iso()
-        os.makedirs(self.base_dir, exist_ok=True)
-        atomic_write_json(self.server_path, payload)
+    def _migrate_server_file(self) -> bool:
+        """One time byte copy of the legacy file; True when it landed.
+
+        The copy is deliberately not a move and the JSON is never
+        rewritten: server.json may carry keys this version does not
+        know, and those bytes must survive the migration (spec §5.3.4).
+        Every failure is an OSError the caller turns into a warning.
+        """
+
+        with open(self.legacy_server_path, "rb") as handle:
+            data = handle.read()
+        atomic_write_bytes(self.server_path, data)
+        self._chmod_server_file(self.server_path)
+        return True
+
+    def _write_server_file(self, path: str, payload: Any) -> None:
+        """Atomic write plus the 0600 mode of spec §5.3.3."""
+
+        os.makedirs(osp.dirname(path) or ".", exist_ok=True)
+        atomic_write_json(path, payload)
+        self._chmod_server_file(path)
+
+    def _chmod_server_file(self, path: str) -> None:
         try:
-            os.chmod(self.server_path, 0o600)
+            os.chmod(path, 0o600)
         except OSError as exc:
             self.log.warning(
                 "could not chmod %s to 0600: %s", SERVER_FILENAME, exc
             )
+
+    def load_server(self) -> ServerConfig:
+        """Read server.json, migrating the legacy one on first sight.
+
+        The order is fixed (spec §5.3.3):
+
+        1. a live file in the per-user directory wins outright - it is
+           never compared with, and never repaired from, the legacy
+           file, which is only a source for the first migration;
+        2. with no live file, a legacy file that parses as a JSON object
+           is copied over, while a missing / damaged / non object one is
+           returned as the empty configuration and not migrated;
+        3. a failed migration keeps the legacy file (and logs), so the
+           user still reaches the server.
+        """
+
+        if osp.isfile(self.server_path):
+            config = self._read_server_file(self.server_path)
+            if config is not None:
+                return config
+            self.log.warning(
+                "%s is unreadable; using an empty configuration",
+                SERVER_FILENAME,
+            )
+            return ServerConfig()
+        legacy = self._read_server_file(self.legacy_server_path)
+        if legacy is None:
+            return ServerConfig()
+        try:
+            self._migrate_server_file()
+        except OSError as exc:
+            self.log.warning(
+                "could not migrate %s to %s (%s); keeping the old file",
+                self.legacy_server_path,
+                self.server_path,
+                exc,
+            )
+            return legacy
+        self.log.info(
+            "migrated %s to %s", self.legacy_server_path, self.server_path
+        )
+        return self._read_server_file(self.server_path) or legacy
+
+    def save_server(self, config: ServerConfig) -> ServerConfig:
+        """Persist URL and Token in the per-user directory (spec §5.3.3).
+
+        A per-user directory that cannot be created or written falls
+        back to the legacy ledger location, so a locked down home
+        directory never costs the user the configuration; only when that
+        second write fails too does the OSError reach the caller.
+        """
+
+        payload = config.to_dict()
+        if not payload.get("updated_at"):
+            payload["updated_at"] = utc_now_iso()
+        try:
+            self._write_server_file(self.server_path, payload)
+        except OSError as exc:
+            self.log.warning(
+                "could not write %s to %s (%s); falling back to %s",
+                SERVER_FILENAME,
+                self.server_path,
+                exc,
+                self.legacy_server_path,
+            )
+            self._write_server_file(self.legacy_server_path, payload)
         config.updated_at = payload["updated_at"]
         return config
 
