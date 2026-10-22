@@ -140,6 +140,74 @@ def test_scan_ignores_a_broken_side_car(pt_dir):
     assert seen[0].entries[0].shapes == ()
 
 
+def test_scan_is_recursive_and_keeps_the_relative_directory(pt_dir):
+    write_image(pt_dir, "root.png", size=(4, 4))
+    write_image(pt_dir, os.path.join("sub", "2.png"), size=(4, 4))
+    write_image(pt_dir, os.path.join("sub", "10.png"), size=(4, 4))
+    write_json(
+        pt_dir,
+        os.path.join("sub", "2.json"),
+        shapes=[make_shape(score=0.9)],
+    )
+
+    scan = worker.PreviewWorker(pt_dir)
+    seen = []
+    scan.scanned.connect(seen.append)
+    scan.run()
+
+    snapshot = seen[0]
+    assert [entry.name for entry in snapshot.entries] == [
+        "root.png",
+        "2.png",
+        "10.png",
+    ]
+    assert [entry.rel_dir for entry in snapshot.entries] == [
+        "",
+        "sub",
+        "sub",
+    ]
+    assert snapshot.total == 3
+    nested = snapshot.entries[1]
+    assert nested.json_path == os.path.join(pt_dir, "sub", "2.json")
+    assert nested.labels == frozenset({"cat"})
+
+
+def test_image_names_are_relative_and_flat(pt_dir):
+    write_image(pt_dir, "b.png", size=(4, 4))
+    write_image(pt_dir, os.path.join("a", "c.png"), size=(4, 4))
+    assert worker.image_names(pt_dir) == [
+        "b.png",
+        os.path.join("a", "c.png"),
+    ]
+
+
+def test_scan_skips_the_output_subtree_of_the_input(pt_dir):
+    out = os.path.join(pt_dir, "out")
+    write_image(pt_dir, "keep.png", size=(4, 4))
+    write_image(out, os.path.join("picked", "product.png"), size=(4, 4))
+    write_image(out, "own.png", size=(4, 4))
+
+    scan = worker.PreviewWorker(pt_dir, output_dir=out)
+    seen = []
+    scan.scanned.connect(seen.append)
+    scan.run()
+
+    assert [entry.name for entry in seen[0].entries] == ["keep.png"]
+    assert seen[0].total == 1
+
+
+def test_scan_skips_the_picked_folder_when_output_is_the_input(pt_dir):
+    write_image(pt_dir, "keep.png", size=(4, 4))
+    write_image(pt_dir, os.path.join("picked", "product.png"), size=(4, 4))
+
+    scan = worker.PreviewWorker(pt_dir, output_dir=pt_dir)
+    seen = []
+    scan.scanned.connect(seen.append)
+    scan.run()
+
+    assert [entry.name for entry in seen[0].entries] == ["keep.png"]
+
+
 # ------------------------------------------------------------- preloading
 
 
@@ -246,7 +314,7 @@ def test_pick_job_copies_the_image_and_its_side_car(pt_dir, pt_out):
     job.run()
 
     assert failures == []
-    assert [stem for stem, _dest in picked] == ["a"]
+    assert [key for key, _dest in picked] == [("", "a")]
     dest = picked[0][1]
     assert os.path.isfile(dest)
     assert dest == os.path.join(pt_out, "picked", "a.jpg")
@@ -267,7 +335,7 @@ def test_pick_job_reports_a_missing_source(pt_dir, pt_out):
     )
     job.run()
     assert len(failures) == 1
-    assert failures[0][0] == "gone"
+    assert failures[0][0] == ("", "gone")
     assert failures[0][1]
 
 
@@ -287,7 +355,7 @@ def test_pick_job_all_skips_what_is_picked_already(pt_dir, pt_out):
         lambda done, total: progress.append((done, total))
     )
     job.run()
-    assert picked == ["b"]
+    assert picked == [("", "b")]
     assert progress[-1] == (2, 2)
     assert os.path.isfile(os.path.join(pt_out, "picked", "b.jpg"))
 
@@ -318,7 +386,7 @@ def test_pick_job_remove_moves_every_copy_into_the_trash(pt_dir, pt_out):
 
     assert failures == []
     assert len(moved) == 4
-    assert all(name == stem for name, _path in moved)
+    assert all(name == ("", stem) for name, _path in moved)
     for _name, path in moved:
         assert path.startswith(pick_core.trash_dir())
         assert os.path.isfile(path)
@@ -340,7 +408,7 @@ def test_pick_job_remove_of_an_unknown_stem_fails_softly(pt_dir, pt_out):
     )
     job.run()
     assert len(failures) == 1
-    assert failures[0][0] == "nothing"
+    assert failures[0][0] == ("", "nothing")
 
 
 def test_pick_job_detect_reports_the_picked_stems(pt_dir, pt_out):
@@ -361,7 +429,7 @@ def test_pick_job_detect_reports_the_picked_stems(pt_dir, pt_out):
         lambda kind, ok, total: done.append((kind, ok, total))
     )
     job.run()
-    assert stems == [frozenset({"b"})]
+    assert stems == [frozenset({("", "b")})]
     assert done == [("detect", 1, 2)]
 
 
@@ -374,6 +442,47 @@ def test_pick_job_cancel_stops_before_copying(pt_dir, pt_out):
     job.run()
     assert picked == []
     assert not os.path.isdir(os.path.join(pt_out, "picked"))
+
+
+def test_pick_job_keeps_the_relative_directory(pt_dir, pt_out):
+    source = write_image(pt_dir, os.path.join("sub", "a.jpg"))
+    entry = core.ImageEntry(path=source, name="a.jpg", rel_dir="sub")
+    picked = []
+    job = pick_worker.PickJob("pick", output_dir=pt_out, targets=(entry,))
+    job.item_picked.connect(
+        lambda key, dest: picked.append((key, dest))
+    )
+    job.run()
+    assert picked == [
+        (
+            ("sub", "a"),
+            os.path.join(pt_out, "picked", "sub", "a.jpg"),
+        )
+    ]
+    assert os.path.isfile(picked[0][1])
+
+
+def test_remove_job_takes_a_relative_key(pt_dir, pt_out):
+    first = write_image(pt_dir, os.path.join("one", "a.jpg"))
+    second = write_image(pt_dir, os.path.join("two", "a.jpg"))
+    pick_core.pick_one(first, pt_out, "one")
+    pick_core.pick_one(second, pt_out, "two")
+
+    moved = []
+    job = pick_worker.PickJob(
+        "remove", output_dir=pt_out, targets=(("one", "a"),)
+    )
+    job.item_removed.connect(
+        lambda key, path: moved.append((key, path))
+    )
+    job.run()
+
+    assert len(moved) == 1
+    assert moved[0][0] == ("one", "a")
+    assert moved[0][1].startswith(pick_core.trash_dir())
+    assert os.path.isfile(
+        os.path.join(pt_out, "picked", "two", "a.jpg")
+    )
 
 
 def test_moved_path_reads_the_record_of_the_core(pt_dir, pt_out):

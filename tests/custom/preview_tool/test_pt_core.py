@@ -206,7 +206,7 @@ class TestParseAnnotations:
 
 
 class TestScanDirectory:
-    """Only top level images are listed, in natural order."""
+    """The scan is recursive, depth first and natural at every level."""
 
     def test_extension_case_and_order(self, pt_dir):
         write_image(pt_dir, "b.JPG", (4, 4))
@@ -217,14 +217,51 @@ class TestScanDirectory:
         names = [entry.name for entry in core.scan_directory(pt_dir)]
         assert names == ["a2.png", "a10.png", "b.JPG"]
 
-    def test_top_level_only(self, pt_dir):
-        sub = os.path.join(pt_dir, "sub")
-        os.makedirs(sub)
-        write_image(sub, "inside.png", (4, 4))
-        write_image(pt_dir, "top.png", (4, 4))
-        assert [entry.name for entry in core.scan_directory(pt_dir)] == [
-            "top.png"
+    def test_depth_first_visual_order(self, pt_dir):
+        write_image(pt_dir, "root.png", (4, 4))
+        for name in ("sub2", "sub10"):
+            os.makedirs(os.path.join(pt_dir, name))
+        write_image(pt_dir, os.path.join("sub10", "10.png"), (4, 4))
+        write_image(pt_dir, os.path.join("sub2", "2.png"), (4, 4))
+        os.makedirs(os.path.join(pt_dir, "sub2", "deep"))
+        write_image(
+            pt_dir, os.path.join("sub2", "deep", "d.png"), (4, 4)
+        )
+        entries = core.scan_directory(pt_dir)
+        assert [entry.name for entry in entries] == [
+            "root.png",
+            "2.png",
+            "d.png",
+            "10.png",
         ]
+        assert [entry.rel_dir for entry in entries] == [
+            "",
+            "sub2",
+            os.path.join("sub2", "deep"),
+            "sub10",
+        ]
+
+    def test_files_of_a_directory_come_before_its_subdirectories(
+        self, pt_dir
+    ):
+        os.makedirs(os.path.join(pt_dir, "a_dir"))
+        write_image(pt_dir, os.path.join("a_dir", "inside.png"), (4, 4))
+        write_image(pt_dir, "z_file.png", (4, 4))
+        assert [entry.name for entry in core.scan_directory(pt_dir)] == [
+            "z_file.png",
+            "inside.png",
+        ]
+
+    def test_deep_tree_has_no_depth_limit(self, pt_dir):
+        relative = ""
+        for index in range(12):
+            relative = os.path.join(relative, "d%d" % index)
+        os.makedirs(os.path.join(pt_dir, relative))
+        write_image(pt_dir, os.path.join(relative, "one.png"), (4, 4))
+        entries = core.scan_directory(pt_dir)
+        assert len(entries) == 1
+        assert entries[0].rel_dir == relative
+        assert entries[0].name == "one.png"
 
     def test_entries_carry_path_and_side_car(self, pt_dir):
         image = write_image(pt_dir, "one.png", (4, 4))
@@ -232,9 +269,33 @@ class TestScanDirectory:
         entry = core.scan_directory(pt_dir)[0]
         assert entry.path == image
         assert entry.name == "one.png"
+        assert entry.rel_dir == ""
         assert entry.json_path == os.path.join(pt_dir, "one.json")
         assert entry.labels == frozenset()
         assert entry.shapes == ()
+
+    def test_subdirectory_entry_carries_its_side_car(self, pt_dir):
+        image = write_image(pt_dir, os.path.join("a", "one.png"), (4, 4))
+        side = write_json(pt_dir, os.path.join("a", "one.json"))
+        entry = core.scan_directory(pt_dir)[0]
+        assert entry.path == image
+        assert entry.rel_dir == "a"
+        assert entry.json_path == side
+
+    def test_skip_dirs_are_not_entered(self, pt_dir):
+        skip = os.path.join(pt_dir, "out")
+        os.makedirs(os.path.join(skip, "picked"))
+        write_image(skip, os.path.join("picked", "product.png"), (4, 4))
+        write_image(skip, "own.png", (4, 4))
+        write_image(pt_dir, "keep.png", (4, 4))
+        entries = core.scan_directory(pt_dir, skip_dirs=[skip])
+        assert [entry.name for entry in entries] == ["keep.png"]
+
+    def test_skip_dirs_accepts_a_plain_string(self, pt_dir):
+        skip = os.path.join(pt_dir, "out")
+        os.makedirs(skip)
+        write_image(skip, "own.png", (4, 4))
+        assert core.scan_directory(pt_dir, skip_dirs=skip) == []
 
     def test_image_without_side_car(self, pt_dir):
         write_image(pt_dir, "one.png", (4, 4))

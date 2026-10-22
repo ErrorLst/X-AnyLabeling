@@ -130,6 +130,14 @@ def _resolve_path(root, name):
     return os.path.join(str(root), str(name))
 
 
+def _ensure_parent(path):
+    """Create the parent directory of a scratch file when it is missing."""
+
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+
+
 def write_image(root, name=None, size=(8, 8), mode="RGB", **save_kwargs):
     """Write a deterministic image and return its path.
 
@@ -138,6 +146,7 @@ def write_image(root, name=None, size=(8, 8), mode="RGB", **save_kwargs):
     """
 
     path = _resolve_path(root, name)
+    _ensure_parent(path)
     image = make_image(size, mode)
     if PILImage is not None and isinstance(image, PILImage.Image):
         image.save(path, **save_kwargs)
@@ -185,6 +194,7 @@ def write_json(
     """
 
     path = _resolve_path(root, name)
+    _ensure_parent(path)
     if data is None:
         payload = {
             "version": "5.5.0",

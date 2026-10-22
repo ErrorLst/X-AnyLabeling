@@ -54,7 +54,7 @@ class TestNaturalKey:
 
 
 class TestScanDirectory:
-    """Only top level images are listed, in natural order."""
+    """The whole tree is scanned: files first, then subfolders."""
 
     def test_extension_case_and_order(self, ct_dir):
         write_pil(ct_dir, "b.JPG", (4, 4))
@@ -65,13 +65,61 @@ class TestScanDirectory:
         names = [entry.name for entry in core.scan_directory(ct_dir)]
         assert names == ["a2.png", "a10.png", "b.JPG"]
 
-    def test_top_level_only(self, ct_dir):
+    def test_subdirectories_are_scanned(self, ct_dir):
         sub = os.path.join(ct_dir, "sub")
         os.makedirs(sub)
         write_pil(sub, "inside.png", (4, 4))
         write_pil(ct_dir, "top.png", (4, 4))
-        assert [entry.name for entry in core.scan_directory(ct_dir)] == [
-            "top.png"
+        entries = core.scan_directory(ct_dir)
+        assert [entry.name for entry in entries] == [
+            "top.png",
+            "inside.png",
+        ]
+        assert [entry.rel_dir for entry in entries] == ["", "sub"]
+
+    def test_files_come_before_subdirectories(self, ct_dir):
+        write_pil(ct_dir, "z.png", (4, 4))
+        sub = os.path.join(ct_dir, "a")
+        os.makedirs(sub)
+        write_pil(sub, "inner.png", (4, 4))
+        assert [
+            entry.name for entry in core.scan_directory(ct_dir)
+        ] == ["z.png", "inner.png"]
+
+    def test_subdirectories_use_natural_order(self, ct_dir):
+        for name in ("b", "a10", "a2"):
+            sub = os.path.join(ct_dir, name)
+            os.makedirs(sub)
+            write_pil(sub, name + ".png", (4, 4))
+        assert [entry.rel_dir for entry in core.scan_directory(ct_dir)] == [
+            "a2",
+            "a10",
+            "b",
+        ]
+
+    def test_depth_first_preorder(self, ct_dir):
+        write_pil(ct_dir, "root.png", (4, 4))
+        os.makedirs(os.path.join(ct_dir, "a", "deep"))
+        os.makedirs(os.path.join(ct_dir, "b"))
+        write_pil(
+            os.path.join(ct_dir, "a"), "a.png", (4, 4)
+        )
+        write_pil(
+            os.path.join(ct_dir, "a", "deep"), "deep.png", (4, 4)
+        )
+        write_pil(os.path.join(ct_dir, "b"), "b.png", (4, 4))
+        entries = core.scan_directory(ct_dir)
+        assert [entry.rel_dir for entry in entries] == [
+            "",
+            "a",
+            os.path.join("a", "deep"),
+            "b",
+        ]
+        assert [entry.name for entry in entries] == [
+            "root.png",
+            "a.png",
+            "deep.png",
+            "b.png",
         ]
 
     def test_entries_carry_path_and_name(self, ct_dir):
@@ -79,6 +127,7 @@ class TestScanDirectory:
         entry = core.scan_directory(ct_dir)[0]
         assert entry.path == os.path.join(ct_dir, "one.png")
         assert entry.name == "one.png"
+        assert entry.rel_dir == ""
 
     def test_missing_directory(self, ct_dir):
         assert core.scan_directory(os.path.join(ct_dir, "nope")) == []
@@ -86,6 +135,19 @@ class TestScanDirectory:
     def test_path_is_not_a_directory(self, ct_dir):
         path = write_pil(ct_dir, "one.png", (4, 4))
         assert core.scan_directory(path) == []
+
+    def test_symlinked_directory_is_not_followed(self, ct_dir, ct_make):
+        target = ct_make()
+        write_pil(target, "linked.png", (4, 4))
+        link = os.path.join(ct_dir, "link")
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("a directory link cannot be created here")
+        write_pil(ct_dir, "own.png", (4, 4))
+        assert [
+            entry.name for entry in core.scan_directory(ct_dir)
+        ] == ["own.png"]
 
     def test_only_own_crops_of_the_output_dir_are_skipped(
         self, ct_dir, ct_out
@@ -101,6 +163,44 @@ class TestScanDirectory:
         assert [entry.name for entry in own] == ["img.png"]
         other = core.scan_directory(ct_dir, ct_out)
         assert len(other) == 2
+
+    def test_own_crops_of_a_subfolder_are_skipped(self, ct_dir):
+        sub = os.path.join(ct_dir, "sub")
+        os.makedirs(sub)
+        write_pil(ct_dir, "img.png", (8, 8))
+        write_pil(sub, "img__x0_y0_w2_h2__px0_py0.png", (2, 2))
+        assert [
+            entry.name
+            for entry in core.scan_directory(ct_dir, ct_dir)
+        ] == ["img.png"]
+
+    def test_output_subtree_is_skipped(self, ct_dir):
+        output = os.path.join(ct_dir, "crops")
+        os.makedirs(os.path.join(output, "deep"))
+        write_pil(output, "keep.png", (4, 4))
+        write_pil(os.path.join(output, "deep"), "deeper.png", (4, 4))
+        write_pil(ct_dir, "top.png", (4, 4))
+        entries = core.scan_directory(ct_dir, output)
+        assert [entry.name for entry in entries] == ["top.png"]
+
+    def test_a_deep_output_subtree_is_skipped(self, ct_dir):
+        output = os.path.join(ct_dir, "a", "crops")
+        os.makedirs(os.path.join(output, "sub"))
+        write_pil(output, "keep.png", (4, 4))
+        write_pil(os.path.join(output, "sub"), "deeper.png", (4, 4))
+        write_pil(os.path.join(ct_dir, "a"), "a.png", (4, 4))
+        write_pil(ct_dir, "top.png", (4, 4))
+        entries = core.scan_directory(ct_dir, output)
+        assert [entry.name for entry in entries] == ["top.png", "a.png"]
+
+    def test_output_root_outside_the_input_is_not_scanned(
+        self, ct_dir, ct_out
+    ):
+        write_pil(ct_out, "foreign.png", (4, 4))
+        write_pil(ct_dir, "top.png", (4, 4))
+        assert [
+            entry.name for entry in core.scan_directory(ct_dir, ct_out)
+        ] == ["top.png"]
 
 
 class TestSaveFormat:
@@ -129,6 +229,53 @@ class TestCropImage:
         result = core.crop_image(source, 1, 2, 3, 4, output_dir=target)
         assert os.path.isdir(target)
         assert os.path.isfile(result.path)
+
+    def test_rel_dir_is_created_below_the_output(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        relative = os.path.join("nested", "deep")
+        result = core.crop_image(
+            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir=relative
+        )
+        assert os.path.dirname(result.path) == os.path.join(
+            ct_out, relative
+        )
+        assert result.record.rel_dir == relative
+        assert os.path.isfile(result.path)
+
+    def test_rel_dir_keeps_its_own_sequence(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        first = core.crop_image(
+            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir="sub"
+        )
+        root = core.crop_image(source, 0, 0, 2, 2, output_dir=ct_out)
+        second = core.crop_image(
+            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir="sub"
+        )
+        assert os.path.dirname(first.path) == os.path.join(ct_out, "sub")
+        assert os.path.dirname(root.path) == ct_out
+        assert os.path.basename(first.path) == os.path.basename(root.path)
+        assert os.path.basename(second.path).endswith("__2.png")
+        assert second.record.seq == 2
+
+    def test_rel_dir_may_not_escape_the_output(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        for bad in (
+            os.pardir,
+            os.path.join(os.pardir, "up"),
+            "/absolute",
+            os.path.abspath(ct_dir),
+        ):
+            with pytest.raises(core.CropError, match="输出子目录不合法"):
+                core.crop_image(
+                    source,
+                    0,
+                    0,
+                    2,
+                    2,
+                    output_dir=ct_out,
+                    rel_dir=bad,
+                )
+        assert os.listdir(ct_out) == []
 
     def test_result_matches_its_name(self, ct_dir, ct_out):
         source = write_pil(ct_dir, "img.png", (8, 8))

@@ -1,21 +1,32 @@
-"""The preview window: one folder, its images and its filters.
+"""The preview window: one folder tree, its images and its filters.
 
-The window opens a folder, lists its top level images in file name
-order and shows one image at a time with its LabelMe annotations drawn
-on top; a rectangle may be grown by the expand parameter. The filter
-switch of the second toolbar row combines three axes with "and": score,
-size and category. The score and the size axis may be satisfied by
-different shapes, which is on purpose; lowering the threshold of one
-axis does not widen the other one.
+The window opens a folder, scans it recursively and lists the result in
+the directory tree of list_panel: one root node, one node per directory
+that holds a visible image and one leaf per image. The flat order of the
+leaves is the visual order of the tree (files first, subdirectories
+after them, both natural, depth first), and it is also the navigation
+order of the arrow keys, Home/End and the automatic jump. The window
+shows one image at a time with its LabelMe annotations drawn on top; a
+rectangle may be grown by the expand parameter. The filter switch of the
+second toolbar row combines three axes with "and": score, size and
+category. The score and the size axis may be satisfied by different
+shapes, which is on purpose; lowering the threshold of one axis does not
+widen the other one.
 
 Picking is a two way switch of the image on screen, not a history:
 
 * not picked - the image and its json side car are copied into
-  <output>/picked/, the row gains the marker of list_panel and the
-  button becomes "移入 dsh-trash";
-* picked - every copy of that stem inside picked/ (image and side car)
-  is moved into the trash folder of the system, the marker disappears
-  and the button becomes "拷贝到 picked" again.
+  <output>/picked/<rel_dir>/, keeping the directory it came from, the
+  leaf gains the marker of list_panel and the button becomes
+  "移入 dsh-trash";
+* picked - every copy of that (rel_dir, stem) family inside picked/
+  (image and side car) is moved into the trash folder of the system, the
+  marker disappears and the button becomes "拷贝到 picked" again.
+
+A successful copy or removal of the current image advances to the next
+leaf of the flat order, across directory borders and without wrapping
+at the end of the list; a failed, cancelled or empty operation stays
+where it is and "全部拷贝" never advances.
 
 Space and the toolbar button mean the same thing, Delete removes the
 current image only, and there is no undo stack at all: the source image
@@ -39,9 +50,9 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from anylabeling.views.labeling.utils import qt as qt_utils
 
-from . import core
+from . import core, pick_core
 from .category_filter import CategoryFilterButton
-from .list_panel import PreviewFileList
+from .list_panel import PreviewFileTree
 from .pick_worker import PickJob
 from .settings import PreviewSettings
 from .viewer import PreviewView, first_directory
@@ -209,7 +220,9 @@ class PreviewDialog(QtWidgets.QDialog):
         self._directory = ""
         self._entries: List = []
         self._kept: List = []
-        self._picked: FrozenSet[str] = frozenset()
+        self._picked: FrozenSet = frozenset()
+        self._advance_key = None
+        self._advance_failed = False
         self._index = -1
         self._current_path = ""
         self._saved_categories = None
@@ -271,12 +284,11 @@ class PreviewDialog(QtWidgets.QDialog):
         and the view takes the room that is left over.
         """
 
-        self._list = PreviewFileList()
+        self._list = PreviewFileTree()
         self._list.setMinimumWidth(LIST_MIN_WIDTH)
-        self._list.setUniformItemSizes(True)
-        # The list never takes the keyboard: the shortcuts of the window
+        # The tree never takes the keyboard: the shortcuts of the window
         # live in the event filter of the dialog, and a focused
-        # QListWidget would eat Space and End before they get there.
+        # QTreeWidget would eat Space and End before they get there.
         self._list.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._view = PreviewView()
         self._splitter = QtWidgets.QSplitter(
@@ -568,9 +580,11 @@ class PreviewDialog(QtWidgets.QDialog):
         self._entries = []
         self._kept = []
         self._picked = frozenset()
+        self._advance_key = None
+        self._advance_failed = False
         self._index = -1
         self._current_path = ""
-        self._list.set_rows([])
+        self._list.set_entries([], path)
         self._list.set_picked(self._picked)
         self._view.clear()
         self._refresh_pick_button()
@@ -585,11 +599,27 @@ class PreviewDialog(QtWidgets.QDialog):
         except Exception:
             return None
 
+    def _scan_output_dir(self) -> str:
+        """Return the output directory of a scan, never raising."""
+
+        try:
+            output = str(self._settings.output_dir() or "")
+        except Exception:
+            output = ""
+        if not output:
+            try:
+                output = core.default_output_dir()
+            except Exception:
+                output = ""
+        return output
+
     def _start_scan(self, directory: str) -> None:
-        """Start one background scan."""
+        """Start one background scan of the whole directory tree."""
 
         self._stop_scan()
-        worker = PreviewWorker(directory, self)
+        worker = PreviewWorker(
+            directory, self, output_dir=self._scan_output_dir()
+        )
         worker.progress.connect(self._on_scan_progress)
         worker.scanned.connect(self._on_scanned)
         worker.finished.connect(self._on_scan_finished)
@@ -696,16 +726,32 @@ class PreviewDialog(QtWidgets.QDialog):
         except Exception:
             kept = list(self._entries)
         self._kept = kept
-        self._list.set_rows([entry.name for entry in kept])
+        self._list.set_entries(kept, self._directory)
         self._list.set_picked(self._picked)
         self._set_current(self._pick_target(kept, self._current_path))
         self._update_status()
         return kept
 
+    def _key_of_path(self, path) -> tuple:
+        """Return the (rel_dir, stem) key of a path below the tree root."""
+
+        try:
+            rel = os.path.relpath(str(path), self._directory)
+        except (OSError, TypeError, ValueError):
+            rel = ""
+        stem = os.path.splitext(os.path.basename(str(path)))[0]
+        if not rel or rel.startswith(".."):
+            return "", stem
+        rel_dir = os.path.dirname(rel)
+        if rel_dir == ".":
+            rel_dir = ""
+        return pick_core.normalize_rel_dir(rel_dir), stem
+
     def _pick_target(self, kept: Sequence, current_path: str) -> int:
         """Return the row of the image that should be on screen.
 
-        The current image wins, then the first image with the same stem,
+        The current image wins, then the image with the same relative
+        directory and stem, then the first image with the same stem,
         then the first row of the list. -1 means "nothing to show".
         """
 
@@ -717,8 +763,11 @@ class PreviewDialog(QtWidgets.QDialog):
             for row, entry in enumerate(entries):
                 if getattr(entry, "path", "") == target:
                     return row
-            stem = os.path.splitext(os.path.basename(str(target)))[0]
+            rel_dir, stem = self._key_of_path(target)
             if stem:
+                for row, entry in enumerate(entries):
+                    if pick_core.entry_key(entry) == (rel_dir, stem):
+                        return row
                 for row, entry in enumerate(entries):
                     name = str(getattr(entry, "name", "") or "")
                     if os.path.splitext(name)[0] == stem:
@@ -909,21 +958,41 @@ class PreviewDialog(QtWidgets.QDialog):
 
     # ------------------------------------------------------------ picking
 
+    def _current_entry(self):
+        """Return the entry of the image on screen, None when there is none."""
+
+        if self._index < 0 or self._index >= len(self._kept):
+            return None
+        return self._kept[self._index]
+
     def _current_stem(self) -> str:
         """Return the stem of the image on screen, or ''."""
 
-        if self._index < 0 or self._index >= len(self._kept):
+        entry = self._current_entry()
+        if entry is None:
             return ""
-        name = str(getattr(self._kept[self._index], "name", "") or "")
-        return os.path.splitext(name)[0]
+        return str(pick_core.entry_key(entry)[1])
 
-    def _is_picked(self, stem: str = "") -> bool:
-        """Return True when the stem exists inside picked/."""
+    def _current_key(self) -> tuple:
+        """Return the (rel_dir, stem) key of the image on screen."""
 
-        stem = stem or self._current_stem()
+        entry = self._current_entry()
+        if entry is None:
+            return ("", "")
+        return pick_core.entry_key(entry)
+
+    def _is_picked(self, key=None) -> bool:
+        """Return True when one (rel_dir, stem) key exists in picked/."""
+
+        if key is None:
+            key = self._current_key()
+        try:
+            rel_dir, stem = key
+        except (TypeError, ValueError):
+            return False
         if not stem:
             return False
-        return stem in self._picked
+        return (rel_dir, stem) in self._picked
 
     def _refresh_pick_button(self) -> None:
         """Show the copy or the remove face of the toggle button."""
@@ -949,11 +1018,15 @@ class PreviewDialog(QtWidgets.QDialog):
         if self._pick_busy():
             self._set_status(BUSY_TEXT)
             return
-        stem = self._current_stem()
-        if stem and stem in self._picked:
-            self._start_pick("remove", targets=(stem,))
+        entry = self._current_entry()
+        if entry is None:
+            self._set_status(NO_CURRENT_TEXT)
+            return
+        key = pick_core.entry_key(entry)
+        if self._is_picked(key):
+            self._start_pick("remove", targets=(key,), advance=key)
         else:
-            self._start_pick("pick", targets=(self._current_path,))
+            self._start_pick("pick", targets=(entry,), advance=key)
 
     def _on_remove_current(self) -> None:
         """Delete key: remove the current image, never anything else."""
@@ -961,22 +1034,25 @@ class PreviewDialog(QtWidgets.QDialog):
         if self._index < 0:
             self._set_status(NO_CURRENT_TEXT)
             return
-        stem = self._current_stem()
-        if not stem or stem not in self._picked:
+        entry = self._current_entry()
+        if entry is None:
+            self._set_status(NO_CURRENT_TEXT)
+            return
+        key = pick_core.entry_key(entry)
+        if not key[1] or not self._is_picked(key):
             self._set_status(NOT_PICKED_TEXT)
             return
         if self._pick_busy():
             self._set_status(BUSY_TEXT)
             return
-        self._start_pick("remove", targets=(stem,))
+        self._start_pick("remove", targets=(key,), advance=key)
 
     def _on_pick_all(self) -> None:
         """Copy every image of the list that is not picked yet."""
 
         pending = [
             entry for entry in self._kept
-            if os.path.splitext(str(getattr(entry, "name", "")))[0]
-            not in self._picked
+            if not self._is_picked(pick_core.entry_key(entry))
         ]
         if not pending:
             self._set_status(PICK_ALL_EMPTY_TEXT)
@@ -1010,6 +1086,9 @@ class PreviewDialog(QtWidgets.QDialog):
             output_dir = str(self._settings.output_dir() or "")
         except Exception:
             output_dir = ""
+        advance = kwargs.get("advance")
+        self._advance_key = advance if kind in ("pick", "remove") else None
+        self._advance_failed = False
         job = PickJob(
             kind,
             entries=entries,
@@ -1044,50 +1123,106 @@ class PreviewDialog(QtWidgets.QDialog):
 
         self._status.setText(WORK_TEXT % (int(done), int(total)))
 
-    def _on_pick_item(self, stem: str, dest: str) -> None:
+    def _as_key(self, value) -> tuple:
+        """Return a (rel_dir, stem) key of any value a job reports."""
+
+        try:
+            key = pick_core.entry_key(value)
+        except Exception:
+            return ("", "")
+        return key
+
+    def _on_pick_item(self, key, dest: str) -> None:
         """Remember one copied image and mark its row."""
 
-        if stem:
-            self._picked = frozenset(set(self._picked) | {stem})
+        key = self._as_key(key)
+        if key[1]:
+            self._picked = frozenset(set(self._picked) | {key})
         self._mark_picked()
         self._set_status(STATUS_PICKED_FORMAT % dest)
 
-    def _on_pick_removed(self, stem: str, moved: str) -> None:
+    def _on_pick_removed(self, key, moved: str) -> None:
         """Forget one removed image and clear its row marker."""
 
-        if stem:
-            self._picked = frozenset(set(self._picked) - {stem})
+        key = self._as_key(key)
+        if key[1]:
+            self._picked = frozenset(set(self._picked) - {key})
         self._mark_picked()
         self._set_status(STATUS_REMOVED_FORMAT % moved)
 
-    def _on_pick_failed(self, stem: str, message: str) -> None:
+    def _on_pick_failed(self, key, message: str) -> None:
         """Report one file that could not be handled."""
 
+        key = self._as_key(key)
+        stem = key[1]
+        if self._advance_key is not None:
+            self._advance_failed = True
         text = f"{stem}: {message}" if stem else str(message)
         self._set_status(STATUS_FAILED_FORMAT % text)
 
-    def _on_detect_finished(self, stems) -> None:
-        """Take the picked stems of a finished detection."""
+    def _on_detect_finished(self, keys) -> None:
+        """Take the picked keys of a finished detection."""
 
-        try:
-            self._picked = frozenset(str(stem) for stem in (stems or ()))
-        except TypeError:
-            self._picked = frozenset()
+        picked = set()
+        for value in keys or ():
+            key = self._as_key(value)
+            if key[1]:
+                picked.add(key)
+        self._picked = frozenset(picked)
         self._mark_picked()
         self._update_status()
 
     def _on_pick_done(self, kind: str, ok: int, total: int) -> None:
-        """Close one job and refresh the picked state."""
+        """Close one job, refresh the picked state and advance if asked."""
 
         sender = self.sender()
         if sender is not None and sender is self._pick_job:
             self._pick_job = None
         elif sender is None and kind == self._pick_job_kind():
             self._pick_job = None
+        advance = self._advance_key
+        failed = self._advance_failed
+        self._advance_key = None
+        self._advance_failed = False
         self._mark_picked()
         self._update_status()
         if kind in ("pick", "all", "remove"):
             self._schedule_probe()
+        if (
+            advance is not None
+            and not failed
+            and int(ok or 0) > 0
+            and kind in ("pick", "remove")
+        ):
+            self._advance_to_next(advance)
+
+    def _row_of_key(self, key) -> int:
+        """Return the flat row of one (rel_dir, stem) key, -1 when absent."""
+
+        try:
+            wanted = (str(key[0]), str(key[1]))
+        except (TypeError, ValueError, IndexError):
+            return -1
+        for row, entry in enumerate(self._kept):
+            if pick_core.entry_key(entry) == wanted:
+                return row
+        return -1
+
+    def _advance_to_next(self, key) -> None:
+        """Show the next image of the flat order, if there is one.
+
+        The row of the key is looked up again instead of using the
+        current index: the user may have navigated while the job was
+        running. The end of the list does not wrap around.
+        """
+
+        row = self._row_of_key(key)
+        if row < 0:
+            return
+        target = row + 1
+        if target >= len(self._kept):
+            return
+        self._set_current(target)
 
     def _pick_job_kind(self) -> str:
         """Return the kind of the running job, '' when there is none."""
@@ -1139,7 +1274,12 @@ class PreviewDialog(QtWidgets.QDialog):
         return path
 
     def _on_output_dir_changed(self, path) -> None:
-        """Store a new output directory and probe it again."""
+        """Store a new output directory, probe it and rescan the input.
+
+        The output directory decides which subtree of the input has to
+        be skipped, so a change may add or remove images; the tree is
+        therefore rebuilt from a fresh scan.
+        """
 
         target = _normalize(path)
         if not target:
@@ -1149,9 +1289,13 @@ class PreviewDialog(QtWidgets.QDialog):
             f"{OUTPUT_TIP}\n{target}"
         )
         self._picked = frozenset()
+        self._advance_key = None
+        self._advance_failed = False
         self._mark_picked()
         self._update_status()
-        if self._entries:
+        if self._directory:
+            self._start_scan(self._directory)
+        elif self._entries:
             self._schedule_probe()
 
     def _on_directory_dropped(self, directory) -> None:
@@ -1444,6 +1588,8 @@ class PreviewDialog(QtWidgets.QDialog):
         """Stop every background job before the window goes away."""
 
         self._stop_repeat()
+        self._advance_key = None
+        self._advance_failed = False
         try:
             self._debounce_timer.stop()
         except Exception:

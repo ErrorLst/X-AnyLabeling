@@ -3,10 +3,10 @@
 Both helpers of this module run outside the main thread and never build
 a widget:
 
-* PreviewWorker reads one directory in a QThread. The images are listed
-  on the thread itself, the json side cars are parsed by a small pool,
-  and every point of an entry stays a plain tuple, so no QPointF is
-  ever born outside the main thread.
+* PreviewWorker reads one directory tree in a QThread. The images are
+  listed depth first on the thread itself, the json side cars are
+  parsed by a small pool, and every point of an entry stays a plain
+  tuple, so no QPointF is ever born outside the main thread.
 * PreviewPreloader decodes QImage objects in a QThreadPool and keeps
   the most recent ones inside one pixel budget. Only the main thread
   turns an image into a QPixmap.
@@ -69,63 +69,61 @@ def image_extensions() -> Tuple[str, ...]:
     return tuple(str(item).lower() for item in pick_core.PICK_IMAGE_EXTS)
 
 
-def image_names(directory: str) -> List[str]:
-    """Return the image file names of one directory, naturally sorted.
+def image_names(directory: str, skip_dirs=()) -> List[str]:
+    """Return the image paths of a directory tree relative to its root.
 
-    Only the top level of the directory is read. A missing, unreadable
-    or unlistable directory yields an empty list instead of raising.
+    The list is the flat, depth first order of core.scan_directory: one
+    level contributes its files first and its subdirectories afterwards,
+    each group in natural order. skip_dirs is handed over to the scan,
+    which is how the output folder of the tool stays out of its input.
+    A missing, unreadable or unlistable directory yields an empty list
+    instead of raising.
     """
 
     if not directory:
         return []
     try:
-        extensions = image_extensions()
-        names = []
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                try:
-                    if not entry.is_file():
-                        continue
-                except OSError:
-                    continue
-                name = entry.name
-                if os.path.splitext(name)[1].lower() in extensions:
-                    names.append(name)
-    except OSError:
-        return []
+        entries = core.scan_directory(directory, skip_dirs)
     except Exception:
         return []
-    try:
-        names.sort(key=core.natural_key)
-    except Exception:
-        names.sort()
+    names: List[str] = []
+    for entry in entries:
+        rel_dir = str(getattr(entry, "rel_dir", "") or "")
+        name = str(getattr(entry, "name", "") or "")
+        if not name:
+            continue
+        names.append(os.path.join(rel_dir, name) if rel_dir else name)
     return names
 
 
 def read_entry(directory: str, name: str):
-    """Return one core.ImageEntry for a file of a directory.
+    """Return one core.ImageEntry for a relative path of a directory.
 
-    core.localize reads and parses the json side car, here on a worker
-    thread; the points stay tuples because shapes are built by core,
-    which never knows about Qt. A broken side car only leaves the entry
-    without shapes.
+    The name may carry the subdirectories of the image and the entry
+    remembers them as rel_dir. core.localize reads and parses the json
+    side car, here on a worker thread; the points stay tuples because
+    shapes are built by core, which never knows about Qt. A broken side
+    car only leaves the entry without shapes.
     """
 
-    path = os.path.join(directory, name)
+    relative = str(name)
+    path = os.path.join(str(directory), relative)
+    rel_dir = "" if os.path.isabs(relative) else os.path.dirname(relative)
     json_path: Optional[str] = None
     shapes: Tuple = ()
     try:
-        json_path, shapes = core.localize(directory, name)
+        json_path, shapes = core.localize(directory, path)
         shapes = tuple(shapes or ())
     except Exception:
         json_path, shapes = None, ()
     labels = frozenset(str(shape.label) for shape in shapes)
     return core.ImageEntry(
         path=path,
-        name=name,
+        name=os.path.basename(relative),
         json_path=json_path,
         labels=labels,
         shapes=shapes,
+        rel_dir=rel_dir,
     )
 
 
@@ -151,11 +149,18 @@ class PreviewWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(int, int)
     scanned = QtCore.pyqtSignal(object)
 
-    def __init__(self, directory: str = "", parent=None):
-        """Build an idle worker; set_directory decides what it reads."""
+    def __init__(self, directory: str = "", parent=None,
+                 output_dir: str = ""):
+        """Build an idle worker; set_directory decides what it reads.
+
+        The output directory is only used to keep the products of the
+        tool out of the scan when they sit below the scanned root; an
+        empty value means "the default output folder of the dialog".
+        """
 
         super().__init__(parent)
         self._directory = str(directory or "")
+        self._output_dir = str(output_dir or "")
         self._snapshot: Optional[SourceSnapshot] = None
 
     def set_directory(self, directory) -> None:
@@ -163,11 +168,34 @@ class PreviewWorker(QtCore.QThread):
 
         self._directory = str(directory or "")
 
+    def set_output_dir(self, output_dir) -> None:
+        """Set the output directory the next scan has to leave out."""
+
+        self._output_dir = str(output_dir or "")
+
     @property
     def directory(self) -> str:
         """Return the directory of the next run."""
 
         return self._directory
+
+    @property
+    def output_dir(self) -> str:
+        """Return the output directory of the next run."""
+
+        return self._output_dir
+
+    def skip_dirs(self) -> Tuple[str, ...]:
+        """Return the subtrees of the input the scan must not enter."""
+
+        try:
+            return tuple(
+                pick_core.output_skip_dirs(
+                    self._directory, self._output_dir
+                )
+            )
+        except Exception:
+            return ()
 
     @property
     def snapshot(self) -> Optional[SourceSnapshot]:
@@ -185,10 +213,10 @@ class PreviewWorker(QtCore.QThread):
             return DEFAULT_SCAN_WORKERS
 
     def run(self) -> None:
-        """Read the directory and emit one SourceSnapshot."""
+        """Read the directory tree and emit one SourceSnapshot."""
 
         directory = self._directory
-        names = image_names(directory)
+        names = image_names(directory, self.skip_dirs())
         total = len(names)
         entries: List = []
         stopped = False
@@ -196,34 +224,32 @@ class PreviewWorker(QtCore.QThread):
         pool = ThreadPoolExecutor(max_workers=self._workers())
         try:
             futures = {}
-            for name in names:
+            for index, name in enumerate(names):
                 if self.isInterruptionRequested():
                     stopped = True
                     break
-                futures[pool.submit(read_entry, directory, name)] = name
+                futures[pool.submit(read_entry, directory, name)] = index
+            ordered: List = [None] * total
             done = 0
             for future in as_completed(futures):
                 if self.isInterruptionRequested():
                     stopped = True
                     break
+                index = futures[future]
+                done += 1
                 try:
                     entry = future.result()
                 except Exception:
                     entry = None
-                done += 1
                 if entry is not None:
-                    entries.append(entry)
+                    ordered[index] = entry
                 self.progress.emit(done, total)
+            entries = [entry for entry in ordered if entry is not None]
         finally:
             try:
                 pool.shutdown(wait=not stopped, cancel_futures=stopped)
             except TypeError:
                 pool.shutdown(wait=not stopped)
-        if not stopped:
-            try:
-                entries.sort(key=lambda item: core.natural_key(item.name))
-            except Exception:
-                entries.sort(key=lambda item: (item.name.lower(), item.name))
         snapshot = SourceSnapshot(
             directory=directory,
             entries=entries,

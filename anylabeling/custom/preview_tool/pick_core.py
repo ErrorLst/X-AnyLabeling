@@ -27,9 +27,15 @@ __all__ = [
     "PickOutcome",
     "UnpickStemResult",
     "detect_picked",
+    "entry_key",
+    "entry_path",
+    "entry_rel_dir",
+    "normalize_rel_dir",
+    "output_skip_dirs",
     "pick_all",
     "pick_one",
     "pick_state",
+    "picked_dir",
     "trash_dir",
     "unique_target",
     "unpick_one",
@@ -118,6 +124,90 @@ def _is_safe_name(name: str) -> bool:
     return not os.path.isabs(name)
 
 
+def normalize_rel_dir(value) -> str:
+    """Return a safe relative directory, '' for the root or garbage.
+
+    The separators are unified to the native one, empty and "." parts
+    are dropped and any ".." part (or an absolute path) makes the whole
+    value unusable, so a relative directory can never climb out of the
+    picked folder. An unusable value is reported as the root.
+    """
+
+    if value is None:
+        return ""
+    try:
+        text = str(value).strip()
+    except (TypeError, ValueError):
+        return ""
+    if not text or text == ".":
+        return ""
+    try:
+        if os.path.isabs(text) or os.path.splitdrive(text)[0]:
+            return ""
+    except (OSError, TypeError, ValueError):
+        return ""
+    unified = text.replace("/", os.sep).replace(_WINDOWS_SEP, os.sep)
+    parts: List[str] = []
+    for part in unified.split(os.sep):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return ""
+        parts.append(part)
+    if not parts:
+        return ""
+    return os.path.join(*parts)
+
+
+def _norm_real(path) -> str:
+    """Return the normalized real path of a path, '' when unknown."""
+
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        return ""
+    if isinstance(text, bytes) or not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.realpath(text))
+    except (OSError, TypeError, ValueError):
+        return ""
+
+
+def _is_inside(child: str, root: str) -> bool:
+    """Return True when child is root or below it, both real paths."""
+
+    if not child or not root:
+        return False
+    if child == root:
+        return True
+    try:
+        return os.path.commonpath([child, root]) == root
+    except (OSError, ValueError):
+        return False
+
+
+def output_skip_dirs(directory, output_dir) -> Tuple[str, ...]:
+    """Return the subtrees a recursive input scan has to leave out.
+
+    The tool writes its copies below <output>/picked/. When the output
+    folder is a strict subtree of the scanned root, that whole subtree
+    is skipped; when the output folder *is* the scanned root, only its
+    picked folder is skipped, because skipping the root would hide the
+    real input. An output folder outside the input tree needs no skip.
+    """
+
+    root = _norm_real(directory)
+    out = _norm_real(output_dir)
+    if not root or not out:
+        return ()
+    if out == root:
+        return (os.path.join(str(directory), PICK_SUBDIR),)
+    if _is_inside(out, root):
+        return (str(output_dir),)
+    return ()
+
+
 def _matches_stem(file_stem: str, stem: str) -> bool:
     """Return True when a file belongs to the family of one stem.
 
@@ -161,17 +251,79 @@ def _entry_path(entry) -> str:
     return ""
 
 
-def _pick_dir(output_dir) -> str:
-    """Return the picked folder below an output folder."""
+def entry_rel_dir(entry) -> str:
+    """Return the relative directory of an entry, '' at the root."""
 
-    return os.path.join(str(output_dir or "."), PICK_SUBDIR)
+    if isinstance(entry, (tuple, list)):
+        if len(entry) == 2:
+            return normalize_rel_dir(entry[0])
+        return ""
+    return normalize_rel_dir(getattr(entry, "rel_dir", ""))
 
 
-def _picked_names(output_dir) -> List[str]:
-    """Return the names inside the picked folder, empty when absent."""
+def entry_path(entry) -> str:
+    """Return the source file path of an entry of any supported shape."""
+
+    return _entry_path(entry)
+
+
+def entry_key(entry) -> Tuple[str, str]:
+    """Return the (relative directory, stem) identity of one image.
+
+    The key is the only identity the picked folder uses: two images of
+    different subdirectories may share a file name and still count and
+    behave as two different choices. A plain string is a root image, an
+    object carries its rel_dir attribute and a two item tuple is the
+    key itself, so every caller can hand over what it has.
+    """
+
+    if isinstance(entry, (tuple, list)) and len(entry) == 2:
+        rel_dir = normalize_rel_dir(entry[0])
+        name = os.path.basename(str(entry[1]))
+        return rel_dir, os.path.splitext(name)[0]
+    name = _entry_name(entry)
+    stem = os.path.splitext(name)[0] if name else ""
+    return entry_rel_dir(entry), stem
+
+
+def _rel_dir_or_none(value):
+    """Return a safe relative directory, None when the value is unsafe."""
+
+    if value is None:
+        return ""
+    try:
+        text = str(value).strip()
+    except (TypeError, ValueError):
+        return None
+    if not text or text == ".":
+        return ""
+    rel_dir = normalize_rel_dir(text)
+    if rel_dir:
+        return rel_dir
+    return None
+
+
+def _pick_dir(output_dir, rel_dir="") -> str:
+    """Return the picked folder of one relative directory."""
+
+    base = os.path.join(str(output_dir or "."), PICK_SUBDIR)
+    rel = normalize_rel_dir(rel_dir)
+    if not rel:
+        return base
+    return os.path.join(base, rel)
+
+
+def picked_dir(output_dir, rel_dir="") -> str:
+    """Return the picked folder of one relative directory."""
+
+    return _pick_dir(output_dir, rel_dir)
+
+
+def _picked_names(output_dir, rel_dir="") -> List[str]:
+    """Return the names inside one picked folder, empty when absent."""
 
     try:
-        return sorted(os.listdir(_pick_dir(output_dir)))
+        return sorted(os.listdir(_pick_dir(output_dir, rel_dir)))
     except (OSError, TypeError, ValueError):
         return []
 
@@ -211,16 +363,19 @@ class UnpickStemResult:
 def pick_state(entry, output_dir) -> bool:
     """Return True when the picked folder holds this image already.
 
-    Only the image extensions count: a side car without its image does
-    not make an image picked. A missing or unreadable picked folder
-    simply means "not picked", and every copy of the family counts.
+    The lookup only visits <picked>/<rel_dir>, so the same file name in
+    two subdirectories is two independent choices. Only the image
+    extensions count: a side car without its image does not make an
+    image picked. A missing or unreadable picked folder simply means
+    "not picked", and every copy of the family counts.
     """
 
     name = _entry_name(entry)
     if not name:
         return False
     stem = os.path.splitext(name)[0]
-    for file_name in _picked_names(output_dir):
+    rel_dir = entry_rel_dir(entry)
+    for file_name in _picked_names(output_dir, rel_dir):
         if os.path.splitext(file_name)[1].lower() not in PICK_IMAGE_EXTS:
             continue
         if _matches_stem(os.path.splitext(file_name)[0], stem):
@@ -228,15 +383,25 @@ def pick_state(entry, output_dir) -> bool:
     return False
 
 
-def pick_one(source_path, output_dir) -> PickOutcome:
+def pick_one(source_path, output_dir, rel_dir="") -> PickOutcome:
     """Copy one image and its side car into the picked folder.
 
-    The target name is claimed atomically with mode "xb" before the
-    copy, so two workers can race for the same name without ever
-    overwriting a file and without leaving a placeholder behind.
+    The relative directory of the source is kept below picked/, so an
+    image of <input>/a/b lands in <output>/picked/a/b and the copies of
+    two same named images never collide. The target name is claimed
+    atomically with mode "xb" before the copy, so two workers can race
+    for the same name without ever overwriting a file and without
+    leaving a placeholder behind.
     """
 
     source = str(source_path)
+    rel = _rel_dir_or_none(rel_dir)
+    if rel is None:
+        return PickOutcome(
+            status="invalid",
+            source=source,
+            message="非法相对目录：{}".format(rel_dir),
+        )
     try:
         if not os.path.isfile(source):
             return PickOutcome(
@@ -245,7 +410,7 @@ def pick_one(source_path, output_dir) -> PickOutcome:
                 message="找不到源文件："
                 + source,
             )
-        target_dir = _pick_dir(output_dir)
+        target_dir = _pick_dir(output_dir, rel)
         os.makedirs(target_dir, exist_ok=True)
         target = unique_target(target_dir, os.path.basename(source))
         with open(target, "xb"):
@@ -312,7 +477,7 @@ def _move_to_trash(source: str, name: str) -> str:
     return target
 
 
-def unpick_one(output_dir, name) -> PickOutcome:
+def unpick_one(output_dir, name, rel_dir="") -> PickOutcome:
     """Move one picked file and its side car into the temp trash."""
 
     name = str(name)
@@ -322,7 +487,14 @@ def unpick_one(output_dir, name) -> PickOutcome:
             source=name,
             message="非法文件名：" + name,
         )
-    source = os.path.join(_pick_dir(output_dir), name)
+    rel = _rel_dir_or_none(rel_dir)
+    if rel is None:
+        return PickOutcome(
+            status="invalid",
+            source=name,
+            message="非法相对目录：{}".format(rel_dir),
+        )
+    source = os.path.join(_pick_dir(output_dir, rel), name)
     try:
         if not os.path.isfile(source):
             return PickOutcome(
@@ -363,11 +535,11 @@ def unpick_one(output_dir, name) -> PickOutcome:
         )
 
 
-def _collect_family(output_dir, stem: str) -> List[str]:
-    """Return every picked image of one stem."""
+def _collect_family(output_dir, stem: str, rel_dir="") -> List[str]:
+    """Return every picked image of one stem inside one directory."""
 
     names: List[str] = []
-    for name in _picked_names(output_dir):
+    for name in _picked_names(output_dir, rel_dir):
         base, ext = os.path.splitext(name)
         if ext.lower() not in PICK_IMAGE_EXTS:
             continue
@@ -399,9 +571,11 @@ def _describe(moved) -> str:
     return ", ".join(parts)
 
 
-def unpick_stem(output_dir, stem) -> UnpickStemResult:
-    """Move every copy of one stem out of the picked folder.
+def unpick_stem(output_dir, stem, rel_dir="") -> UnpickStemResult:
+    """Move every copy of one stem out of one picked directory.
 
+    The family is looked up inside <picked>/<rel_dir> only, so removing
+    an image never touches a same named image of another subdirectory.
     Every image of the family is moved into the temp trash together
     with its own side car, each file under an independent timestamp.
     A single refused move is collected in the failed list and never
@@ -414,13 +588,19 @@ def unpick_stem(output_dir, stem) -> UnpickStemResult:
             status="invalid",
             message="非法文件名：" + stem,
         )
-    picked = _pick_dir(output_dir)
+    rel = _rel_dir_or_none(rel_dir)
+    if rel is None:
+        return UnpickStemResult(
+            status="invalid",
+            message="非法相对目录：{}".format(rel_dir),
+        )
+    picked = _pick_dir(output_dir, rel)
     if not os.path.isdir(picked):
         return UnpickStemResult(
             status="missing",
             message="找不到目录：" + picked,
         )
-    images = _collect_family(output_dir, stem)
+    images = _collect_family(output_dir, stem, rel)
     if not images:
         return UnpickStemResult(
             status="missing",
@@ -456,30 +636,33 @@ def unpick_stem(output_dir, stem) -> UnpickStemResult:
 def pick_all(entries, output_dir, progress_cb=None, should_stop=None):
     """Copy every entry that is not picked yet.
 
-    Returns (copied, skipped, stems). The progress callback is called
-    once per entry, the stop callback is asked before every entry and
-    stops the run immediately, keeping what was copied.
+    Returns (copied, skipped, keys) with one (rel_dir, stem) key per
+    copied image. The skip test and the copy both use the key of the
+    entry, so a batch keeps the relative directory of every source. The
+    progress callback is called once per entry, the stop callback is
+    asked before every entry and stops the run immediately, keeping
+    what was copied.
     """
 
     items = list(entries or ())
     total = len(items)
     copied = 0
     skipped = 0
-    stems: List[str] = []
+    keys: List[Tuple[str, str]] = []
     for index, entry in enumerate(items):
         if should_stop is not None and _should_stop(should_stop):
             break
-        name = _entry_name(entry)
-        stem = os.path.splitext(name)[0]
         if pick_state(entry, output_dir):
             skipped += 1
         else:
-            outcome = pick_one(_entry_path(entry), output_dir)
+            outcome = pick_one(
+                _entry_path(entry), output_dir, entry_rel_dir(entry)
+            )
             if outcome.status == "ok":
                 copied += 1
-                stems.append(stem)
+                keys.append(entry_key(entry))
         _notify(progress_cb, index + 1, total)
-    return copied, skipped, tuple(stems)
+    return copied, skipped, tuple(keys)
 
 
 def _should_stop(should_stop) -> bool:
@@ -502,14 +685,14 @@ def _notify(progress_cb, done: int, total: int) -> None:
         return
 
 
-def detect_picked(entries, output_dir) -> FrozenSet[str]:
-    """Return the stems of the entries that are picked already."""
+def detect_picked(entries, output_dir) -> FrozenSet[Tuple[str, str]]:
+    """Return the (rel_dir, stem) keys of the entries that are picked."""
 
-    stems = set()
+    keys = set()
     for entry in entries or ():
         try:
             if pick_state(entry, output_dir):
-                stems.add(os.path.splitext(_entry_name(entry))[0])
+                keys.add(entry_key(entry))
         except (OSError, TypeError, ValueError):
             continue
-    return frozenset(stems)
+    return frozenset(keys)

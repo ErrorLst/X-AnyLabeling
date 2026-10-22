@@ -1,9 +1,21 @@
-"""Crop core: scan, reversible naming, padding, atomic writes.
+"""Crop core: recursive scan, reversible naming, padding, atomic writes.
 
 The tool crops a fixed size rectangle out of every image of a folder
-and writes each crop into an output directory. The source folder is
-only read: no file there is modified, moved or deleted, and no json
-side car is ever written - the file name of a crop *is* its record.
+tree and writes each crop into an output directory, under the same
+relative subdirectory as its source: <output>/<rel_dir>/<name>. A
+source at the root of the tree lands directly inside the output
+directory. The source tree is only read: no file there is modified,
+moved or deleted, and no json side car is ever written - the file name
+of a crop *is* its record.
+
+Scanning rules: one directory contributes its files first, in natural
+order, then its subdirectories in natural order, each one visited
+depth first. The flat list is the visual order of the folder tree of
+the window and the order the automatic jump after a crop follows. An
+unreadable directory is skipped, a symbolic link to a directory is
+never followed (a link cycle can not make the scan run forever) and
+the output tree is skipped as a whole when it lives inside the scanned
+tree.
 
 Naming rules:
 
@@ -151,14 +163,16 @@ class CropError(Exception):
 
 @dataclass(frozen=True)
 class ImageEntry:
-    """One image of the scanned source directory.
+    """One image of the scanned source tree.
 
-    path is the path of the file, name its base name. Only the top
-    level of the source directory is ever scanned.
+    path is the path of the file, name its base name and rel_dir the
+    relative folder it sits in, '' for the root of the scanned tree.
+    The scan covers the whole tree, depth first.
     """
 
     path: str
     name: str
+    rel_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -169,8 +183,10 @@ class CropRecord:
     corner of the crop inside that source and w/h its size. pad_x and
     pad_y are the padding widths that were really applied, seq is 1
     for the first crop of a region and >= 2 for the following ones,
-    and ext is the output extension without the leading dot. Every
-    field but path can be read back from the file name alone.
+    ext is the output extension without the leading dot and rel_dir is
+    the relative folder of the crop inside the output tree, '' for the
+    output root. Every field but path can be read back from the file
+    name alone; rel_dir comes from the folder the crop sits in.
     """
 
     path: str
@@ -183,6 +199,7 @@ class CropRecord:
     pad_y: int
     seq: int
     ext: str
+    rel_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -278,6 +295,25 @@ def _same_dir(left: str, right: str) -> bool:
         return False
 
 
+def _inside_output(path: str, root: str) -> bool:
+    """Return True when a real path lives inside a directory tree.
+
+    The comparison runs on real paths and on path components, so a
+    sibling whose name only starts with the same text is not inside
+    the root. The root itself counts as inside.
+    """
+
+    if not path or not root:
+        return False
+    try:
+        candidate = os.path.realpath(path)
+        base = os.path.realpath(root)
+        common = os.path.commonpath([candidate, base])
+    except (OSError, ValueError):
+        return False
+    return common == base
+
+
 def build_crop_name(
     stem: str,
     x: int,
@@ -303,12 +339,15 @@ def build_crop_name(
     return name + out_ext
 
 
-def parse_crop_name(name: str, directory: str = "") -> Optional[CropRecord]:
+def parse_crop_name(
+    name: str, directory: str = "", rel_dir: str = ""
+) -> Optional[CropRecord]:
     """Read a crop file name back into a record.
 
     name is a base name; a name that does not carry the template
     yields None. When directory is not empty the path of the record is
-    that directory joined with name.
+    that directory joined with name, and rel_dir is stored as the
+    relative folder of the record ('' for the output root).
     """
 
     match = crop_name_re.match(name)
@@ -327,81 +366,186 @@ def parse_crop_name(name: str, directory: str = "") -> Optional[CropRecord]:
         pad_y=int(match.group("pad_y")),
         seq=int(seq) if seq else 1,
         ext=match.group("ext"),
+        rel_dir=rel_dir,
     )
 
 
 def _is_own_crop(name: str, directory: str, output_dir: str) -> bool:
     """Return True when a file is a crop this tool wrote before.
 
-    Only a file that sits directly in the output directory and whose
-    name carries the template is one of ours. Excluding the whole
-    output directory would be wrong: its default is the current
-    working directory, which usually holds ordinary images too.
+    A file is one of ours when its name carries the template and it
+    sits inside the output directory tree: the output root itself or
+    any subdirectory of it, because a crop keeps the relative folder
+    of its source. Excluding the whole output directory by path would
+    be wrong: its default is the current working directory, which
+    usually holds ordinary images too, so only template names are
+    excluded.
     """
 
-    if not output_dir or not _same_dir(directory, output_dir):
+    if not output_dir or parse_crop_name(name) is None:
         return False
-    return parse_crop_name(name) is not None
+    return _inside_output(directory, output_dir)
+
+
+def _scan_tree(
+    directory: str,
+    rel_dir: str,
+    output_dir: str,
+    skip_output: bool,
+    entries: List[ImageEntry],
+) -> None:
+    """Append the images of one directory tree in navigation order.
+
+    One directory contributes its files first, in natural order, then
+    its subdirectories, also in natural order, each one visited depth
+    first. An unreadable directory is skipped instead of aborting the
+    scan. Symbolic links to directories are never followed, so a link
+    cycle can not make the scan run forever.
+    """
+
+    try:
+        with os.scandir(directory) as scan:
+            items = list(scan)
+    except OSError:
+        return
+    files: List[str] = []
+    folders: List[str] = []
+    for item in items:
+        try:
+            if item.is_file():
+                if not item.name.lower().endswith(IMAGE_EXTS):
+                    continue
+                if _is_own_crop(item.name, directory, output_dir):
+                    continue
+                files.append(item.name)
+            elif item.is_dir(follow_symlinks=False):
+                folders.append(item.name)
+        except OSError:
+            continue
+    files.sort(key=natural_key)
+    folders.sort(key=natural_key)
+    for name in files:
+        entries.append(
+            ImageEntry(os.path.join(directory, name), name, rel_dir)
+        )
+    for name in folders:
+        child = os.path.join(directory, name)
+        if skip_output and _same_dir(child, output_dir):
+            continue
+        child_rel = os.path.join(rel_dir, name) if rel_dir else name
+        _scan_tree(child, child_rel, output_dir, skip_output, entries)
 
 
 def scan_directory(
     directory: str, output_dir: str = ""
 ) -> List[ImageEntry]:
-    """List the images of one directory, top level only.
+    """List every image of one directory tree in navigation order.
 
-    Extensions are compared in lower case and the result is sorted in
-    natural order. Files that sit in output_dir and carry the crop
-    template are skipped, everything else is kept. A directory that is
-    missing or unreadable yields an empty list.
+    Extensions are compared in lower case. One directory yields its
+    files first (natural order), then its subdirectories (natural
+    order), depth first, so the flat list is the visual order of the
+    folder tree of the window and the order of the automatic jump
+    after a crop. Every entry carries its rel_dir, the relative folder
+    of its file, '' for the root of the scanned tree.
+
+    Files that carry the crop template and sit inside output_dir are
+    skipped, because they are the crops of an earlier run. When
+    output_dir lives inside the scanned tree its whole subtree is
+    skipped as well, so the crops of this run are never scanned back
+    as sources. A directory that is missing or unreadable yields an
+    empty list (an unreadable subdirectory is simply skipped).
     """
 
     entries: List[ImageEntry] = []
-    try:
-        with os.scandir(directory) as scan:
-            for item in scan:
-                if not item.name.lower().endswith(IMAGE_EXTS):
-                    continue
-                if not item.is_file():
-                    continue
-                if _is_own_crop(item.name, directory, output_dir):
-                    continue
-                entries.append(ImageEntry(item.path, item.name))
-    except OSError:
-        return []
-    entries.sort(key=lambda entry: natural_key(entry.name))
+    if not directory:
+        return entries
+    skip_output = False
+    if output_dir:
+        skip_output = _inside_output(output_dir, directory) and not (
+            _same_dir(output_dir, directory)
+        )
+    _scan_tree(directory, "", output_dir, skip_output, entries)
     return entries
 
 
-def scan_crops(output_dir: str) -> Dict[str, List[CropRecord]]:
-    """Group every crop of a directory by the stem of its source.
+def _scan_crops_tree(
+    directory: str,
+    rel_dir: str,
+    groups: Dict[Tuple[str, str], List[CropRecord]],
+) -> None:
+    """Collect the crops of one output tree, depth first.
 
-    Only files whose name carries the template are read; a directory
-    is skipped. Every group is sorted in natural order of the file
-    name, which keeps __2 before __10. A directory that is missing or
-    unreadable yields an empty mapping.
+    Only files whose name carries the template are read; every other
+    file and every directory is looked at, never at its content. The
+    relative folder of a crop is the key it is grouped under, so two
+    sources with the same stem in different folders stay apart.
+    Symbolic links to directories are never followed.
     """
 
-    groups: Dict[str, List[CropRecord]] = {}
     try:
-        with os.scandir(output_dir) as scan:
-            for item in scan:
-                if not item.is_file():
-                    continue
-                record = parse_crop_name(item.name, output_dir)
-                if record is None:
-                    continue
-                groups.setdefault(record.source_stem, []).append(record)
+        with os.scandir(directory) as scan:
+            items = list(scan)
     except OSError:
-        return {}
+        return
+    files: List[str] = []
+    folders: List[str] = []
+    for item in items:
+        try:
+            if item.is_file():
+                files.append(item.name)
+            elif item.is_dir(follow_symlinks=False):
+                folders.append(item.name)
+        except OSError:
+            continue
+    for name in sorted(files, key=natural_key):
+        record = parse_crop_name(name, directory, rel_dir)
+        if record is None:
+            continue
+        groups.setdefault((rel_dir, record.source_stem), []).append(record)
+    for name in sorted(folders, key=natural_key):
+        child_rel = os.path.join(rel_dir, name) if rel_dir else name
+        _scan_crops_tree(
+            os.path.join(directory, name), child_rel, groups
+        )
+
+
+def scan_crops(
+    output_dir: str,
+) -> Dict[Tuple[str, str], List[CropRecord]]:
+    """Group every crop of an output tree by folder and source stem.
+
+    The key is (rel_dir, source_stem) with rel_dir the relative folder
+    of the crop inside output_dir, '' for the root. The tree is read
+    recursively, so a crop written under <output>/<rel_dir>/ is found
+    again; only files whose name carries the template are read. Every
+    group is sorted in natural order of the file name, which keeps __2
+    before __10. A directory that is missing or unreadable yields an
+    empty mapping.
+    """
+
+    groups: Dict[Tuple[str, str], List[CropRecord]] = {}
+    if not output_dir:
+        return groups
+    _scan_crops_tree(output_dir, "", groups)
     for records in groups.values():
-        records.sort(key=lambda item: natural_key(os.path.basename(item.path)))
+        records.sort(
+            key=lambda item: natural_key(os.path.basename(item.path))
+        )
     return groups
 
 
 def crop_count(output_dir: str, stem: str) -> int:
-    """Return how many crops of one source stem a directory holds."""
+    """Return how many crops of one source stem a tree holds.
 
-    return len(scan_crops(output_dir).get(stem, []))
+    Every relative folder counts, so the function answers for a stem
+    without knowing where its source sits in the tree.
+    """
+
+    return sum(
+        len(records)
+        for key, records in scan_crops(output_dir).items()
+        if key[1] == stem
+    )
 
 
 def _read_source(source_path: str):
@@ -517,6 +661,32 @@ def _save_options(fmt: str) -> dict:
     return {}
 
 
+def _normalize_rel_dir(rel_dir: str) -> str:
+    """Return a relative folder that may be joined to the output root.
+
+    The empty string stands for the output root itself. A path is
+    rejected with a CropError when it is absolute, names a drive or
+    carries a '..' part, so a crop can never be written outside its
+    output directory.
+    """
+
+    if not rel_dir:
+        return ""
+    text = str(rel_dir)
+    if os.path.isabs(text) or os.path.splitdrive(text)[0]:
+        raise CropError("输出子目录不合法：{}".format(rel_dir))
+    parts: List[str] = []
+    for part in text.replace("/", os.sep).split(os.sep):
+        if part in ("", os.curdir):
+            continue
+        if part == os.pardir or os.path.splitdrive(part)[0]:
+            raise CropError("输出子目录不合法：{}".format(rel_dir))
+        parts.append(part)
+    if not parts:
+        return ""
+    return os.path.join(*parts)
+
+
 def crop_image(
     source_path: str,
     x: int,
@@ -528,6 +698,7 @@ def crop_image(
     pad_y: int = 0,
     fill: int = FILL,
     output_dir: str = "",
+    rel_dir: str = "",
 ) -> CropResult:
     """Crop one rectangle out of an image and save it as a new file.
 
@@ -538,13 +709,21 @@ def crop_image(
     half written and an existing file is never overwritten: a taken
     name only moves the sequence number one step further.
 
+    rel_dir is the relative folder the source sits in inside the
+    scanned tree; it is created below the output root when it is not
+    there yet, so the crop keeps the folder structure of its source.
+    The record of the result carries the same rel_dir.
+
     Every condition that cannot be met - an unwritable output
     directory, an unreadable or too large image, a crop that is empty
-    or too large, a name that exceeds MAX_NAME_BYTES - ends in a
-    CropError and leaves the output directory without a new image.
+    or too large, a name that exceeds MAX_NAME_BYTES, a rel_dir that
+    would escape the output root - ends in a CropError and leaves the
+    output directory without a new image.
     """
 
-    target_dir = output_dir or default_output_dir()
+    relative = _normalize_rel_dir(rel_dir)
+    base_dir = output_dir or default_output_dir()
+    target_dir = os.path.join(base_dir, relative) if relative else base_dir
     _ensure_output_dir(target_dir)
     source = _read_source(source_path)
     crop_w, crop_h = _crop_size(width, height)
@@ -620,6 +799,7 @@ def crop_image(
             pad_y=pad_top,
             seq=seq,
             ext=out_ext.lstrip("."),
+            rel_dir=relative,
         )
         return CropResult(
             path=final,
@@ -634,17 +814,6 @@ def crop_image(
     )
 
 
-def _inside_output(path: str, root: str) -> bool:
-    """Return True when a real path lives inside the output root."""
-
-    try:
-        candidate = os.path.realpath(path)
-        common = os.path.commonpath([candidate, root])
-    except (OSError, ValueError):
-        return False
-    return common == root
-
-
 def delete_crops(
     paths: Sequence[str], output_dir: str
 ) -> Tuple[List[str], List[Tuple[str, str]]]:
@@ -654,8 +823,9 @@ def delete_crops(
     pairs. A path is only removed when the output directory exists,
     the base name carries the crop template, the path is a regular
     file and not a symbolic link, and its real path stays inside the
-    output directory. Nothing is ever removed recursively and no
-    directory is ever removed.
+    output directory tree (a nested crop under <output>/<rel_dir>/ is
+    accepted). Nothing is ever removed recursively and no directory is
+    ever removed.
     """
 
     deleted: List[str] = []

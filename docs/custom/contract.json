@@ -205,7 +205,7 @@
       }
     },
     "crop_tool": {
-      "summary": "裁图工具子窗口：拖入图片目录，固定 W×H 裁切框逐张裁图、右键裁切、A/D 换图；文件名即记录（可解析回原图 stem 与区域），Del 经确认后删本工具裁切子图。",
+      "summary": "裁图工具子窗口：递归图片目录（任意层子目录），左侧目录树 + 文件，固定 W×H 裁切框逐张裁图、右键裁切、A/D 换图，裁切成功自动跳下一张（跨目录连续）；文件名即记录（可解析回相对目录 + 原图 stem 与区域），输出保留相对子目录，Del 经确认后只删本工具裁切子图。",
       "code": ["anylabeling/custom/crop_tool/"],
       "tests": ["tests/custom/crop_tool/"],
       "enter": [
@@ -229,7 +229,7 @@
       }
     },
     "preview_tool": {
-      "summary": "Tool 菜单「预览工具」：拖拽图片目录按文件名自然排序预览 + LabelMe 标注叠加（矩形可外扩）；过滤总开关下得分/尺寸(4 模式)/类别(含背景)三项以「与」合成；按当前图 toggle（拷贝含边车 json 到 picked/，以及把同 stem 副本移入 dsh-trash，每图独立可逆、无历史栈）+ 全部拷贝；参数用 QSettings 持久化。",
+      "summary": "Tool 菜单「预览工具」：递归图片目录（任意层子目录），左侧目录树 + 文件，按树序预览 + LabelMe 标注叠加（矩形可外扩）；过滤总开关下得分/尺寸(4 模式)/类别(含背景)三项以「与」合成；按当前图 toggle（拷贝含边车 json 到 picked/<相对子目录>/，以及把同 (rel_dir, stem) 副本移入 dsh-trash，每图独立可逆、无历史栈）+ 全部拷贝；单文件处理成功自动跳下一张（跨目录连续）；参数用 QSettings 持久化。",
       "code": ["anylabeling/custom/preview_tool/"],
       "tests": ["tests/custom/preview_tool/"],
       "enter": [

@@ -200,7 +200,7 @@ def test_view_toggles_the_background(pt_dir):
 def test_the_components_leave_the_style_to_the_application():
     """No component carries a style sheet of its own any more."""
 
-    panel = list_panel.PreviewFileList()
+    panel = list_panel.PreviewFileTree()
     button = category_filter.CategoryFilterButton()
     view = viewer.PreviewView()
     try:
@@ -231,16 +231,18 @@ def test_view_accepts_only_a_dropped_directory(pt_dir):
         view.directory_dropped.connect(dropped.append)
         event, state = _drop_event(pt_dir)
         view.dropEvent(event)
-        assert dropped == [pt_dir]
+        assert [os.path.normpath(path) for path in dropped] == [
+            os.path.normpath(pt_dir)
+        ]
     finally:
         view.deleteLater()
 
 
-# ------------------------------------------------------------- file list
+# ------------------------------------------------------------- file tree
 
 
-def test_file_list_accepts_only_directories(pt_dir):
-    panel = list_panel.PreviewFileList()
+def test_file_tree_accepts_only_directories(pt_dir):
+    panel = list_panel.PreviewFileTree()
     try:
         path = write_image(pt_dir, "a.png", size=(4, 4))
         event, state = _drop_event(path)
@@ -253,13 +255,15 @@ def test_file_list_accepts_only_directories(pt_dir):
         panel.directory_dropped.connect(dropped.append)
         event, state = _drop_event(pt_dir)
         panel.dropEvent(event)
-        assert dropped == [pt_dir]
+        assert [os.path.normpath(path) for path in dropped] == [
+            os.path.normpath(pt_dir)
+        ]
     finally:
         panel.deleteLater()
 
 
-def test_file_list_refuses_drops_on_demand(pt_dir):
-    panel = list_panel.PreviewFileList()
+def test_file_tree_refuses_drops_on_demand(pt_dir):
+    panel = list_panel.PreviewFileTree()
     try:
         panel.ignore_drops(True)
         event, state = _drop_event(pt_dir)
@@ -269,36 +273,6 @@ def test_file_list_refuses_drops_on_demand(pt_dir):
         event, state = _drop_event(pt_dir)
         panel.dragEnterEvent(event)
         assert state["accepted"] is True
-    finally:
-        panel.deleteLater()
-
-
-def test_file_list_marks_the_picked_rows():
-    panel = list_panel.PreviewFileList()
-    try:
-        panel.set_rows(["a.jpg", "b.jpg"])
-        assert panel.row_count() == 2
-        assert panel.name_at(0) == "a.jpg"
-        panel.set_picked({"a"})
-        assert panel.row_text(0) == list_panel.PICK_MARK + "a.jpg"
-        assert panel.row_text(1) == "b.jpg"
-        panel.set_picked(set())
-        assert panel.row_text(0) == "a.jpg"
-    finally:
-        panel.deleteLater()
-
-
-def test_file_list_selection_signal_follows_the_user_only():
-    panel = list_panel.PreviewFileList()
-    try:
-        panel.set_rows(["a.jpg", "b.jpg"])
-        seen = []
-        panel.selection_changed.connect(seen.append)
-        panel.set_current_row(1)
-        assert panel.current_row() == 1
-        assert seen == []
-        panel.setCurrentRow(0)
-        assert seen == [0]
     finally:
         panel.deleteLater()
 

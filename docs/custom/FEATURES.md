@@ -30,8 +30,8 @@
 | label_filter | 按标签分类过滤文件列表（Tool 菜单运行时追加，实例级包装 import_image_folder） | `anylabeling/custom/label_filter/` | `tests/custom/label_filter/` | 1 个（1 行 import + 1 行调用） | 2 |
 | crash_log | 崩溃与运行日志落盘 `~/.xanylabeling/logs/xany-*.log`（faulthandler + 异常钩子 + Qt 钩子；异常退出检测） | `anylabeling/custom/crash_log/` | `tests/custom/crash_log/` | 1 个（1 行 import + 1 行调用） | 0 |
 | reset_view_on_switch | 换到另一张图片时画布缩放/滚动复位成首图初始态（有意压过 keep_prev_scale；同文件重载不复位） | `anylabeling/custom/reset_view_on_switch/` | 同目录 `tests/custom/reset_view_on_switch/` | 1 个（1 行 import + 1 行调用） | 1 |
-| crop_tool | 拖入目录后用固定 W×H 裁切框逐张裁图：右键裁切、A/D 换图、文件名即记录、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
-| preview_tool | 拖入图片目录按文件名自然排序预览并叠加 LabelMe 标注；按得分/尺寸/类别过滤（总开关），把当前图与边车 json 拷进 picked/ 或把同 stem 副本移入 dsh-trash | `anylabeling/custom/preview_tool/` | `tests/custom/preview_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
+| crop_tool | 拖入目录（含子目录）后用固定 W×H 裁切框逐张裁图：左侧目录树 + 文件、右键裁切后自动跳下一张（跨目录连续）、A/D 换图、文件名即记录、输出保留相对子目录、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
+| preview_tool | 拖入图片目录（含子目录）按目录树顺序预览并叠加 LabelMe 标注；左侧目录树 + 文件；按得分/尺寸/类别过滤（总开关）；把当前图与边车 json 拷进 picked/<相对子目录>/ 或把同 (rel_dir, stem) 副本移入 dsh-trash，单文件处理后自动跳下一张（跨目录连续） | `anylabeling/custom/preview_tool/` | `tests/custom/preview_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -1692,18 +1692,18 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 
 ### 职责
 
-数据集逐张裁切：把图片目录拖进子窗口，用一个固定的 W×H 裁切框（可选内边距）逐张裁图，
-右键裁切、A/D 换图。**文件名即记录**：裁切子图的名字里编码了原图 stem、区域、内边距与序号，
+数据集逐张裁切：把图片目录（含任意层子目录）拖进子窗口，用一个固定的 W×H 裁切框（可选内边距）
+逐张裁图，右键裁切、A/D 换图；左侧是「目录树 + 文件」的联合列表。**文件名即记录**：裁切子图的名字里编码了原图 stem、区域、内边距与序号，
 所以输出目录一读就知道「哪些原图裁过、每张裁了哪些区域」，不写 `.crop_record.json`、不读
 输入目录里的任何文件。唯一的删除入口是 Del：先弹确认框、默认答「否」，确认后只删输出目录里
 名字符合裁切模板的自己的子图。
 
 ### 代码与体量
 
-`anylabeling/custom/crop_tool/`（6 个文件 2416 行：`crop_core.py` 675 行是不依赖 Qt 的文件层 ——
-扫描、可逆命名与解析、补齐与内边距、原子写、白名单删除，`dialog.py` 884 行是窗口与交互，
-`viewer.py` 626 行是缩放/平移/裁切框/标记，`settings.py` 147 行、`__init__.py` 46 行、
-`launcher.py` 38 行）；测试 `tests/custom/crop_tool/`（7 个文件 2428 行，200 个用例）。
+`anylabeling/custom/crop_tool/`（6 个文件 2825 行：`crop_core.py` 858 行是不依赖 Qt 的文件层 ——
+递归扫描、可逆命名与解析、补齐与内边距、原子写、白名单删除，`dialog.py` 1089 行是窗口与交互，
+`viewer.py` 656 行是缩放/平移/裁切框/标记，`settings.py` 138 行、`__init__.py` 46 行、
+`launcher.py` 38 行）；测试 `tests/custom/crop_tool/`（7 个文件 3396 行，258 个用例）。
 
 本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以 `docs/custom/contract.json` 为准。
 
@@ -1740,11 +1740,12 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 
 ### 行为级契约（不可机器校验）
 
-- **R1 扫描**：只扫输入目录**顶层**（不递归）；扩展名 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`、
-  `.tif`、`.tiff`、`.gif`，大小写不敏感；排序是**自然序**（`2.jpg` 在 `10.jpg` 之前）；
-  只跳过「位于输出目录内、且名字能被 `parse_crop_name` 解析」的文件 —— 只排除本工具自己的产物，
-  而不是整个输出目录（默认输出目录就是 cwd，按目录排除会误伤同目录下的输入图）；
-  目录不存在或不可读 -> 空列表，不报错。
+- **R1 递归扫描与排序**：递归输入目录的任意层子目录；每个目录内「文件在前、子目录在后」，
+  文件与子目录都按**自然序**（`2.jpg` 在 `10.jpg` 之前），深度优先先序展开 —— 扁平条目顺序
+  与左侧目录树的视觉顺序一致。扩展名 `.jpg`、`.jpeg`、`.png`、`.bmp`、`.webp`、`.tif`、
+  `.tiff`、`.gif`，大小写不敏感。排除自家产物 = 文件位于输出根（含任意层子目录）且名字能被
+  `parse_crop_name` 解析；输出目录若位于输入树内部，递归时整棵输出子树剪掉（不把裁图当输入）；
+  目录不存在或不可读 -> 空列表，不报错；**目录符号链接不跟随**（防环），文件符号链接照旧可用。
 - **R2 可逆命名模板**：`<stem>__x<X>_y<Y>_w<W>_h<H>__px<PX>_py<PY>[__<SEQ>].<ext>`；解析用贪婪
   正则取**最右一个**坐标块，回得 stem + x + y + w + h + pad_x + pad_y（有则再加 seq 与 ext）；
   数字段必须是 ASCII 十进制；字符集只有字母、数字、下划线与点（Windows 合法，无尾随点/空格）；
@@ -1772,23 +1773,31 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   （见 R10）；Esc 关闭；文件列表在左、图像视图在右；状态栏常驻提示含「A/D 换图」「右键裁切」
   「Del 删裁切」；视图的 `keyPressEvent` 对 Left/Right/Delete/Escape 一律 `ignore()` 冒泡，
   dialog 另装 `eventFilter` 保证焦点在任意子控件时快捷键都生效；文件列表设 `NoFocus`，
-  以免 A/D 被键盘搜索吃掉。
+  以免 A/D 被键盘搜索吃掉。左侧是「目录树 + 文件」的联合树（见 R12）。
 - **R9 输入目录只读 + 文件名即记录**：不读也不写输入目录里的任何文件（尤其不读 `.json`）；
   不写 `<stem>.crop_record.json` —— 命名模板本身可逆（原图 stem + 区域 + 内边距 + 序号 + 扩展名），
   解析输出目录即可重建「哪些原图裁过、每张裁了哪些区域」，所以文件名就是记录：不会出现记录与磁盘
   不一致，也没有跨会话丢失。
-- **R10 删除（唯一删除入口与不变量）**：Del 先弹确认框，列出「将删除 N 个裁切子图」与全部路径，
+- **R10 删除（唯一删除入口与不变量）**：删除范围 = 当前图片 `(rel_dir, stem)` 名下的裁切子图
+  （不涉及其它子目录的同名 stem）。Del 先弹确认框，列出「将删除 N 个裁切子图」与全部路径，
   默认按钮是「否」；取消 -> 什么都不做。确认后逐条白名单校验（输出目录可用 -> 名字匹配裁切模板 ->
   非符号链接且是普通文件 -> realpath 位于 realpath(output_dir) 之内 -> `os.remove`），任一不满足
   就跳过并在状态栏报告原因（中文常量：输出目录不可用 / 文件名不符合裁切模板 / 符号链接 /
   不是普通文件 / 不在输出目录内 / 删除失败）；绝不递归、绝不删目录、绝不删模板之外的文件；
   删完重建解析缓存，标记消失、徽标计数下降、状态栏报告。**不变量**：除 Del 删除本工具自己的裁切
   子图外，本功能不删除任何文件（`.part` 残留不清理，属人工处理）。
-- **R11 标记来源与缓存**：标记 = `scan_crops(output_dir)` 的解析结果按 stem 归属到原图
-  （`CropRecord{path, source_stem, x, y, w, h, pad_x, pad_y, seq, ext}` -> 画成 `(x, y, w, h)` 矩形）；
-  徽标 `✓N`（N=0 时不显示徽标）与状态栏「已裁切: N 次」同源；重建时机：打开目录、改输出目录、
-  每次裁切成功（append 新记录）、每次 Del 后（整表重建）；同名 stem 视为同一原图（与徽标同口径）。
-- **R12 持久化、默认值与线程**：`QSettings("anylabeling", "anylabeling")` 的
+- **R11 标记来源与缓存**：标记 = `scan_crops(output_dir)` 的解析结果按 `(rel_dir, stem)` 归属到原图
+  （`CropRecord{path, source_stem, rel_dir, x, y, w, h, pad_x, pad_y, seq, ext}` -> 画成
+  `(x, y, w, h)` 矩形）；徽标 `✓N`（N=0 时不显示徽标）与状态栏「已裁切: N 次」同源；重建时机：
+  打开目录、改输出目录、每次裁切成功（append 新记录）、每次 Del 后（整表重建）；只有同一
+  `(rel_dir, stem)` 才视为同一原图（与徽标同口径），不同子目录的同名 stem 互不影响。
+- **R12 目录树与自动跳转**：左侧是 `QTreeWidget` 的「根目录 + 子目录 + 文件」联合树，顶层唯一
+  节点是输入根；目录节点可展开/折叠且**选中目录不换图**，只有选中文件叶子才换图；只为「下面有
+  图片」的目录建节点（空目录剪掉、父目录链保留），文件叶子仍显示 `✓N` 徽标。**裁切成功后自动
+  跳到扁平顺序的下一张**：跨目录连续（当前目录最后一张之后进入下一个目录第一张）、列表末尾
+  不循环、裁切失败/无图不跳；跳转时自动展开目标所在目录。重扫（换目录/改输出目录）后树恢复
+  全展开。
+- **R13 持久化、默认值与线程**：`QSettings("anylabeling", "anylabeling")` 的
   `custom/crop_tool/{width,height,pad_width,pad_height,output_dir}`；默认 640/640/0/0；
   `output_dir` 未设置时每次取 `os.getcwd()/crop`（不缓存、不写回），只有用户显式选择才持久化；
   输入目录**只存在于内存、不持久化**，窗口永远空着打开（旧版本留下的 `input_dir` 键被忽略）；
@@ -1798,11 +1807,13 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/crop_tool -v`
-（用仓库根下的 .venv/bin/python 跑；需 PyQt6）。目录里实际落地 **222 个用例**：`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
-（扫描与自然序、命名与解析、跳号与原子写、格式与 mode 收敛、越界补齐与内边距、上限与
-`DecompressionBombError`），`test_ct_viewer.py` 覆盖缩放/平移/裁切框跟随与快捷键冒泡，
-`test_ct_dialog.py` 覆盖确认框与白名单删除、标记与徽标、输出目录切换，`test_ct_settings.py` 覆盖
-默认值与持久化，`test_ct_install.py` 覆盖挂载点两行与菜单项幂等安装。
+（用虚拟环境里的 python 跑；需 PyQt6）。目录里实际落地 **258 个用例**（254 passed + 3 条
+Windows 环境失败 + 1 skipped）：`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
+（递归扫描顺序、`rel_dir` 与输出子树跳过、命名与解析、跳号与原子写、格式与 mode 收敛、
+越界补齐与内边距、上限与 `DecompressionBombError`），`test_ct_viewer.py` 覆盖缩放/平移/裁切框
+跟随与快捷键冒泡，`test_ct_dialog.py` 覆盖目录树、自动跳转、确认框与白名单删除、标记与徽标、
+输出目录切换，`test_ct_settings.py` 覆盖默认值与持久化，`test_ct_install.py` 覆盖挂载点两行与
+菜单项幂等安装。
 
 ### 已知坑
 
@@ -1814,33 +1825,39 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   改一次输出目录即持久化）。
 - 扫描集合不含 heic/heif：这类图片不会被列出。
 - 裁切丢 EXIF 与 ICC（只写像素与 mode，不搬元数据）。
-- 解析只按 stem 归属：不同输入目录下的同名 stem 会共享标记与徽标。
+- 标记按 `(rel_dir, stem)` 归属：不同子目录的同名图片互不影响；但换一个输入根后相对路径可能
+  相同，标记会随之共享（与「文件名即记录、不读输入目录」的口径一致）。
+- 目录符号链接不跟随（防环）；文件符号链接照旧可用。
+- 重扫后目录树恢复全展开，折叠状态不持久化。
+- 自动跳转只在裁切成功后发生，到列表末尾不循环。
 - 与上游「保存裁剪图像」（按标注形状批量裁切）是两件事：本功能按固定框裁，不读标注。
 
 ## preview_tool
 
 ### 职责
 
-拖入（或经 Ctrl+O 选择）一个图片目录，按**文件名自然排序**逐张预览，并把同名 LabelMe
-json 的标注叠加在图上（矩形可按设定像素外扩）；第二行工具栏是过滤：总开关打开后，
+拖入（或经 Ctrl+O 选择）一个图片目录（含任意层子目录），按 R1 的目录树顺序逐张预览，
+并把同名 LabelMe json 的标注叠加在图上（矩形可按设定像素外扩）；第二行工具栏是过滤：
+总开关打开后，
 **得分轴**与**尺寸轴（4 模式）**必须同时通过，**类别轴**（候选 = 全部 label 并上伪类别
 「背景」）独立判定。挑选是按当前图的**双向开关**：未挑选时把图与边车 json 拷进
-<输出目录>/picked/，已挑选时把 picked/ 里该 stem 的**全部副本移入 dsh-trash**
-（移动，不是删除）。另有「全部拷贝」。窗口是非模态 QDialog，参数走 QSettings 持久化，
+<输出目录>/picked/<相对子目录>/（保留相对结构），已挑选时把该相对目录下 picked/
+里该 stem 的**全部副本移入 dsh-trash**（移动，不是删除）；单个文件处理成功后自动跳到
+下一张（见 R18）。另有「全部拷贝」。窗口是非模态 QDialog，参数走 QSettings 持久化，
 **没有历史栈**：源图永不被改动，反向操作随时可以再执行一次。布局与其它工具一致：
-文件列表在**左**、图片视图在**右**，底部是标准 QStatusBar，不设任何自己的样式表。
+**目录树 + 文件**在**左**、图片视图在**右**，底部是标准 QStatusBar，不设任何自己的样式表。
 
 ### 代码与体量
 
-`anylabeling/custom/preview_tool/`（13 个文件 5064 行：`dialog.py` 1485 行是窗口与交互，
-`pick_core.py` 515 行是不依赖 Qt 的挑选与移除文件层（`dsh-trash` 的移动、stem 家族
-匹配与探测），`viewer.py` 501 行是缩放与平移视图，`worker.py` 464 行是目录扫描与
-QImage 预加载，`core.py` 417 行是扫描、标注解析与过滤（纯数据层），`settings.py`
-444 行是 QSettings 包装，`overlay.py` 338 行是标注层与矩形外扩，`pick_worker.py`
-330 行是拷贝、移除与探测线程，`category_filter.py` 209 行是多选类别菜单，
-`list_panel.py` 189 行是带对钩的文件列表，`installer.py` 75 行、`__init__.py`
-50 行、`launcher.py` 47 行只做入口与挂载）；测试
-`tests/custom/preview_tool/`（8 个文件 3532 行，共 228 个用例，其中 1 个图标用例在
+`anylabeling/custom/preview_tool/`（13 个文件 5751 行：`dialog.py` 1631 行是窗口与交互，
+`pick_core.py` 698 行是不依赖 Qt 的挑选与移除文件层（`dsh-trash` 的移动、相对子目录
+与 stem 家族匹配、探测），`core.py` 507 行是递归扫描、标注解析与过滤（纯数据层），
+`viewer.py` 501 行是缩放与平移视图，`worker.py` 490 行是递归目录扫描与 QImage 预加载，
+`settings.py` 444 行是 QSettings 包装，`list_panel.py` 405 行是「目录树 + 文件」树控件
+与 picked 标记，`pick_worker.py` 348 行是拷贝、移除与探测线程，`overlay.py` 338 行是
+标注层与矩形外扩，`category_filter.py` 209 行是多选类别菜单，`installer.py` 75 行、
+`__init__.py` 58 行、`launcher.py` 47 行只做入口与挂载）；测试
+`tests/custom/preview_tool/`（9 个文件 4515 行，共 288 个用例，其中 1 个图标用例在
 offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`，行数取 `wc -l`。
 
 本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以
@@ -1880,9 +1897,13 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
 
 ### 行为级契约（不可机器校验）
 
-- **R1 排序与扫描范围**：只扫目录**顶层**（不递归）；排序**永远**是文件名自然排序
-  （数字段按数值比较，`image_2` 在 `image_10` 之前；只有 ASCII 十进制数字段按
-  数值走，其它字符逐字符小写比较），没有「按修改日期」这个选项。
+- **R1 递归扫描与顺序**：递归目录的任意层子目录；每个目录内「文件在前、子目录在后」，
+  文件与子目录都按**自然排序**（数字段按数值比较，`image_2` 在 `image_10` 之前；只有
+  ASCII 十进制数字段按数值走，其它字符逐字符小写比较），深度优先先序展开；扁平条目
+  顺序 = 左侧目录树视觉顺序（导航/Home/End/自动跳转都用它）。没有「按修改日期」选项。
+  输出目录落在输入树内部时，整棵输出子树（默认含 `picked/`）在扫描时剪掉；输出目录
+  == 输入根时只跳过 `<根>/picked/`（否则整个输入会被隐藏，此为有意口径）。目录
+  符号链接不跟随（防环），文件符号链接照旧可用。
 - **R2 过滤总开关**：默认**关闭**；关闭 = 三项全部不生效，列表就是目录里的全部图片。
 - **R3 三个轴的合成关系**：`keep = (无标注 且 勾了「背景」) 或 (至少一个命中勾选类别的
   shape 通过得分轴 且 至少一个通过尺寸轴)`；两根轴可以不是同一个 shape（与参考实现
@@ -1902,8 +1923,8 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
   生效**；文本标签跟随外扩后的左上角。其它 shape 类型按 LabelMe 的形态绘制。
 - **R8 长按连发**：按左右方向键（或 A/D）首次按键**立即**翻 1 张；按住 500 ms 判定为
   长按后按 `speed`（1..30 张/秒，默认 5）连发；没有「步长」参数。
-- **R9 挑选（拷贝）**：`pick_one` 把图拷到 `<输出目录>/picked/`，同名边车
-  `.json` 一并拷贝（存在才拷）；**绝不覆盖**同名文件，重名改 `stem_1.ext` /
+- **R9 挑选（拷贝）**：`pick_one` 把图拷到 `<输出目录>/picked/<相对子目录>/`，同名边车
+  `.json` 一并拷贝到同一目录（存在才拷）；**绝不覆盖**同名文件，重名改 `stem_1.ext` /
   `stem_2.ext`…；`picked/` 不存在则自动创建；目标名用 `open(target, "xb")`
   **原子占名** + `shutil.copy2`，不创建任何待删的占位文件；输出目录默认
   `os.getcwd()`（**每次现取、不回写**），一旦用户显式选择就持久化
@@ -1922,17 +1943,18 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
   **只有边车 json 不算已挑选**）。撤销**不需要历史栈**：源图从不被改动，反向操作随时
   可以再执行一次，「拷到 → 移除 → 再拷」的状态往返就是每图独立可逆的验收点，且与操作
   先后顺序、与其它图片的状态完全无关。
-- **R13 移除范围 = 该 stem 的全部副本**：`unpick_stem` 移走 picked/ 中所有 stem 家族
-  匹配的图片（`a`、`a_1`、`a_2`…）及各自边车。因为 picked/ 是**扁平**
-  目录；若只移走序号最小的那个，`pick_state` 仍为 True、按钮状态不翻转，开关就会
-  是坏的。
+- **R13 移除范围 = 该 (相对目录, stem) 的全部副本**：`unpick_stem` 移走
+  `picked/<rel_dir>/` 中所有 stem 家族匹配的图片（`a`、`a_1`、`a_2`…）及各自边车，
+  不涉及其它相对目录；同一目录下同名家族共享编号空间，若只移走序号最小的那个，
+  `pick_state` 仍为 True、按钮状态不翻转，开关就会是坏的。
 - **R14 快捷键**：Space = 上述 toggle；Delete = **只做移除**（当前图不在 picked/ 时只写
   状态行提示，零文件操作）；← / → 与 A / D 翻图、Ctrl+O 打开目录、B 按住隐藏标注、
   Home / End 首末张、Esc 关窗；**没有 Ctrl+Z**。快捷键只在预览窗口激活时生效（事件
   过滤器装在 QDialog 自己身上且要求 `isActiveWindow()`）；数值 / 文本输入控件里按键
   一律放行。
 - **R15 已挑选标记（探测）**：打开目录后、每次拷贝 / 移除后、输出目录变更后**后台探测**
-  picked/，命中的行加对钩前缀；扫描期间到达的探测请求由 250 ms 合并处理，只跑一次。
+  `picked/`（按 `(rel_dir, stem)` 命中，不同子目录同名互不影响），命中的行加对钩前缀；
+  扫描期间到达的探测请求由 250 ms 合并处理，只跑一次。
 - **R16 持久化**：8 项参数（过滤总开关、得分阈值、尺寸模式、宽阈值、高阈值、拓展像素、
   长按速度、输出目录）写在 `anylabeling/custom/preview_tool/settings.py` 的
   键前缀 `KEY_PREFIX` 之下（即 settings 键名的 custom/preview_tool 前缀），
@@ -1940,18 +1962,26 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
   目录，每目录的键做百分号转义成单段。
 - **R17 千张级目录**：扫描 / 标注解析、预加载、拷贝 / 移除 / 探测全部在后台线程；
   改阈值 / 勾类别**不重新读盘**——过滤是对目录快照做的纯计算。
+- **R18 目录树与自动跳转**：左侧是 `QTreeWidget` 的「根目录 + 子目录 + 文件」联合树，
+  顶层唯一节点是输入根；目录节点可展开/折叠且**选中目录不换图**，只有选中文件叶子
+  才换图；只为「过滤后还有图片」的目录建节点（空目录剪掉、父目录链保留），叶子仍显示
+  picked 的 ✓ 前缀。当前图**拷贝到 picked / 移入 dsh-trash 成功后自动跳到扁平顺序的
+  下一张**：跨目录连续、列表末尾不循环、失败/取消/部分失败不跳、「全部拷贝」完成后
+  不跳。树重建（换目录 / 过滤变化）时保留用户折叠状态；当前图被过滤掉时沿用既有
+  「回到第一个可见行」行为；输出目录变化会重扫（跳过集合可能变化）。
 
 ### 测试
 
 `python -m pytest -p no:cacheprovider tests/custom/preview_tool -v`
 （本工作区用虚拟环境里的 `python` 跑；offscreen 由 conftest 设置）
-（需 PyQt6）。目录里实际落地 **228 个用例**（227 passed + 1 skipped）：
-`test_pt_core.py` 覆盖自然排序、扫描范围、标注解析与三轴过滤，`test_pt_pick.py`
-覆盖拷贝与移入 dsh-trash（含 `xb` 占名、重名跳号、stem 家族与不可逆性防护），
-`test_pt_settings.py` 覆盖 8 项默认值与按目录类别键，`test_pt_worker.py` 覆盖
-扫描、预加载线程与取消，`test_pt_dialog.py` 与 `test_pt_ui.py` 覆盖窗口、开关
-按钮、快捷键与状态行，`test_pt_mount.py` 覆盖挂载点两行、菜单项幂等安装与每个
-widget 一个窗口。
+（需 PyQt6）。目录里实际落地 **288 个用例**（287 passed + 1 skipped）：
+`test_pt_core.py` 覆盖递归扫描顺序、`rel_dir`、标注解析与三轴过滤，`test_pt_pick.py`
+覆盖 `picked/<rel_dir>` 下的拷贝与移入 dsh-trash（含 `xb` 占名、重名跳号、stem 家族、
+跨子目录同名隔离与不可逆性防护），`test_pt_tree.py` 覆盖目录树结构、剪枝、折叠保持
+与目录节点不发选中信号，`test_pt_settings.py` 覆盖 8 项默认值与按目录类别键，
+`test_pt_worker.py` 覆盖递归扫描、预加载线程与取消，`test_pt_dialog.py` 与
+`test_pt_ui.py` 覆盖窗口、开关按钮、快捷键、状态行与自动跳转（跨目录 / 末尾不循环 /
+失败不跳），`test_pt_mount.py` 覆盖挂载点两行、菜单项幂等安装与每个 widget 一个窗口。
 
 ### 已知坑
 
@@ -1963,8 +1993,14 @@ widget 一个窗口。
   `rmtree` 在本仓库一律禁止，移动后要把每个**完整路径**报给用户。
 - 参考实现的 `pick_manager.pick` 用 `os.remove` 删占位文件、`unpick` 用
   `os.remove` 删文件，**不可照抄**。
-- 扁平目录 + stem 家族匹配会把**非本工具**放入的同 stem 文件也视为已挑选并移入
-  `dsh-trash`（不加确认框，改为在状态行与日志里报出每个完整路径）。
+- 同一 `rel_dir` 下 + stem 家族匹配会把**非本工具**放入的同 stem 文件也视为已挑选并
+  移入 `dsh-trash`（不加确认框，改为在状态行与日志里报出每个完整路径）。
+- 目录符号链接不跟随（防环）；文件符号链接照旧可用。
+- 输出目录 == 输入根时只跳过 `<根>/picked/`，不跳整棵输入（否则列表会全空）；输出目录
+  在输入树内部其它位置时整棵子树跳过。
+- 目录节点选中只高亮目录、不换图；下一次导航会重新选中文件叶子（NoFocus + 事件过滤器
+  架构下的有意行为）。
+- 自动跳转只在单文件拷贝/移除成功后发生，列表末尾不循环，「全部拷贝」不跳。
 - 工作线程里不能建 `QPointF` / `QGraphicsItem`；
   `ImageEntry.shapes[].points` 是 `tuple[tuple[float, float]]`。
 - `QImage(path)` 可以**在线程池里**解码，而 `QPixmap` **只能**在主线程建。

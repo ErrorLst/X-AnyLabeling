@@ -108,13 +108,18 @@ class ShapeInfo:
 
 @dataclass(slots=True)
 class ImageEntry:
-    """One image of a scanned folder and what is known about it."""
+    """One image of a scanned folder and what is known about it.
+
+    rel_dir is the directory of the image relative to the scanned root,
+    "" for the root itself and a native path such as "a\\b" below it.
+    """
 
     path: str
     name: str
     json_path: Optional[str] = None
     labels: FrozenSet[str] = frozenset()
     shapes: Tuple[ShapeInfo, ...] = ()
+    rel_dir: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,48 +258,125 @@ def _load_label_file(json_path: str):
         return None
 
 
-def _sorted_entries(entries: List[ImageEntry]) -> List[ImageEntry]:
-    """Sort entries naturally, falling back to text when types clash."""
+def _sorted_names(names: List[str]) -> List[str]:
+    """Sort file or directory names naturally, text as the fallback."""
 
     try:
-        return sorted(entries, key=lambda entry: natural_key(entry.name))
+        return sorted(names, key=natural_key)
     except TypeError:
-        return sorted(
-            entries, key=lambda entry: (entry.name.lower(), entry.name)
-        )
+        return sorted(names, key=lambda name: (name.lower(), name))
 
 
-def scan_directory(directory: str) -> List[ImageEntry]:
-    """List the top level images of a directory in natural order.
+def _real_path(path: str):
+    """Return the normalized absolute form of a path, None on failure."""
 
-    The scan is deliberately not recursive and never raises: a missing
-    directory, a path that is a file or a permission error all yield an
-    empty list. The label file of an image is only located, not read;
-    the worker parses the documents in its own pool.
-    """
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        return None
+    if isinstance(text, bytes):
+        return None
+    if not text:
+        return None
+    try:
+        return os.path.normcase(os.path.realpath(text))
+    except (OSError, TypeError, ValueError):
+        return None
 
-    entries: List[ImageEntry] = []
+
+def _scan_skip_set(skip_dirs) -> frozenset:
+    """Return the normalized real paths of every subtree to skip."""
+
+    if skip_dirs is None:
+        return frozenset()
+    if isinstance(skip_dirs, (str, bytes)):
+        skip_dirs = (skip_dirs,)
+    try:
+        items = list(skip_dirs)
+    except TypeError:
+        return frozenset()
+    skipped = set()
+    for item in items:
+        real = _real_path(item)
+        if real:
+            skipped.add(real)
+    return frozenset(skipped)
+
+
+def _scan_level(directory: str):
+    """Return the file and the directory names of one level, sorted."""
+
+    files: List[str] = []
+    subdirs: List[str] = []
     try:
         with os.scandir(directory) as iterator:
             for item in iterator:
                 try:
-                    if not item.is_file():
-                        continue
+                    if item.is_dir():
+                        subdirs.append(item.name)
+                    elif item.is_file():
+                        name = item.name
+                        if (
+                            os.path.splitext(name)[1].lower()
+                            in IMAGE_EXTS
+                        ):
+                            files.append(name)
                 except OSError:
                     continue
-                name = item.name
-                if os.path.splitext(name)[1].lower() not in IMAGE_EXTS:
-                    continue
-                entries.append(
-                    ImageEntry(
-                        path=os.path.join(directory, name),
-                        name=name,
-                        json_path=find_label_file(item.path),
-                    )
-                )
     except (OSError, TypeError, ValueError):
-        return []
-    return _sorted_entries(entries)
+        return [], []
+    return _sorted_names(files), _sorted_names(subdirs)
+
+
+def scan_directory(directory: str, skip_dirs=()) -> List[ImageEntry]:
+    """List every image below a directory as a depth first flat list.
+
+    One level contributes its files first in natural order and its
+    subdirectories afterwards in natural order; every subdirectory then
+    contributes its own files and subdirectories before the next
+    sibling starts. The flat order is therefore the visual order of the
+    directory tree of the window.
+
+    A missing directory, a path that is a file or a permission error
+    all yield an empty list instead of raising. Directories listed in
+    skip_dirs (compared by real path) are not entered; that is how the
+    output folder of the tool stays out of its own input when it sits
+    below the scanned root. The label file of an image is only located,
+    not read; the worker parses the documents in its own pool.
+    """
+
+    entries: List[ImageEntry] = []
+    try:
+        if not directory or not os.path.isdir(str(directory)):
+            return entries
+        root = os.path.abspath(str(directory))
+    except (OSError, TypeError, ValueError):
+        return entries
+    skipped = _scan_skip_set(skip_dirs)
+    visited = set()
+    stack: List[str] = [""]
+    while stack:
+        rel_dir = stack.pop()
+        current = root if not rel_dir else os.path.join(root, rel_dir)
+        real = _real_path(current)
+        if real is None or real in skipped or real in visited:
+            continue
+        visited.add(real)
+        files, subdirs = _scan_level(current)
+        for name in files:
+            path = os.path.join(current, name)
+            entries.append(
+                ImageEntry(
+                    path=path,
+                    name=name,
+                    json_path=find_label_file(path),
+                    rel_dir=rel_dir,
+                )
+            )
+        for name in reversed(subdirs):
+            child = os.path.join(rel_dir, name) if rel_dir else name
+            stack.append(child)
+    return entries
 
 
 def _record_missing(missing, name: str) -> None:

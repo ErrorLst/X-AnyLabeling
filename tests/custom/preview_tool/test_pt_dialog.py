@@ -51,16 +51,21 @@ def _drop_event(*paths):
     return event, state
 
 
-def _entry(directory, name, shapes=()):
-    """Build one core.ImageEntry of a directory, without a disk."""
+def _entry(directory, name, shapes=(), rel_dir=""):
+    """Build one core.ImageEntry of a directory tree, without a disk."""
 
     shapes = tuple(shapes)
+    if rel_dir:
+        path = os.path.join(directory, rel_dir, name)
+    else:
+        path = os.path.join(directory, name)
     return core.ImageEntry(
-        path=os.path.join(directory, name),
+        path=path,
         name=name,
         json_path=None,
         labels=frozenset(shape.label for shape in shapes),
         shapes=shapes,
+        rel_dir=rel_dir,
     )
 
 
@@ -91,10 +96,10 @@ def _wait_entries(dialog, timeout=10.0):
     return bool(dialog._entries)
 
 
-def _wait_picked(dialog, stems, timeout=10.0):
-    """Process events until the picked set of the dialog is stems."""
+def _wait_picked(dialog, keys, timeout=10.0):
+    """Process events until the picked key set of the dialog is keys."""
 
-    expected = frozenset(stems)
+    expected = frozenset(keys)
     app = QtWidgets.QApplication.instance()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -349,7 +354,7 @@ def test_toggle_button_follows_the_picked_state(opened, pt_store, pt_dir):
     _open_entries(dialog, pt_dir, ["a.png"])
     assert dialog._toggle_btn.text() == pt_dialog.TOGGLE_PICK_TEXT
     assert dialog._toggle_icon_name == pt_dialog.TOGGLE_PICK_ICON
-    dialog._picked = frozenset({"a"})
+    dialog._picked = frozenset({("", "a")})
     dialog._refresh_pick_button()
     assert dialog._toggle_btn.text() == pt_dialog.TOGGLE_REMOVE_TEXT
     assert dialog._toggle_icon_name == pt_dialog.TOGGLE_REMOVE_ICON
@@ -368,11 +373,17 @@ def test_space_switches_between_copy_and_remove(opened, pt_store, pt_dir):
         (kind, kwargs)
     )
     dialog._on_toggle_current()
-    assert calls == [("pick", {"targets": (dialog._current_path,)})]
-    dialog._picked = frozenset({"a"})
+    kind, kwargs = calls[0]
+    assert kind == "pick"
+    assert kwargs["targets"] == (dialog._current_entry(),)
+    assert kwargs["advance"] == ("", "a")
+    dialog._picked = frozenset({("", "a")})
     dialog._refresh_pick_button()
     dialog._on_toggle_current()
-    assert calls[-1] == ("remove", {"targets": ("a",)})
+    kind, kwargs = calls[-1]
+    assert kind == "remove"
+    assert kwargs["targets"] == (("", "a"),)
+    assert kwargs["advance"] == ("", "a")
 
 
 def test_delete_on_an_unpicked_image_touches_nothing(
@@ -404,13 +415,15 @@ def test_delete_on_a_picked_image_removes_it(opened, pt_store, pt_dir):
     settings, _ini = pt_store
     dialog = opened(settings)
     _open_entries(dialog, pt_dir, ["a.png"])
-    dialog._picked = frozenset({"a"})
+    dialog._picked = frozenset({("", "a")})
     calls = []
     dialog._start_pick = lambda kind, **kwargs: calls.append(
         (kind, kwargs)
     )
     dialog._on_remove_current()
-    assert calls == [("remove", {"targets": ("a",)})]
+    kind, kwargs = calls[0]
+    assert kind == "remove"
+    assert kwargs["targets"] == (("", "a"),)
 
 
 def test_pick_all_asks_before_copying(opened, pt_store, pt_dir, monkeypatch):
@@ -444,7 +457,7 @@ def test_pick_all_asks_before_copying(opened, pt_store, pt_dir, monkeypatch):
     dialog._on_pick_all()
     assert calls == ["all"]
 
-    dialog._picked = frozenset({"a", "b"})
+    dialog._picked = frozenset({("", "a"), ("", "b")})
     dialog._mark_picked()
     dialog._on_pick_all()
     assert dialog._status.text() == pt_dialog.PICK_ALL_EMPTY_TEXT
@@ -464,7 +477,7 @@ def test_the_toggle_copies_and_removes_for_real(
     assert dialog._current_stem() == "a"
 
     dialog._on_toggle_current()
-    assert _wait_picked(dialog, {"a"})
+    assert _wait_picked(dialog, {("", "a")})
     copied = os.path.join(pt_out, "picked", "a.jpg")
     assert os.path.isfile(copied)
     assert os.path.isfile(os.path.join(pt_out, "picked", "a.json"))
@@ -499,7 +512,7 @@ def test_pick_all_copies_everything_that_is_left(
     dialog.set_directory(pt_dir)
     assert _wait_entries(dialog)
     dialog._on_pick_all()
-    assert _wait_picked(dialog, {"a", "b"})
+    assert _wait_picked(dialog, {("", "a"), ("", "b")})
     picked_dir = os.path.join(pt_out, "picked")
     assert sorted(os.listdir(picked_dir)) == ["a.jpg", "b.jpg"]
 
@@ -667,3 +680,358 @@ def test_a_thousand_images_are_filtered_in_time(opened, pt_store, pt_dir):
     assert dialog._list.row_count() == 1000
     assert len(dialog._entries) == 1000
     assert elapsed < 2.0
+
+# -------------------------------------------------------------- the tree
+
+
+def _quiet_probe(dialog):
+    """Stop the scheduled picked probe of a test dialog."""
+
+    dialog._schedule_probe = lambda: None
+    dialog._pending_probe = False
+    try:
+        dialog._debounce_timer.stop()
+    except Exception:
+        pass
+
+
+def _wait_until(predicate, timeout=10.0):
+    """Process events until a predicate is true."""
+
+    app = QtWidgets.QApplication.instance()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if app is not None:
+            app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return bool(predicate())
+
+
+def _wait_idle(dialog, timeout=10.0):
+    """Process events until the running pick job is gone."""
+
+    return _wait_until(
+        lambda: dialog._pick_job is None and not dialog._pick_busy(),
+        timeout,
+    )
+
+
+def test_the_tree_shows_the_opened_folder(opened, pt_store, pt_dir):
+    settings, _ini = pt_store
+    write_image(pt_dir, "root.png", size=(8, 8))
+    write_image(pt_dir, os.path.join("sub", "inside.png"), size=(8, 8))
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    _quiet_probe(dialog)
+    tree = dialog._list
+    assert tree.root_text() == os.path.basename(pt_dir)
+    assert tree.row_count() == 2
+    assert [tree.name_at(row) for row in range(2)] == [
+        "root.png",
+        "inside.png",
+    ]
+    assert tree.directory_item("sub") is not None
+    assert tree.current_row() == 0
+
+
+def test_selecting_a_directory_node_keeps_the_image(
+    opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    write_image(pt_dir, "root.png", size=(8, 8))
+    write_image(pt_dir, os.path.join("sub", "inside.png"), size=(8, 8))
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    _quiet_probe(dialog)
+    before = dialog._current_path
+    dialog._list.setCurrentItem(dialog._list.directory_item("sub"))
+    assert dialog._current_path == before
+    assert dialog._index == 0
+
+
+def test_the_filter_prunes_directories_without_visible_images(
+    opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    dialog = opened(settings)
+    entries = [
+        _entry(pt_dir, "a.png", (_rectangle(),), rel_dir="keep"),
+        _entry(pt_dir, "b.png", (), rel_dir="drop"),
+    ]
+    dialog._directory = pt_dir
+    dialog._on_scanned(SourceSnapshot(pt_dir, entries, 2, False))
+    _quiet_probe(dialog)
+    tree = dialog._list
+    assert tree.row_count() == 2
+    assert tree.directory_item("keep") is not None
+    assert tree.directory_item("drop") is not None
+
+    dialog._filter_enabled.setChecked(True)
+    dialog._score_box.setValue(0.5)
+    dialog._width_box.setValue(0.0)
+    dialog._height_box.setValue(0.0)
+    dialog._categories.set_categories(["cat"], {"cat"})
+    dialog._apply_filter()
+
+    assert tree.row_count() == 1
+    assert tree.directory_item("keep") is not None
+    assert tree.directory_item("drop") is None
+
+
+def test_a_filter_rebuild_keeps_the_current_image(
+    opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    dialog = opened(settings)
+    entries = [
+        _entry(pt_dir, "a.png", (_rectangle(),)),
+        _entry(pt_dir, "b.png", (_rectangle(),), rel_dir="sub"),
+    ]
+    dialog._directory = pt_dir
+    dialog._on_scanned(SourceSnapshot(pt_dir, entries, 2, False))
+    _quiet_probe(dialog)
+    dialog._set_current(1)
+    current = dialog._current_path
+
+    dialog._filter_enabled.setChecked(True)
+    dialog._score_box.setValue(0.5)
+    dialog._width_box.setValue(0.0)
+    dialog._height_box.setValue(0.0)
+    dialog._categories.set_categories(["cat"], {"cat"})
+    dialog._apply_filter()
+
+    assert dialog._current_path == current
+    assert dialog._list.current_row() == 1
+    dialog._list.setCurrentItem(dialog._list.file_item(0))
+    assert dialog._index == 0
+    assert dialog._current_path == entries[0].path
+
+
+# ------------------------------------------------------------ auto jump
+
+
+def test_a_copy_advances_across_directory_borders(
+    opened, pt_store, pt_dir, pt_out
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_out)
+    write_image(pt_dir, "01_root.png", size=(8, 8))
+    write_image(pt_dir, os.path.join("a", "02_a.png"), size=(8, 8))
+    write_image(pt_dir, os.path.join("b", "03_b.png"), size=(8, 8))
+    write_image(pt_dir, os.path.join("b", "04_b.png"), size=(8, 8))
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    _quiet_probe(dialog)
+    assert [entry.name for entry in dialog._kept] == [
+        "01_root.png",
+        "02_a.png",
+        "03_b.png",
+        "04_b.png",
+    ]
+    assert dialog._index == 0
+
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    assert dialog._list.picked() == frozenset({("", "01_root")})
+    assert dialog._index == 1
+    assert os.path.basename(dialog._current_path) == "02_a.png"
+    assert dialog._list.row_text(0).startswith(list_panel.PICK_MARK)
+
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    assert dialog._index == 2
+    assert dialog._list.picked() == frozenset(
+        {("", "01_root"), ("a", "02_a")}
+    )
+    assert os.path.basename(dialog._current_path) == "03_b.png"
+    assert os.path.isfile(
+        os.path.join(pt_out, "picked", "a", "02_a.png")
+    )
+
+
+def test_the_advance_stops_at_the_end_of_the_flat_order(
+    opened, pt_store, pt_dir, pt_out
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_out)
+    write_image(pt_dir, "01_a.png", size=(8, 8))
+    write_image(pt_dir, os.path.join("s", "02_b.png"), size=(8, 8))
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    _quiet_probe(dialog)
+
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    assert dialog._index == 1
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    assert dialog._index == 1
+    assert dialog._list.picked() == frozenset(
+        {("", "01_a"), ("s", "02_b")}
+    )
+
+
+def test_a_removal_advances_to_the_next_image(
+    opened, pt_store, pt_dir, pt_out
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_out)
+    for name in ("01_a.png", "02_b.png", "03_c.png"):
+        write_image(pt_dir, name, size=(8, 8))
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    _quiet_probe(dialog)
+
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    assert dialog._index == 2
+
+    dialog._on_key_press(_key(QtCore.Qt.Key.Key_Home))
+    dialog._on_key_press(_key(QtCore.Qt.Key.Key_Right))
+    assert dialog._index == 1
+    dialog._on_remove_current()
+    assert _wait_idle(dialog)
+
+    assert dialog._index == 2
+    assert os.path.basename(dialog._current_path) == "03_c.png"
+    assert dialog._list.picked() == frozenset({("", "01_a")})
+
+
+def test_a_failed_copy_does_not_advance(
+    opened, pt_store, pt_dir, pt_out
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_out)
+    dialog = opened(settings)
+    entries = [
+        _entry(pt_dir, "missing.png"),
+        _entry(pt_dir, "second.png"),
+    ]
+    dialog._directory = pt_dir
+    dialog._on_scanned(SourceSnapshot(pt_dir, entries, 2, False))
+    _quiet_probe(dialog)
+    assert dialog._index == 0
+    dialog._on_toggle_current()
+    assert _wait_idle(dialog)
+    assert dialog._index == 0
+    assert dialog._list.picked() == frozenset()
+
+
+def test_a_partially_failed_job_does_not_advance(
+    opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    dialog = opened(settings)
+    _open_entries(dialog, pt_dir, ["a.png", "b.png"])
+    dialog._advance_key = ("", "a")
+    dialog._advance_failed = False
+    dialog._on_pick_failed(("", "a"), "boom")
+    dialog._on_pick_done("remove", 1, 2)
+    assert dialog._index == 0
+
+
+def test_a_cancelled_job_does_not_advance(opened, pt_store, pt_dir):
+    settings, _ini = pt_store
+    dialog = opened(settings)
+    _open_entries(dialog, pt_dir, ["a.png", "b.png"])
+    dialog._advance_key = ("", "a")
+    dialog._on_pick_done("pick", 0, 1)
+    assert dialog._index == 0
+    dialog._advance_key = ("", "a")
+    dialog._on_pick_done("remove", 0, 2)
+    assert dialog._index == 0
+
+
+def test_pick_all_does_not_advance(
+    opened, pt_store, pt_dir, pt_out, monkeypatch
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_out)
+    write_image(pt_dir, "a.png", size=(8, 8))
+    write_image(pt_dir, "b.png", size=(8, 8))
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        staticmethod(
+            lambda *args, **kwargs: (
+                QtWidgets.QMessageBox.StandardButton.Yes
+            )
+        ),
+    )
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    _quiet_probe(dialog)
+    dialog._on_pick_all()
+    assert _wait_idle(dialog)
+    assert dialog._index == 0
+    assert dialog._list.picked() == frozenset(
+        {("", "a"), ("", "b")}
+    )
+
+
+# -------------------------------------------------- output below input
+
+
+def test_the_output_folder_below_the_input_is_skipped(
+    opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    output = os.path.join(pt_dir, "out")
+    settings.set_output_dir(output)
+    write_image(pt_dir, "keep.png", size=(8, 8))
+    write_image(
+        output, os.path.join("picked", "product.png"), size=(8, 8)
+    )
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    assert [entry.name for entry in dialog._entries] == ["keep.png"]
+
+
+def test_the_output_equal_to_the_input_skips_the_picked_folder(
+    opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_dir)
+    write_image(pt_dir, "keep.png", size=(8, 8))
+    write_image(
+        pt_dir, os.path.join("picked", "product.png"), size=(8, 8)
+    )
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    assert [entry.name for entry in dialog._entries] == ["keep.png"]
+
+
+def test_moving_the_output_into_the_tree_rescans(
+    opened, pt_store, pt_dir, pt_out
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_out)
+    write_image(pt_dir, "keep.png", size=(8, 8))
+    nested = os.path.join(pt_dir, "out")
+    write_image(
+        nested, os.path.join("picked", "product.png"), size=(8, 8)
+    )
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    assert [entry.name for entry in dialog._entries] == [
+        "keep.png",
+        "product.png",
+    ]
+
+    dialog._on_output_dir_changed(nested)
+    assert _wait_until(
+        lambda: [entry.name for entry in dialog._entries] == ["keep.png"]
+    )
