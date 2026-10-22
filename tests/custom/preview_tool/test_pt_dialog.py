@@ -16,6 +16,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from anylabeling.custom.preview_tool import core, list_panel
 from anylabeling.custom.preview_tool import dialog as pt_dialog
+from anylabeling.custom.preview_tool.settings import KEY_PREFIX
 from anylabeling.custom.preview_tool.worker import SourceSnapshot
 
 from conftest import (
@@ -117,8 +118,8 @@ def opened():
 
     dialogs = []
 
-    def _make(settings=None, explorer=None):
-        dialog = pt_dialog.PreviewDialog(None, explorer, settings)
+    def _make(settings=None):
+        dialog = pt_dialog.PreviewDialog(None, settings=settings)
         dialog.resize(900, 600)
         dialogs.append(dialog)
         return dialog
@@ -531,7 +532,7 @@ def test_pick_all_copies_everything_that_is_left(
 # ---------------------------------------------------------------- output
 
 
-def test_output_button_writes_the_injected_ini(
+def test_output_button_keeps_the_choice_in_memory(
     opened, pt_store, pt_out, monkeypatch
 ):
     settings, ini = pt_store
@@ -542,10 +543,28 @@ def test_output_button_writes_the_injected_ini(
         staticmethod(lambda *args, **kwargs: pt_out),
     )
     assert dialog._choose_output_dir() == pt_out
+    assert dialog._settings.output_dir() == pt_out
     flush_settings(settings)
-    assert make_settings(ini).output_dir() == pt_out
+    assert make_settings(ini).output_dir() == os.path.join(
+        core.program_dir(), core.OUTPUT_SUBDIR
+    )
     assert dialog._output_btn.toolTip() == (
         f"{pt_dialog.OUTPUT_TIP}\n{pt_out}"
+    )
+
+
+def test_a_stored_output_dir_is_ignored(opened, pt_store):
+    """An older build stored the output folder; it must not be used."""
+
+    _settings, ini = pt_store
+    raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+    raw.setValue(KEY_PREFIX + "output_dir", "/old/out")
+    raw.sync()
+    dialog = opened(make_settings(ini))
+    expected = os.path.join(core.program_dir(), core.OUTPUT_SUBDIR)
+    assert dialog._settings.output_dir() == expected
+    assert dialog._output_btn.toolTip() == (
+        f"{pt_dialog.OUTPUT_TIP}\n{expected}"
     )
 
 
@@ -1024,7 +1043,10 @@ def test_the_output_equal_to_the_input_is_refused_as_a_setting(
 
     assert dialog._status.text() == pt_dialog.OUTPUT_EQUALS_INPUT_TEXT
     flush_settings(settings)
-    assert make_settings(ini).output_dir() == pt_out
+    assert dialog._settings.output_dir() == pt_out
+    assert make_settings(ini).output_dir() == os.path.join(
+        core.program_dir(), core.OUTPUT_SUBDIR
+    )
     assert dialog._scan_worker is None
 
 

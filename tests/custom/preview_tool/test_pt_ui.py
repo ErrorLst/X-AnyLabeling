@@ -187,6 +187,44 @@ def test_view_zoom_is_clamped_and_reset(pt_dir):
         view.deleteLater()
 
 
+def _wheel_event(position, delta=120):
+    """Build a wheel event at one viewport position."""
+
+    point = QtCore.QPointF(position)
+    return QtGui.QWheelEvent(
+        point,
+        point,
+        QtCore.QPoint(0, 0),
+        QtCore.QPoint(0, delta),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def test_the_wheel_zoom_keeps_the_point_under_the_pointer(qapp, pt_dir):
+    path = write_image(pt_dir, "big.png", size=(800, 600))
+    view = viewer.PreviewView()
+    try:
+        view.resize(600, 400)
+        view.show()
+        qapp.processEvents()
+        view.show_image(QtGui.QImage(path))
+        position = QtCore.QPoint(450, 300)
+        view.apply_zoom(2.0, position)
+        for _step in range(3):
+            before = view.mapToScene(position)
+            event = _wheel_event(position)
+            view.wheelEvent(event)
+            after = view.mapToScene(position)
+            assert event.isAccepted() is True
+            assert abs(after.x() - before.x()) < 1.0
+            assert abs(after.y() - before.y()) < 1.0
+    finally:
+        view.deleteLater()
+
+
 def test_view_toggles_the_background(pt_dir):
     view = viewer.PreviewView()
     try:

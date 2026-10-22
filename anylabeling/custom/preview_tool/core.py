@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import FrozenSet, List, Optional, Tuple
@@ -34,6 +35,7 @@ __all__ = [
     "localize",
     "natural_key",
     "parse_annotations",
+    "program_dir",
     "scan_directory",
 ]
 
@@ -52,7 +54,8 @@ FILTER_DEFAULT_SCORE = 0.45
 FILTER_DEFAULT_SIZE = 10.0
 SCAN_WORKERS = 4
 
-#: Folder the default output directory points at, below the cwd.
+#: Folder the default output directory points at, below the program
+#: directory.
 OUTPUT_SUBDIR = "picked"
 
 
@@ -167,15 +170,34 @@ def natural_key(value: str) -> List[Tuple[int, object]]:
     return chunks
 
 
+def program_dir() -> str:
+    """Return the directory the application runs from.
+
+    A frozen build reports the folder of its executable. A run from
+    source reports the repository root, the folder that holds the
+    anylabeling package. The value is fetched on every call, so the
+    default output directory can never hide a stale path.
+    """
+
+    if getattr(sys, "frozen", False):
+        executable = getattr(sys, "executable", "")
+        if executable:
+            return os.path.dirname(os.path.abspath(executable))
+    package = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(
+        os.path.join(package, os.pardir, os.pardir, os.pardir)
+    )
+
+
 def default_output_dir() -> str:
     """Return the output directory of a run that has none configured.
 
-    It is the picked folder below the current working directory. The
-    working directory is fetched on every call: the default is
-    deliberately never cached and never written back.
+    It is the picked folder below the program directory. The program
+    directory is fetched on every call: the default is deliberately
+    never cached and never written back.
     """
 
-    return os.path.join(os.getcwd(), OUTPUT_SUBDIR)
+    return os.path.join(program_dir(), OUTPUT_SUBDIR)
 
 
 def _parse_shape(raw) -> Optional[ShapeInfo]:

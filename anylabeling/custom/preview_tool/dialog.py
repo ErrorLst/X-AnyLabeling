@@ -208,13 +208,16 @@ def _mode_name(mode) -> str:
 class PreviewDialog(QtWidgets.QDialog):
     """The preview window of the Tool menu."""
 
-    def __init__(self, parent=None, explorer=None, settings=None):
+    def __init__(self, parent=None, settings=None):
         """Build the window.
+
+        The window always starts empty: no directory of an earlier
+        session and no directory of the labeling widget is adopted, so
+        the first image only ever comes from a drop or from the
+        directory picker.
 
         Args:
             parent: The parent widget.
-            explorer: The labeling widget; only its last_open_dir is read
-                once, as the initial directory.
             settings: The parameter store. None builds the QSettings
                 backed one, a test injects an INI backed one.
         """
@@ -253,9 +256,6 @@ class PreviewDialog(QtWidgets.QDialog):
         self._center()
         self.installEventFilter(self)
         self._filter_installed = True
-        initial = _normalize(getattr(explorer, "last_open_dir", None))
-        if initial:
-            self.set_directory(initial)
 
     # ------------------------------------------------------------- build
 
@@ -1263,7 +1263,7 @@ class PreviewDialog(QtWidgets.QDialog):
     def _choose_directory(self) -> str:
         """Ask for a directory and open it."""
 
-        start = self._directory or core.default_output_dir()
+        start = self._directory or core.program_dir()
         try:
             path = QtWidgets.QFileDialog.getExistingDirectory(
                 self, OPEN_TEXT, start

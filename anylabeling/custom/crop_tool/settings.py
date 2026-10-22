@@ -7,10 +7,10 @@ the default of its key and is clamped to the range of the spin box it
 feeds.
 
 The output directory is the only value with a computed default: it
-is the crop/ subdirectory of the current working directory, fetched
-on every read and never written back. The source folder is not
-stored at all: the dialog keeps it in memory only, so the window
-always opens empty.
+is the crop/ subdirectory of the program directory, fetched on every
+read and never written back. Neither folder is stored at all: the
+dialog keeps both in memory only, so the window always opens empty
+and every run starts on the default output directory.
 
 The store is handed to the constructor, so a test can give the
 wrapper an INI file of its own instead of the store of the user.
@@ -45,6 +45,7 @@ class CropSettings:
         if settings is None:
             settings = QtCore.QSettings("anylabeling", "anylabeling")
         self._settings = settings
+        self._output_dir = ""
 
     def _read_int(
         self, key: str, default: int, low: int, high: int
@@ -67,14 +68,6 @@ class CropSettings:
         """Store one integer parameter under its prefixed key."""
 
         self._settings.setValue(KEY_PREFIX + key, int(value))
-
-    def _read_text(self, key: str) -> str:
-        """Return one text parameter, empty when it is not stored."""
-
-        raw = self._settings.value(KEY_PREFIX + key, "")
-        if raw is None:
-            return ""
-        return str(raw)
 
     def width(self) -> int:
         """Return the crop width in pixels."""
@@ -105,11 +98,10 @@ class CropSettings:
         )
 
     def output_dir(self) -> str:
-        """Return the output directory, cwd/crop when none is stored."""
+        """Return the output directory, program/crop when none is set."""
 
-        stored = self._read_text("output_dir")
-        if stored:
-            return stored
+        if self._output_dir:
+            return self._output_dir
         return crop_core.default_output_dir()
 
     def set_width(self, value) -> None:
@@ -133,6 +125,6 @@ class CropSettings:
         self._write_int("pad_height", value)
 
     def set_output_dir(self, value) -> None:
-        """Store the output directory."""
+        """Keep the output directory for this window only."""
 
-        self._settings.setValue(KEY_PREFIX + "output_dir", str(value))
+        self._output_dir = str(value or "")

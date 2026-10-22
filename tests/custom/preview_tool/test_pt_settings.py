@@ -58,7 +58,6 @@ class TestDefaults:
             "height_threshold": 10.0,
             "expand_px": 5,
             "speed": 5,
-            "output_dir": "",
         }
         assert RANGES == {
             "score_threshold": (0.0, 1.0),
@@ -79,7 +78,7 @@ class TestDefaults:
         assert settings.expand_px() == 5
         assert settings.speed() == 5
         assert settings.output_dir() == os.path.join(
-            os.getcwd(), core.OUTPUT_SUBDIR
+            core.program_dir(), core.OUTPUT_SUBDIR
         )
         assert settings.categories_for("/nowhere") == []
 
@@ -101,7 +100,6 @@ class TestRoundTrip:
         settings.set_height_threshold(30.0)
         settings.set_expand_px(12)
         settings.set_speed(15)
-        settings.set_output_dir("/data/out")
         assert settings.filter_enabled() is True
         assert settings.score_threshold() == 0.8
         assert settings.size_mode() is core.SizeFilterMode.BOTH_BELOW
@@ -109,7 +107,6 @@ class TestRoundTrip:
         assert settings.height_threshold() == 30.0
         assert settings.expand_px() == 12
         assert settings.speed() == 15
-        assert settings.output_dir() == "/data/out"
 
     def test_values_survive_a_new_wrapper(self, pt_store):
         settings, ini = pt_store
@@ -219,31 +216,58 @@ class TestModes:
 
 
 class TestOutputDir:
-    """The default output directory is cwd/picked, fetched every time."""
+    """The default output is program/picked, fetched every time."""
 
-    def test_the_default_output_is_the_picked_folder_of_the_cwd(self):
+    def test_the_default_output_is_the_picked_folder_of_the_program(self):
         assert core.OUTPUT_SUBDIR == "picked"
         assert core.default_output_dir() == os.path.join(
-            os.getcwd(), "picked"
+            core.program_dir(), "picked"
         )
 
-    def test_cwd_is_fetched_on_every_read(self, pt_store, monkeypatch):
+    def test_program_dir_is_fetched_on_every_read(
+        self, pt_store, monkeypatch
+    ):
         settings, _ini = pt_store
         calls = []
 
-        def fake_getcwd():
+        def fake_program_dir():
             calls.append(True)
-            return "/pt-cwd/{}".format(len(calls))
+            return "/pt-program/{}".format(len(calls))
 
-        monkeypatch.setattr(os, "getcwd", fake_getcwd)
-        assert settings.output_dir() == os.path.join("/pt-cwd/1", "picked")
-        assert settings.output_dir() == os.path.join("/pt-cwd/2", "picked")
+        monkeypatch.setattr(core, "program_dir", fake_program_dir)
+        assert settings.output_dir() == os.path.join(
+            "/pt-program/1", "picked"
+        )
+        assert settings.output_dir() == os.path.join(
+            "/pt-program/2", "picked"
+        )
 
     def test_empty_value_falls_back_to_default(self, pt_store, monkeypatch):
         settings, _ini = pt_store
         settings.set_output_dir("")
-        monkeypatch.setattr(os, "getcwd", lambda: "/pt/cwd")
-        assert settings.output_dir() == os.path.join("/pt/cwd", "picked")
+        monkeypatch.setattr(core, "program_dir", lambda: "/pt/program")
+        assert settings.output_dir() == os.path.join(
+            "/pt/program", "picked"
+        )
+
+    def test_the_choice_is_not_persisted(self, pt_store, monkeypatch):
+        settings, ini = pt_store
+        monkeypatch.setattr(core, "program_dir", lambda: "/pt/program")
+        settings.set_output_dir("/data/out")
+        assert settings.output_dir() == "/data/out"
+        flush_settings(settings)
+        raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+        assert raw.value(KEY_PREFIX + "output_dir") is None
+        assert make_settings(ini).output_dir() == os.path.join(
+            "/pt/program", "picked"
+        )
+
+    def test_a_stored_value_is_ignored(self, pt_make, monkeypatch):
+        settings = _prepare(pt_make, "output_dir", "/old/out")
+        monkeypatch.setattr(core, "program_dir", lambda: "/pt/program")
+        assert settings.output_dir() == os.path.join(
+            "/pt/program", "picked"
+        )
 
 
 class TestCategories:
@@ -389,12 +413,13 @@ class TestNeverRaises:
         assert settings.expand_px() == 5
         assert settings.speed() == 5
         assert settings.output_dir() == os.path.join(
-            os.getcwd(), core.OUTPUT_SUBDIR
+            core.program_dir(), core.OUTPUT_SUBDIR
         )
         assert settings.categories_for("/data") == []
 
     def test_writes(self):
         settings = PreviewSettings(BoomStore())
         settings.set_speed(9)
+        settings.set_output_dir("/data/out")
         settings.set_categories("/data", ["cat"])
         settings.set_categories(None, ["cat"])

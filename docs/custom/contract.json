@@ -205,7 +205,7 @@
       }
     },
     "crop_tool": {
-      "summary": "裁图工具子窗口：递归图片目录（任意层子目录），左侧目录树 + 文件，固定 W×H 裁切框逐张裁图、右键裁切、A/D 换图，裁切成功自动跳下一张（跨目录连续）；文件名即记录（可解析回原图 stem 与区域），裁切全部直接落在输出目录根（不镜像相对子目录，同 stem 共享裁切 family），窗口可最小化/最大化，Del 经确认后只删本工具裁切子图。",
+      "summary": "裁图工具子窗口：递归图片目录（任意层子目录），左侧目录树 + 文件，固定 W×H 裁切框逐张裁图、右键裁切后停留在当前图、A/D 换图；文件名即记录（可解析回原图 stem 与区域），裁切全部直接落在输出目录根（不镜像相对子目录，同 stem 共享裁切 family），窗口可最小化/最大化，Del 经确认后只删本工具裁切子图；输出目录不持久化（默认 <程序目录>/crop）。",
       "code": ["anylabeling/custom/crop_tool/"],
       "tests": ["tests/custom/crop_tool/"],
       "enter": [
@@ -229,7 +229,7 @@
       }
     },
     "preview_tool": {
-      "summary": "Tool 菜单「预览工具」：递归图片目录（任意层子目录），左侧目录树 + 文件，按树序预览 + LabelMe 标注叠加（矩形可外扩）；过滤总开关下得分/尺寸(4 模式)/类别(含背景)三项以「与」合成；按当前图 toggle（拷贝含边车 json 直接进所选输出目录（扁平、不建子目录），以及把同 stem 副本移入 dsh-trash，每图独立可逆、无历史栈）+ 全部拷贝；输出目录不得等于输入目录；单文件处理成功自动跳下一张（跨目录连续）；窗口可最小化/最大化；参数用 QSettings 持久化。",
+      "summary": "Tool 菜单「预览工具」：递归图片目录（任意层子目录），左侧目录树 + 文件，按树序预览 + LabelMe 标注叠加（矩形可外扩）；过滤总开关下得分/尺寸(4 模式)/类别(含背景)三项以「与」合成；按当前图 toggle（拷贝含边车 json 直接进所选输出目录（扁平、不建子目录），以及把同 stem 副本移入 dsh-trash，每图独立可逆、无历史栈）+ 全部拷贝；输出目录不得等于输入目录；单文件处理成功自动跳下一张（跨目录连续）；窗口可最小化/最大化、启动空窗口（不自动打开上次目录）；除输出目录外的参数用 QSettings 持久化，输出目录不持久化（默认 <程序目录>/picked）。",
       "code": ["anylabeling/custom/preview_tool/"],
       "tests": ["tests/custom/preview_tool/"],
       "enter": [
@@ -243,10 +243,10 @@
       ],
       "soft_mounts": [
         {"target": "widget._preview_tool_dialog", "wrapped_by": "launch_preview_tool", "install_site": "anylabeling/custom/preview_tool/launcher.py:40"},
-        {"target": "PreviewDialog 键盘事件过滤器", "wrapped_by": "PreviewDialog.eventFilter", "install_site": "anylabeling/custom/preview_tool/dialog.py:254"}
+        {"target": "PreviewDialog 键盘事件过滤器", "wrapped_by": "PreviewDialog.eventFilter", "install_site": "anylabeling/custom/preview_tool/dialog.py:257"}
       ],
       "upstream": {
-        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["menus", "last_open_dir"],
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["menus"],
         "anylabeling/views/labeling/utils/qt.py:@module": ["new_action", "new_icon_path"]
       }
     }

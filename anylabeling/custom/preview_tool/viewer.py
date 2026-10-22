@@ -232,12 +232,24 @@ class PreviewView(QtWidgets.QGraphicsView):
         self.setSceneRect(rect)
         self.centerOn(self._pixmap_item)
 
-    def apply_zoom(self, factor) -> float:
-        """Multiply the zoom by a factor and return the new level."""
+    def apply_zoom(self, factor, anchor=None) -> float:
+        """Multiply the zoom by a factor and return the new level.
+
+        Args:
+            factor: Multiplier of the current zoom.
+            anchor: Viewport point (QPoint) whose scene point has to
+                stay under the pointer. None leaves the framing of the
+                plain scale call alone.
+        """
 
         factor = _to_float(factor, 0.0)
         if factor <= 0.0 or not self._has_image:
             return self._zoom
+        point = None
+        scene_point = None
+        if anchor is not None:
+            point = QtCore.QPoint(anchor)
+            scene_point = self.mapToScene(point)
         target = self._zoom * factor
         if target < 1.0:
             self.reset_view()
@@ -249,6 +261,8 @@ class PreviewView(QtWidgets.QGraphicsView):
                 return self._zoom
         self._zoom = target
         self.scale(factor, factor)
+        if scene_point is not None:
+            self._keep_anchor(scene_point, point)
         return self._zoom
 
     def toggle_background(self) -> bool:
@@ -369,7 +383,7 @@ class PreviewView(QtWidgets.QGraphicsView):
             event.ignore()
             return
         factor = ZOOM_STEP if delta > 0 else 1.0 / ZOOM_STEP
-        self.apply_zoom(factor)
+        self.apply_zoom(factor, event.position().toPoint())
         event.accept()
 
     def mousePressEvent(self, event) -> None:
@@ -461,6 +475,28 @@ class PreviewView(QtWidgets.QGraphicsView):
         self.directory_dropped.emit(path)
 
     # ----------------------------------------------------------- private
+
+    def _keep_anchor(self, scene_point, viewport_point) -> None:
+        """Scroll so a scene point sits under a viewport point.
+
+        Only a scroll bar can shift the content of a QGraphicsView,
+        and its range is zero on an axis where the zoomed image is
+        still smaller than the viewport: that axis keeps the image
+        centered. This is the one limitation of the anchored wheel.
+
+        Args:
+            scene_point: Scene point to keep under the pointer.
+            viewport_point: Viewport point to keep it under.
+        """
+
+        point = QtCore.QPoint(viewport_point)
+        mapped = self.mapFromScene(scene_point)
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        horizontal.setValue(
+            horizontal.value() + mapped.x() - point.x()
+        )
+        vertical.setValue(vertical.value() + mapped.y() - point.y())
 
     def _emit_pixel(self, position) -> None:
         """Publish one pointer position in image pixels."""

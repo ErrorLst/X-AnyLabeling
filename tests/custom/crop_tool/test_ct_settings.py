@@ -55,10 +55,15 @@ class TestRoundTrip:
         assert settings.pad_width() == 7
         assert settings.pad_height() == 8
 
-    def test_directories(self, ct_store):
-        settings, _ini = ct_store
+    def test_directories_stay_in_memory(self, ct_store, monkeypatch):
+        settings, ini = ct_store
+        monkeypatch.setattr(core, "program_dir", lambda: "/ct/program")
         settings.set_output_dir("/data/out")
         assert settings.output_dir() == "/data/out"
+        flush_settings(settings)
+        raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+        assert raw.value(KEY_PREFIX + "output_dir") is None
+        assert make_settings(ini).output_dir() == core.default_output_dir()
 
     def test_keys_carry_the_prefix(self, ct_store):
         settings, ini = ct_store
@@ -79,25 +84,42 @@ class TestRoundTrip:
 
 
 class TestOutputDefault:
-    """The default output directory is cwd/crop, fetched every time."""
+    """The default output directory is program/crop, fetched every time."""
 
-    def test_cwd_is_fetched_on_every_read(self, ct_store, monkeypatch):
+    def test_program_dir_is_fetched_on_every_read(
+        self, ct_store, monkeypatch
+    ):
         settings, _ini = ct_store
         calls = []
 
-        def fake_getcwd():
+        def fake_program_dir():
             calls.append(True)
-            return "/ct-cwd/{}".format(len(calls))
+            return os.path.join("/ct-program", str(len(calls)))
 
-        monkeypatch.setattr(os, "getcwd", fake_getcwd)
-        assert settings.output_dir() == "/ct-cwd/1/crop"
-        assert settings.output_dir() == "/ct-cwd/2/crop"
+        monkeypatch.setattr(core, "program_dir", fake_program_dir)
+        assert settings.output_dir() == os.path.join(
+            "/ct-program", "1", core.OUTPUT_SUBDIR
+        )
+        assert settings.output_dir() == os.path.join(
+            "/ct-program", "2", core.OUTPUT_SUBDIR
+        )
 
-    def test_empty_value_falls_back_to_the_cwd(self, ct_store, monkeypatch):
+    def test_empty_value_falls_back_to_the_default(
+        self, ct_store, monkeypatch
+    ):
         settings, _ini = ct_store
         settings.set_output_dir("")
-        monkeypatch.setattr(os, "getcwd", lambda: "/ct/cwd")
-        assert settings.output_dir() == "/ct/cwd/crop"
+        monkeypatch.setattr(core, "program_dir", lambda: "/ct/program")
+        assert settings.output_dir() == os.path.join(
+            "/ct/program", core.OUTPUT_SUBDIR
+        )
+
+    def test_a_stored_value_is_ignored(self, ct_make, monkeypatch):
+        settings = _prepare(ct_make, "output_dir", "/old/out")
+        monkeypatch.setattr(core, "program_dir", lambda: "/ct/program")
+        assert settings.output_dir() == os.path.join(
+            "/ct/program", core.OUTPUT_SUBDIR
+        )
 
 
 class TestClamping:

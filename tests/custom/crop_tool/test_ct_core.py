@@ -6,6 +6,7 @@ padding and write path must stay usable without a widget.
 
 import inspect
 import os
+import sys
 
 import PIL.Image
 import pytest
@@ -248,7 +249,7 @@ class TestCropImage:
     ):
         source = write_pil(ct_dir, "img.png", (8, 8))
         work = ct_make()
-        monkeypatch.chdir(work)
+        monkeypatch.setattr(core, "program_dir", lambda: work)
         result = core.crop_image(source, 0, 0, 2, 2)
         expected = os.path.join(work, core.OUTPUT_SUBDIR)
         assert os.path.dirname(result.path) == expected
@@ -374,14 +375,38 @@ class TestCropImage:
         self, ct_readonly, ct_dir, monkeypatch
     ):
         source = write_pil(ct_dir, "img.png", (8, 8))
-        monkeypatch.chdir(ct_readonly)
+        monkeypatch.setattr(core, "program_dir", lambda: ct_readonly)
         with pytest.raises(core.CropError, match="输出目录不可写"):
             core.crop_image(source, 0, 0, 2, 2)
 
-    def test_default_output_dir_is_the_cwd_subdirectory(self):
+    def test_default_output_dir_is_the_program_subdirectory(
+        self, ct_make, monkeypatch
+    ):
+        work = ct_make()
+        monkeypatch.setattr(core, "program_dir", lambda: work)
         assert core.default_output_dir() == os.path.join(
-            os.getcwd(), core.OUTPUT_SUBDIR
+            work, core.OUTPUT_SUBDIR
         )
+
+
+class TestProgramDir:
+    """The default output base is the directory of the program."""
+
+    def test_source_run_uses_the_repository_root(self):
+        package = os.path.dirname(os.path.abspath(core.__file__))
+        expected = os.path.abspath(
+            os.path.join(package, os.pardir, os.pardir, os.pardir)
+        )
+        assert core.program_dir() == expected
+
+    def test_frozen_run_uses_the_executable_folder(
+        self, ct_make, monkeypatch
+    ):
+        root = ct_make()
+        executable = os.path.join(root, "bin", "xanylabeling.exe")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", executable)
+        assert core.program_dir() == os.path.dirname(executable)
 
 
 class TestNoGuiDependency:

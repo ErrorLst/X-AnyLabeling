@@ -446,8 +446,14 @@ class CropView(QtWidgets.QGraphicsView):
 
         return self._zoom
 
-    def apply_zoom(self, factor) -> float:
+    def apply_zoom(self, factor, anchor=None) -> float:
         """Multiply the zoom by factor and clamp it.
+
+        Args:
+            factor: Multiplier of the current zoom.
+            anchor: Viewport point (QPoint) whose scene point has to
+                stay under the pointer. None recenters the fitted
+                image, the behaviour of the plain programmatic call.
 
         A zoom that would fall below MIN_ZOOM goes back to the fitted
         view instead of a scale of its own, so the wheel can always
@@ -458,20 +464,55 @@ class CropView(QtWidgets.QGraphicsView):
             step = float(factor)
         except (TypeError, ValueError):
             return self._zoom
+        point = self._anchor_point(anchor)
         target = self._zoom * step
         if target <= MIN_ZOOM:
             self.reset_view()
             return self._zoom
         self._zoom = min(MAX_ZOOM, target)
         self._refit()
+        if point is not None:
+            self._keep_anchor(point, anchor)
         return self._zoom
+
+    def _anchor_point(self, anchor):
+        """Return the scene point at a viewport anchor, None without."""
+
+        if anchor is None or not self._can_fit():
+            return None
+        return self.mapToScene(QtCore.QPoint(anchor))
+
+    def _keep_anchor(self, scene_point, viewport_point) -> None:
+        """Scroll so a scene point sits under a viewport point.
+
+        Only a scroll bar can shift the content of a QGraphicsView,
+        and its range is zero on an axis where the zoomed image is
+        still smaller than the viewport: that axis keeps the image
+        centered. This is the one limitation of the anchored wheel.
+
+        Args:
+            scene_point: Scene point to keep under the pointer.
+            viewport_point: Viewport point to keep it under.
+        """
+
+        point = QtCore.QPoint(viewport_point)
+        mapped = self.mapFromScene(scene_point)
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        horizontal.setValue(
+            horizontal.value() + mapped.x() - point.x()
+        )
+        vertical.setValue(vertical.value() + mapped.y() - point.y())
 
     def wheelEvent(self, event) -> None:
         """Zoom around the pointer."""
 
         delta = event.angleDelta().y()
         if delta and self.has_image():
-            self.apply_zoom(ZOOM_STEP if delta > 0 else 1.0 / ZOOM_STEP)
+            factor = ZOOM_STEP if delta > 0 else 1.0 / ZOOM_STEP
+            self.apply_zoom(factor, event.position().toPoint())
+            event.accept()
+            return
         super().wheelEvent(event)
 
     def _apply_pan(self, delta) -> None:

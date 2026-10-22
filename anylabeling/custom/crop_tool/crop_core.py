@@ -9,7 +9,7 @@ car is ever written - the file name of a crop *is* its record.
 Scanning rules: one directory contributes its files first, in natural
 order, then its subdirectories in natural order, each one visited
 depth first. The flat list is the visual order of the folder tree of
-the window and the order the automatic jump after a crop follows. An
+the window and the order the A/D navigation follows. An
 unreadable directory is skipped, a symbolic link to a directory is
 never followed (a link cycle can not make the scan run forever) and
 the output tree is skipped as a whole when it lives inside the scanned
@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -75,6 +76,7 @@ __all__ = [
     "natural_key",
     "output_extension",
     "parse_crop_name",
+    "program_dir",
     "save_format",
     "scan_crops",
     "scan_directory",
@@ -110,7 +112,7 @@ MAX_NAME_BYTES = 240
 #: Marker that opens the coordinate block of a crop name.
 CROP_MARK = "__x"
 
-#: Subdirectory of the default output directory the crops land in.
+#: Subdirectory of the program directory the default output uses.
 OUTPUT_SUBDIR = "crop"
 
 #: Suffix of the temporary file a crop is written to first.
@@ -245,17 +247,36 @@ def natural_key(value: str) -> List[Tuple[int, object]]:
     return chunks
 
 
+def program_dir() -> str:
+    """Return the directory the application runs from.
+
+    A frozen build reports the folder of its executable. A run from
+    source reports the repository root, the folder that holds the
+    anylabeling package. The value is fetched on every call, so the
+    default output directory can never hide a stale path.
+    """
+
+    if getattr(sys, "frozen", False):
+        executable = getattr(sys, "executable", "")
+        if executable:
+            return os.path.dirname(os.path.abspath(executable))
+    package = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(
+        os.path.join(package, os.pardir, os.pardir, os.pardir)
+    )
+
+
 def default_output_dir() -> str:
     """Return the output directory of a run that has none configured.
 
-    The crops land in a crop/ subdirectory of the current working
-    directory, so a run never drops its files straight into the
-    folder the application was started from. The working directory
-    is fetched on every call: the default is deliberately never
-    cached and never written back.
+    The crops land in a crop/ subdirectory of the program directory,
+    so a run never drops its files straight into the folder the
+    application lives in. The program directory is fetched on every
+    call: the default is deliberately never cached and never written
+    back.
     """
 
-    return os.path.join(os.getcwd(), OUTPUT_SUBDIR)
+    return os.path.join(program_dir(), OUTPUT_SUBDIR)
 
 
 def output_extension(source_path: str) -> str:

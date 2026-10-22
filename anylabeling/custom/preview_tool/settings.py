@@ -6,8 +6,9 @@ raises on a read: a missing, empty or malformed value falls back to the
 default of its key and is clamped to the range of the widget it feeds.
 
 The output directory is the only value with a computed default: it is
-the picked folder below the current working directory, fetched on
-every read and never written back. The categories a directory had
+the picked folder below the program directory, fetched on every read
+and never written back. It is never stored either: the window keeps
+the choice of the session in memory. The categories a directory had
 selected last time live under one key per directory; the key is the
 escaped absolute path, so an arbitrary path still fits into a single
 INI segment. category_dirs keeps the order those keys were touched
@@ -40,7 +41,7 @@ __all__ = [
 #: Prefix of every key this tool owns.
 KEY_PREFIX = "custom/preview_tool/"
 
-#: Defaults of the eight persisted parameters.
+#: Defaults of the seven persisted parameters.
 DEFAULTS = {
     "filter_enabled": False,
     "score_threshold": 0.45,
@@ -49,7 +50,6 @@ DEFAULTS = {
     "height_threshold": 10.0,
     "expand_px": 5,
     "speed": 5,
-    "output_dir": "",
 }
 
 #: Inclusive bounds every numeric parameter is clamped into.
@@ -192,6 +192,7 @@ class PreviewSettings:
         if settings is None:
             settings = QtCore.QSettings("anylabeling", "anylabeling")
         self._settings = settings
+        self._output_dir = ""
 
     def _value(self, key: str, default):
         """Return one full key, the default when the store refuses."""
@@ -319,11 +320,10 @@ class PreviewSettings:
         return self._read_int("speed")
 
     def output_dir(self) -> str:
-        """Return the output directory, cwd/picked when none is stored."""
+        """Return the output directory, program/picked when none is set."""
 
-        stored = self._read_text("output_dir")
-        if stored:
-            return stored
+        if self._output_dir:
+            return self._output_dir
         return core.default_output_dir()
 
     def set_filter_enabled(self, value) -> None:
@@ -368,9 +368,9 @@ class PreviewSettings:
         self._write("speed", self._clamp_int("speed", value))
 
     def set_output_dir(self, value) -> None:
-        """Store the output directory."""
+        """Keep the output directory for this window only."""
 
-        self._write("output_dir", str(value))
+        self._output_dir = str(value or "")
 
     def _category_key(self, directory) -> Optional[str]:
         """Return the store key of the categories of one directory."""

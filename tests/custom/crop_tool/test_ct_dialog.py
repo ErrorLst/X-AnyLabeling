@@ -10,8 +10,14 @@ from PyQt6.QtTest import QTest
 
 from anylabeling.custom.crop_tool import crop_core as core
 from anylabeling.custom.crop_tool import dialog as ct_dialog
+from anylabeling.custom.crop_tool.settings import KEY_PREFIX
 
-from conftest import crop_names, snapshot, write_pil
+from conftest import (
+    crop_names,
+    make_settings,
+    snapshot,
+    write_pil,
+)
 
 SIZE = (80, 60)
 BOX = (12, 9)
@@ -348,7 +354,7 @@ class TestPick:
 
     def test_pick_output_dir(self, ct_dir, ct_out, ct_store, monkeypatch):
         write_pil(ct_dir, "a.png", (20, 20))
-        settings, _ini = ct_store
+        settings, ini = ct_store
         dialog = _make_dialog(settings, ct_dir)
         monkeypatch.setattr(
             QtWidgets.QFileDialog,
@@ -359,6 +365,8 @@ class TestPick:
         assert dialog.output_dir() == ct_out
         assert settings.output_dir() == ct_out
         assert dialog.output_label.text() == ct_out
+        raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+        assert raw.value(KEY_PREFIX + "output_dir") is None
 
 
 class TestParameters:
@@ -935,8 +943,8 @@ class TestTree:
         assert dialog.list.currentItem() is dialog.leaf_item(0)
 
 
-class TestAutoAdvance:
-    """A successful crop jumps to the next image of the flat order."""
+class TestCropStaysOnTheImage:
+    """A successful crop never changes the shown image."""
 
     def _dialog(self, ct_dir, ct_out, ct_store, count=2):
         for index in range(count):
@@ -948,75 +956,50 @@ class TestAutoAdvance:
         dialog.height_box.setValue(BOX[1])
         return dialog
 
-    def test_success_moves_to_the_next_image(
+    def test_a_crop_keeps_the_current_image(
         self, ct_dir, ct_out, ct_store
     ):
         dialog = self._dialog(ct_dir, ct_out, ct_store, 3)
-        assert dialog.crop_current() is not None
-        assert dialog.current_index() == 1
-        assert os.path.basename(dialog.current_path()) == "img1.png"
+        before = dialog.current_path()
+        path = dialog.crop_current()
+        assert path is not None
+        assert dialog.current_index() == 0
+        assert dialog.current_path() == before
+        assert dialog.list.currentItem() is dialog.leaf_item(0)
+        assert dialog.status_bar.currentMessage() == (
+            ct_dialog.SAVED_FORMAT % os.path.basename(path)
+        )
 
-    def test_the_last_image_of_a_folder_is_followed_by_the_next_one(
+    def test_a_second_crop_stays_and_counts_up(
         self, ct_dir, ct_out, ct_store
     ):
-        write_pil(ct_dir, "a.png", SIZE)
+        dialog = self._dialog(ct_dir, ct_out, ct_store)
+        first = dialog.crop_current()
+        second = dialog.crop_current()
+        assert first is not None
+        assert second is not None
+        assert second != first
+        assert dialog.current_index() == 0
+        assert len(crop_names(ct_out)) == 2
+        assert "✓2" in _leaf_text(dialog, 0)
+        assert dialog.count_label.text() == ct_dialog.COUNT_FORMAT % 2
+
+    def test_a_crop_in_a_subfolder_does_not_move(
+        self, ct_dir, ct_out, ct_store
+    ):
         sub = os.path.join(ct_dir, "b")
         os.makedirs(sub)
+        write_pil(ct_dir, "a.png", SIZE)
         write_pil(sub, "c.png", SIZE)
         settings, _ini = ct_store
         dialog = _make_dialog(settings, ct_dir)
         dialog.set_output_dir(ct_out)
         dialog.width_box.setValue(BOX[0])
         dialog.height_box.setValue(BOX[1])
+        assert dialog.crop_current() is not None
+        assert dialog.current_index() == 0
         assert os.path.basename(dialog.current_path()) == "a.png"
-        assert dialog.crop_current() is not None
-        assert dialog.current_index() == 1
-        assert os.path.basename(dialog.current_path()) == "c.png"
-        assert dialog.current_path() == os.path.join(ct_dir, "b", "c.png")
-        assert dialog.list.currentItem() is dialog.leaf_item(1)
-
-    def test_sibling_folders_are_crossed_in_tree_order(
-        self, ct_dir, ct_out, ct_store
-    ):
-        first = os.path.join(ct_dir, "a")
-        second = os.path.join(ct_dir, "b")
-        os.makedirs(first)
-        os.makedirs(second)
-        write_pil(first, "a1.png", SIZE)
-        write_pil(first, "a2.png", SIZE)
-        write_pil(second, "b1.png", SIZE)
-        settings, _ini = ct_store
-        dialog = _make_dialog(settings, ct_dir)
-        dialog.set_output_dir(ct_out)
-        dialog.width_box.setValue(BOX[0])
-        dialog.height_box.setValue(BOX[1])
-        assert dialog.show_image(1) is True
-        assert os.path.basename(dialog.current_path()) == "a2.png"
-        assert dialog.crop_current() is not None
-        assert dialog.current_index() == 2
-        assert os.path.basename(dialog.current_path()) == "b1.png"
-        assert dialog.current_path() == os.path.join(second, "b1.png")
-
-    def test_the_end_of_the_list_is_not_wrapped(
-        self, ct_dir, ct_out, ct_store
-    ):
-        dialog = self._dialog(ct_dir, ct_out, ct_store, 2)
-        assert dialog.show_image(1) is True
-        assert dialog.crop_current() is not None
-        assert dialog.current_index() == 1
-        assert os.path.basename(dialog.current_path()) == "img1.png"
-
-    def test_the_jump_reaches_the_following_folder_the_status_shows_it(
-        self, ct_dir, ct_out, ct_store
-    ):
-        dialog = self._dialog(ct_dir, ct_out, ct_store, 1)
-        sub = os.path.join(ct_dir, "z")
-        os.makedirs(sub)
-        write_pil(sub, "z.png", SIZE)
-        dialog.rescan()
-        assert dialog.crop_current() is not None
-        assert dialog.current_index() == 1
-        assert dialog.index_label.text() == ct_dialog.INDEX_FORMAT % (2, 2)
+        assert dialog.list.currentItem() is dialog.leaf_item(0)
 
     def test_a_failed_crop_does_not_move(
         self, ct_dir, ct_out, ct_store, monkeypatch
@@ -1034,16 +1017,6 @@ class TestAutoAdvance:
         dialog = _make_dialog(settings)
         assert dialog.crop_current() is None
         assert dialog.current_index() == -1
-
-    def test_the_saved_message_survives_the_jump(
-        self, ct_dir, ct_out, ct_store
-    ):
-        dialog = self._dialog(ct_dir, ct_out, ct_store, 2)
-        path = dialog.crop_current()
-        assert path is not None
-        assert dialog.status_bar.currentMessage() == (
-            ct_dialog.SAVED_FORMAT % os.path.basename(path)
-        )
 
 
 class TestFlatOutput:
@@ -1547,3 +1520,29 @@ class TestStartup:
         assert dialog.status_bar.currentMessage() == ct_dialog.EMPTY_HINT
         assert dialog.current_index() == -1
         assert dialog.crop_current() is None
+
+    def test_the_default_output_is_the_program_directory(
+        self, ct_store, monkeypatch
+    ):
+        settings, _ini = ct_store
+        monkeypatch.setattr(core, "program_dir", lambda: "/ct/program")
+        dialog = _make_dialog(settings)
+        assert dialog.output_dir() == os.path.join(
+            "/ct/program", core.OUTPUT_SUBDIR
+        )
+
+    def test_an_output_folder_left_in_the_store_is_ignored(
+        self, ct_dir, ct_store, monkeypatch
+    ):
+        """An older build stored the output folder; it must not be used."""
+
+        write_pil(ct_dir, "a.png", SIZE)
+        _settings, ini = ct_store
+        monkeypatch.setattr(core, "program_dir", lambda: "/ct/program")
+        raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+        raw.setValue(KEY_PREFIX + "output_dir", "/old/out")
+        raw.sync()
+        dialog = _make_dialog(make_settings(ini))
+        assert dialog.output_dir() == os.path.join(
+            "/ct/program", core.OUTPUT_SUBDIR
+        )

@@ -232,14 +232,14 @@ class FakeExplorer(SimpleNamespace):
         return fake_explorer(**overrides)
 
 
-def fake_explorer(last_open_dir=None, parent=None, **overrides):
+def fake_explorer(parent=None, **overrides):
     """Build a stand in labeling widget with a real Tool menu.
 
     The object carries what the preview tool reads from the real
-    widget: menus.tool, the QMenu the installer appends its action to,
-    and last_open_dir. statusBar() answers a mock whose messages are
-    both recorded on the mock and collected in the messages list, so a
-    test can assert either way.
+    widget: menus.tool, the QMenu the installer appends its action to.
+    statusBar() answers a mock whose messages are both recorded on the
+    mock and collected in the messages list, so a test can assert
+    either way.
     """
 
     menu = QtWidgets.QMenu("Tool", parent)
@@ -250,7 +250,6 @@ def fake_explorer(last_open_dir=None, parent=None, **overrides):
     )
     explorer = FakeExplorer(
         menus=SimpleNamespace(tool=menu),
-        last_open_dir=last_open_dir,
         messages=messages,
         status_bar=status_bar,
         statusBar=Mock(return_value=status_bar),

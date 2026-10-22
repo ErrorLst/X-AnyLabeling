@@ -5,6 +5,7 @@ the filter have to stay usable without a widget.
 """
 
 import os
+import sys
 
 from anylabeling.custom.preview_tool import core
 
@@ -41,28 +42,48 @@ def _entry(name, shapes=(), path=None):
 
 
 class TestDefaultOutputDir:
-    """The default output folder is the picked folder of the cwd."""
+    """The default output folder is the picked folder of the program."""
 
-    def test_it_is_the_picked_folder_of_the_cwd(self):
+    def test_it_is_the_picked_folder_of_the_program(self):
         assert core.OUTPUT_SUBDIR == "picked"
         assert core.default_output_dir() == os.path.join(
-            os.getcwd(), "picked"
+            core.program_dir(), "picked"
         )
 
-    def test_the_cwd_is_fetched_on_every_call(self, monkeypatch):
+    def test_the_program_dir_is_fetched_on_every_call(self, monkeypatch):
         calls = []
 
-        def fake_getcwd():
+        def fake_program_dir():
             calls.append(True)
-            return "/pt-cwd/{}".format(len(calls))
+            return "/pt-program/{}".format(len(calls))
 
-        monkeypatch.setattr(os, "getcwd", fake_getcwd)
+        monkeypatch.setattr(core, "program_dir", fake_program_dir)
         assert core.default_output_dir() == os.path.join(
-            "/pt-cwd/1", "picked"
+            "/pt-program/1", "picked"
         )
         assert core.default_output_dir() == os.path.join(
-            "/pt-cwd/2", "picked"
+            "/pt-program/2", "picked"
         )
+
+
+class TestProgramDir:
+    """The default output base is the directory of the program."""
+
+    def test_source_run_uses_the_repository_root(self):
+        package = os.path.dirname(os.path.abspath(core.__file__))
+        expected = os.path.abspath(
+            os.path.join(package, os.pardir, os.pardir, os.pardir)
+        )
+        assert core.program_dir() == expected
+
+    def test_frozen_run_uses_the_executable_folder(
+        self, pt_make, monkeypatch
+    ):
+        root = pt_make()
+        executable = os.path.join(root, "bin", "xanylabeling.exe")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", executable)
+        assert core.program_dir() == os.path.dirname(executable)
 
 
 def _cfg(score=0.45, width=10.0, height=10.0, mode=None):

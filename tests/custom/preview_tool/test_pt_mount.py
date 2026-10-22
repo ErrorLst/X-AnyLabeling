@@ -230,18 +230,19 @@ class TestLauncher:
         assert first is second
         first.close()
 
-    def test_initial_directory_comes_from_the_explorer(self, qapp, pt_dir):
+    def test_a_new_window_starts_empty(self, qapp, pt_dir):
         widget = QtWidgets.QWidget()
         widget.last_open_dir = pt_dir
         _keep(widget)
         dialog = pt_launcher.launch_preview_tool(widget)
         _keep(dialog)
-        assert dialog._directory == osp.normpath(osp.abspath(pt_dir))
+        assert dialog._directory == ""
+        assert dialog._entries == []
+        assert dialog._scan_worker is None
         dialog.close()
 
     def test_reuse_asks_the_open_window_to_rescan(self, qapp, pt_dir):
         widget = QtWidgets.QWidget()
-        widget.last_open_dir = pt_dir
         _keep(widget)
         first = pt_launcher.launch_preview_tool(widget)
         _keep(first)

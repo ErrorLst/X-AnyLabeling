@@ -39,6 +39,22 @@ def _key_event(key, event_type=QtCore.QEvent.Type.KeyPress):
     )
 
 
+def _wheel_event(position, delta=120):
+    """Build a wheel event at one viewport position."""
+
+    point = QtCore.QPointF(position)
+    return QtGui.QWheelEvent(
+        point,
+        point,
+        QtCore.QPoint(0, 0),
+        QtCore.QPoint(0, delta),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
 class TestModuleConstants:
     """The overlay geometry is pinned by the module constants."""
 
@@ -315,6 +331,48 @@ class TestZoom:
         )
         view.wheelEvent(event)
         assert view.zoom_level() == 1.15
+
+
+class TestZoomAnchor:
+    """The wheel keeps the point under the pointer in place."""
+
+    def test_the_point_under_the_pointer_stays_there(self, qapp, ct_dir):
+        view = _view()
+        _load(view, ct_dir, "big.png", (800, 600))
+        view.show()
+        qapp.processEvents()
+        assert view.apply_zoom(2.0) == 2.0
+        position = QtCore.QPoint(450, 300)
+        for _step in range(3):
+            before = view.mapToScene(position)
+            event = _wheel_event(QtCore.QPointF(position))
+            view.wheelEvent(event)
+            after = view.mapToScene(position)
+            assert event.isAccepted() is True
+            assert abs(after.x() - before.x()) < 1.0
+            assert abs(after.y() - before.y()) < 1.0
+
+    def test_zooming_out_keeps_the_point_too(self, qapp, ct_dir):
+        view = _view()
+        _load(view, ct_dir, "big.png", (800, 600))
+        view.show()
+        qapp.processEvents()
+        position = QtCore.QPoint(450, 300)
+        view.apply_zoom(4.0, position)
+        for _step in range(3):
+            before = view.mapToScene(position)
+            view.wheelEvent(_wheel_event(QtCore.QPointF(position), -120))
+            after = view.mapToScene(position)
+            assert abs(after.x() - before.x()) < 1.0
+            assert abs(after.y() - before.y()) < 1.0
+
+    def test_a_plain_apply_zoom_still_only_changes_the_level(
+        self, ct_dir
+    ):
+        view = _view()
+        _load(view, ct_dir, "big.png", (800, 600))
+        assert view.apply_zoom(2.0) == 2.0
+        assert view.zoom_level() == 2.0
 
 
 class TestMarks:

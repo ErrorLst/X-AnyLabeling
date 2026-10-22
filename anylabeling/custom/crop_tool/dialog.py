@@ -10,10 +10,9 @@ number is drawn in the tree, in the status bar and on the green
 outlines of the view. A badge belongs to the stem of its file.
 
 A successful crop writes the new file flat into the output folder and
-then jumps to the next image of the flat scan order: the order crosses
-folder boundaries, the last image of a folder is followed by the first
-image of the next one, and the end of the list is not wrapped. A failed
-crop moves nothing.
+leaves the window on the same image: the marks, the badge and the
+status line are refreshed in place, and moving on is a manual action
+(A/D or the folder tree). A failed crop moves nothing.
 
 Known trade-off of that flat layout: the output folder holds no
 identity beyond the crop name, so two sources with the same stem in
@@ -718,15 +717,14 @@ class CropDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ 裁切
 
     def crop_current(self, x=None, y=None):
-        """Crop the current box, save it and jump to the next image.
+        """Crop the current box and save it, staying on the image.
 
         The crop is written flat into the output folder, whatever the
-        folder of its source. A successful crop then moves the window
-        to the next image of the flat scan order, which crosses folder
-        boundaries: the last image of a folder is followed by the first
-        image of the next folder. The end of the list is not wrapped
-        and a failed crop moves nothing. Returns the path of the new
-        crop.
+        folder of its source. A successful crop only refreshes the
+        marks, the badge and the status line: the shown image does not
+        change, so the next crop of the same picture is one right
+        click away. A failed crop moves and writes nothing. Returns
+        the path of the new crop.
         """
 
         path = self.current_path()
@@ -759,7 +757,6 @@ class CropDialog(QtWidgets.QDialog):
         self._refresh_badges()
         self.viewer.set_marks(self.marks_of_current())
         self._refresh_status()
-        self.next_image()
         self.status_bar.showMessage(
             SAVED_FORMAT % osp.basename(result.path), MESSAGE_TIMEOUT
         )
