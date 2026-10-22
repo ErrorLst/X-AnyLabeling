@@ -33,6 +33,10 @@ from PyQt6 import QtGui, QtWidgets
 import anylabeling.services.auto_labeling.model_manager as model_manager
 import anylabeling.views.labeling.label_widget as label_widget
 from anylabeling import configs as anylabeling_configs
+# The application registers the Qt resource bundle in app.py; the real
+# widget built below renders its sidebar icons through pointcloud.icons
+# (upstream v4.2.0), so the tests must register the bundle as well.
+from anylabeling.resources import resources  # noqa: F401
 
 SCRATCH_PREFIX = "xal_rvs_test_"
 TRASH_DIRNAME = "dsh-trash"

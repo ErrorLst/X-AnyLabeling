@@ -69,6 +69,11 @@ from .logger import logger
 from .schema import IMAGE_TAGS_FIELD
 from .settings import SettingsController, SettingsDialog
 from .settings.runtime_applier import SettingsRuntimeApplier
+from .settings.schema import (
+    SETTINGS_SHORTCUT_SECTIONS,
+    fields_for_page,
+    load_template_config,
+)
 from .shape import Shape
 from .utils.file_search import (
     parse_search_pattern,
@@ -76,6 +81,8 @@ from .utils.file_search import (
     matches_label_attribute,
 )
 from .utils.qt import new_icon_path
+from .utils.theme import get_theme
+from .pointcloud.icons import get_icon
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -216,6 +223,7 @@ class LabelingWidget(LabelDialog):
         self._settings_controller = None
         self._settings_dialog = None
         self.training_dialog = None
+        self.pointcloud_window = None
         self._settings_runtime_applier = SettingsRuntimeApplier(self)
         self._auto_switch_signal_connected = False
 
@@ -1138,6 +1146,13 @@ class LabelingWidget(LabelDialog):
             icon="husky",
             tip=self.tr("Open VQA dialog"),
         )
+        open_pointcloud = action(
+            self.tr("Point Cloud"),
+            self.open_pointcloud,
+            shortcuts.get("open_pointcloud"),
+            icon="cartesian",
+            tip=self.tr("Open point cloud workspace"),
+        )
         open_image_classifier = action(
             self.tr("Classifier"),
             self.open_image_classifier,
@@ -1923,6 +1938,7 @@ class LabelingWidget(LabelDialog):
             open_prev_unchecked_image=open_prev_unchecked_image,
             open_chatbot=open_chatbot,
             open_vqa=open_vqa,
+            open_pointcloud=open_pointcloud,
             open_image_classifier=open_image_classifier,
             open_classifier=open_image_classifier,
             open_video_classifier=open_video_classifier,
@@ -2289,6 +2305,7 @@ class LabelingWidget(LabelDialog):
             None,
             open_chatbot,
             open_vqa,
+            open_pointcloud,
             open_image_classifier,
             open_video_classifier,
             open_paddleocr,
@@ -2373,13 +2390,86 @@ class LabelingWidget(LabelDialog):
         #     lambda: self.inform_next_files(self.filename)
         # )
         self.auto_labeling_widget.hide()  # Hide by default
-        central_layout.addWidget(self.label_instruction)
-        central_layout.addSpacing(5)
+        instruction_layout = QHBoxLayout()
+        instruction_layout.setContentsMargins(0, 0, 0, 0)
+        instruction_layout.setSpacing(2)
+        instruction_layout.addWidget(self.label_instruction, 1)
+        theme = get_theme()
+        self.sidebar_toggle_button = QtWidgets.QToolButton()
+        self.sidebar_toggle_button.setIcon(
+            get_icon("panel-right", theme["text"], theme["primary"])
+        )
+        self.sidebar_toggle_button.setIconSize(QtCore.QSize(18, 18))
+        self.sidebar_toggle_button.setFixedSize(26, 26)
+        self.sidebar_toggle_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sidebar_toggle_button.setToolTip(self.tr("Toggle right panel"))
+        self.sidebar_toggle_button.setAccessibleName(
+            self.sidebar_toggle_button.toolTip()
+        )
+        self.sidebar_toggle_button.setStyleSheet(f"""
+            QToolButton {{
+                background-color: transparent;
+                border: 1px solid transparent;
+                color: {theme["text"]};
+                padding: 3px;
+                border-radius: 4px;
+            }}
+            QToolButton:hover:enabled {{
+                background-color: {theme["surface_hover"]};
+                border-color: {theme["border"]};
+            }}
+            QToolButton:pressed:enabled {{
+                background-color: {theme["surface_pressed"]};
+                border-color: {theme["border"]};
+            }}
+        """)
+        self.sidebar_toggle_button.clicked.connect(self.toggle_right_sidebar)
+        self.shortcuts_button = QtWidgets.QToolButton()
+        self.shortcuts_button.setIcon(
+            get_icon("command", theme["text"], theme["primary"])
+        )
+        self.shortcuts_button.setIconSize(QtCore.QSize(18, 18))
+        self.shortcuts_button.setFixedSize(26, 26)
+        self.shortcuts_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.shortcuts_button.setToolTip(
+            QtCore.QCoreApplication.translate(
+                "ShortcutsDialog", "Keyboard shortcuts"
+            )
+        )
+        self.shortcuts_button.setAccessibleName(
+            self.shortcuts_button.toolTip()
+        )
+        self.shortcuts_button.setStyleSheet(
+            self.sidebar_toggle_button.styleSheet()
+        )
+        self.shortcuts_button.clicked.connect(self.show_shortcuts)
+        self.update_button = QtWidgets.QToolButton()
+        self.update_button.setIcon(
+            get_icon("circle-arrow-up", theme["primary"], theme["primary"])
+        )
+        self.update_button.setIconSize(QtCore.QSize(18, 18))
+        self.update_button.setFixedSize(26, 26)
+        self.update_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.update_button.setToolTip(self.tr("Update available"))
+        self.update_button.setAccessibleName(self.tr("Update available"))
+        self.update_button.setStyleSheet(
+            self.sidebar_toggle_button.styleSheet()
+        )
+        self.update_button.hide()
+        instruction_layout.addWidget(self.update_button)
+        instruction_layout.addWidget(self.shortcuts_button)
+        instruction_layout.addWidget(self.sidebar_toggle_button)
+        central_layout.addLayout(instruction_layout)
         central_layout.addWidget(self.auto_labeling_widget)
         central_layout.addWidget(scroll_area)
         central_layout.addWidget(self.compare_view_slider)
         central_layout.addWidget(self.image_tags_widget)
-        layout.addLayout(central_layout)
+        central_widget = QWidget()
+        central_widget.setLayout(central_layout)
+        self.sidebar_splitter = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
+        self.sidebar_splitter.setChildrenCollapsible(False)
+        self.sidebar_splitter.addWidget(central_widget)
+        layout.addWidget(self.sidebar_splitter)
 
         # Save central area for resize
         self._central_widget = scroll_area
@@ -2387,7 +2477,8 @@ class LabelingWidget(LabelDialog):
         # Stretch central area (image view)
         layout.setStretch(1, 1)
 
-        right_sidebar_layout = QVBoxLayout()
+        self.right_sidebar = QWidget()
+        right_sidebar_layout = QVBoxLayout(self.right_sidebar)
         right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
         right_sidebar_layout.setSpacing(4)
 
@@ -2558,7 +2649,17 @@ class LabelingWidget(LabelDialog):
 
         self.shape_text_edit.textChanged.connect(self.shape_text_changed)
 
-        layout.addLayout(right_sidebar_layout)
+        self.right_sidebar.ensurePolished()
+        sidebar_width = self.right_sidebar.sizeHint().width()
+        self.right_sidebar.setMinimumWidth(sidebar_width)
+        self.right_sidebar.setMaximumWidth(sidebar_width * 2)
+        self._right_sidebar_width = sidebar_width
+        self.sidebar_splitter.addWidget(self.right_sidebar)
+        self.sidebar_splitter.setStretchFactor(0, 1)
+        self.sidebar_splitter.setStretchFactor(1, 0)
+        self.sidebar_splitter.setSizes(
+            [central_widget.sizeHint().width(), sidebar_width]
+        )
         self.setLayout(layout)
 
         if output_file is not None and self._config["auto_save"]:
@@ -2633,6 +2734,77 @@ class LabelingWidget(LabelDialog):
         self.set_text_editing(False)
 
         QtCore.QTimer.singleShot(100, self.restore_navigator_state)
+
+    def show_shortcuts(self):
+        from .pointcloud.controls import ShortcutsDialog
+
+        shortcuts = self._config["shortcuts"]
+        groups = []
+        for section in SETTINGS_SHORTCUT_SECTIONS:
+            entries = []
+            for field in fields_for_page("Shortcuts", section):
+                value = shortcuts.get(field.key.removeprefix("shortcuts."))
+                values = value if isinstance(value, (list, tuple)) else [value]
+                keys = [
+                    QtGui.QKeySequence(key).toString(
+                        QtGui.QKeySequence.SequenceFormat.NativeText
+                    )
+                    for key in values
+                    if key
+                ]
+                if keys:
+                    entries.append(
+                        (
+                            QtCore.QCoreApplication.translate(
+                                "SettingsDialog", field.label
+                            ),
+                            keys,
+                        )
+                    )
+            if section == "Shape":
+                entries.extend(
+                    (
+                        getattr(
+                            self.actions, f"digit_shortcut_{digit}"
+                        ).text(),
+                        [str(digit)],
+                    )
+                    for digit in range(10)
+                )
+            groups.append(
+                (
+                    QtCore.QCoreApplication.translate(
+                        "SettingsDialog", section
+                    ),
+                    entries,
+                )
+            )
+        ShortcutsDialog(groups, self).exec()
+
+    def toggle_right_sidebar(self):
+        show = self.right_sidebar.isHidden()
+        if not show:
+            self._right_sidebar_width = self.right_sidebar.width()
+        self.right_sidebar.setVisible(show)
+        if show:
+            available_width = (
+                self.sidebar_splitter.width()
+                - self.sidebar_splitter.handleWidth()
+            )
+            self.sidebar_splitter.setSizes(
+                [
+                    max(1, available_width - self._right_sidebar_width),
+                    self._right_sidebar_width,
+                ]
+            )
+        theme = get_theme()
+        self.sidebar_toggle_button.setIcon(
+            get_icon(
+                "panel-right" if show else "panel-left",
+                theme["text"],
+                theme["primary"],
+            )
+        )
 
     def restore_navigator_state(self) -> None:
         try:
@@ -3443,6 +3615,32 @@ class LabelingWidget(LabelDialog):
         else:
             self.vqa_window.show()
 
+    def open_pointcloud(self):
+        if self.pointcloud_window is None:
+            try:
+                from .widgets.pointcloud_dialog import PointCloudDialog
+
+                window = PointCloudDialog(self)
+            except (ImportError, OSError, RuntimeError) as error:
+                logger.error(f"Failed to open point cloud workspace: {error}")
+                self.error_message(
+                    self.tr("Point cloud unavailable"),
+                    self.tr("Unable to open the point cloud workspace: %s")
+                    % html.escape(str(error)),
+                )
+                return
+            window.destroyed.connect(self.on_pointcloud_window_destroyed)
+            self.pointcloud_window = window
+        if self.pointcloud_window.isMinimized():
+            self.pointcloud_window.showNormal()
+        else:
+            self.pointcloud_window.show()
+        self.pointcloud_window.raise_()
+        self.pointcloud_window.activateWindow()
+
+    def on_pointcloud_window_destroyed(self, _window=None):
+        self.pointcloud_window = None
+
     def open_paddleocr(self):
         if not hasattr(self, "ppocr_window") or self.ppocr_window is None:
             self.ppocr_window = PPOCRDialog(self)
@@ -4214,7 +4412,7 @@ class LabelingWidget(LabelDialog):
             item = self.label_list.find_item_by_shape(shape)
             if item is not None:
                 if shape.group_id is None:
-                    color = shape.fill_color.getRgb()[:3]
+                    color = self._get_rgb_by_label(shape.label)
                     item.setText(
                         _format_label_list_text(shape.label, shape.group_id)
                     )
@@ -4315,7 +4513,7 @@ class LabelingWidget(LabelDialog):
 
         self._update_shape_color(shape)
         if shape.group_id is None:
-            color = shape.fill_color.getRgb()[:3]
+            color = self._get_rgb_by_label(shape.label)
             item.setText(_format_label_list_text(shape.label, shape.group_id))
             item.setBackground(QtGui.QColor(*color, LABEL_OPACITY))
         else:
@@ -4956,7 +5154,7 @@ class LabelingWidget(LabelDialog):
             action.setEnabled(True)
 
         self._update_shape_color(shape)
-        color = shape.fill_color.getRgb()[:3]
+        color = self._get_rgb_by_label(shape.label)
         label_list_item.setText(
             _format_label_list_text(shape.label, shape.group_id)
         )
@@ -4991,12 +5189,20 @@ class LabelingWidget(LabelDialog):
 
     def _update_shape_color(self, shape):
         r, g, b = self._get_rgb_by_label(shape.label)
-        shape.line_color = QtGui.QColor(r, g, b)
-        shape.vertex_fill_color = QtGui.QColor(r, g, b)
-        shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
-        shape.fill_color = QtGui.QColor(r, g, b, 128)
-        shape.select_line_color = QtGui.QColor(255, 255, 255)
-        shape.select_fill_color = QtGui.QColor(r, g, b, 155)
+        shape_config = self._config["shape"]
+        defaults = load_template_config()["shape"]
+        colors = {
+            "line_color": (r, g, b, 255),
+            "vertex_fill_color": (r, g, b, 255),
+            "hvertex_fill_color": (255, 255, 255, 255),
+            "fill_color": (r, g, b, 128),
+            "select_line_color": (255, 255, 255, 255),
+            "select_fill_color": (r, g, b, 155),
+        }
+        for key, color in colors.items():
+            if shape_config[key] != defaults[key]:
+                color = shape_config[key]
+            setattr(shape, key, QtGui.QColor(*color))
 
     def _get_rgb_by_label(self, label, skip_label_info=False):
         if label == "AUTOLABEL_ADD":
@@ -5971,7 +6177,13 @@ class LabelingWidget(LabelDialog):
             label_file
         ):
             try:
-                self.label_file = LabelFile(label_file, image_dir)
+                self.label_file = LabelFile(
+                    label_file,
+                    image_dir,
+                    image_path=(
+                        None if LabelFile.is_label_file(filename) else filename
+                    ),
+                )
             except LabelFileError as e:
                 self.error_message(
                     self.tr("Error opening file"),
@@ -5984,10 +6196,7 @@ class LabelingWidget(LabelDialog):
                 self.status(self.tr("Error reading %s") % label_file)
                 return False
             self.image_data = self.label_file.image_data
-            self.image_path = osp.join(
-                osp.dirname(label_file),
-                self.label_file.image_path,
-            )
+            self.image_path = self.label_file.resolved_image_path
             self.other_data = self.label_file.other_data
             self.other_data[CHECKED_FIELD] = self._annotation_checked()
             with QtCore.QSignalBlocker(self.shape_text_edit):
@@ -6205,6 +6414,11 @@ class LabelingWidget(LabelDialog):
     def closeEvent(self, event):
         if not self.may_continue():
             event.ignore()
+            return
+        if self.pointcloud_window is not None:
+            if not self.pointcloud_window.can_close():
+                event.ignore()
+                return
         if event.isAccepted() and self.training_dialog is not None:
             if not self.training_dialog.prepare_for_application_close():
                 event.ignore()
@@ -6219,6 +6433,8 @@ class LabelingWidget(LabelDialog):
                 ):
                     event.ignore()
                     return
+        if self.pointcloud_window is not None:
+            self.pointcloud_window.close_after_approval()
         self.settings.setValue(
             "filename", self.filename if self.filename else ""
         )
@@ -6684,7 +6900,7 @@ class LabelingWidget(LabelDialog):
             return True
         if answer == mb.StandardButton.Save:
             self.save_file()
-            return True
+            return not self.dirty
         # answer == mb.Cancel
         return False
 
@@ -6909,8 +7125,10 @@ class LabelingWidget(LabelDialog):
                 return
 
         result_tags = getattr(auto_labeling_result, "tags", None)
+        result_flags = getattr(auto_labeling_result, "flags", None)
         tags_only_result = (
             result_tags is not None
+            and result_flags is None
             and not auto_labeling_result.shapes
             and auto_labeling_result.replace is False
             and not auto_labeling_result.description
@@ -6948,6 +7166,22 @@ class LabelingWidget(LabelDialog):
                 self.shape_text_edit.setPlainText(description)
             self.other_data["description"] = description
             self.shape_text_edit.setDisabled(False)
+
+        if result_flags is not None:
+            flags = {
+                self.flag_widget.item(i).text(): (
+                    self.flag_widget.item(i).checkState()
+                    == Qt.CheckState.Checked
+                )
+                for i in range(self.flag_widget.count())
+            }
+            annotations_changed |= any(
+                key not in flags or flags[key] != value
+                for key, value in result_flags.items()
+            )
+            flags.update(result_flags)
+            with QtCore.QSignalBlocker(self.flag_widget):
+                self.load_flags(flags)
 
         tags_changed = False
         if result_tags is not None:
@@ -7166,7 +7400,7 @@ class LabelingWidget(LabelDialog):
                 self._update_shape_color(shape)
                 item = self.label_list.find_item_by_shape(shape)
                 if shape.group_id is None:
-                    color = shape.fill_color.getRgb()[:3]
+                    color = self._get_rgb_by_label(shape.label)
                     item.setText(
                         '{} <font color="#{:02x}{:02x}{:02x}">●</font>'.format(
                             html.escape(shape.label), *color
@@ -7183,7 +7417,7 @@ class LabelingWidget(LabelDialog):
         # Update shape colors
         for shape in self.canvas.shapes:
             self._update_shape_color(shape)
-            color = shape.fill_color.getRgb()[:3]
+            color = self._get_rgb_by_label(shape.label)
             item = self.label_list.find_item_by_shape(shape)
             item.setText(_format_label_list_text(shape.label, shape.group_id))
             item.setBackground(QtGui.QColor(*color, LABEL_OPACITY))

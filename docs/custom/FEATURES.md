@@ -1944,7 +1944,7 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
 ### 测试
 
 `python -m pytest -p no:cacheprovider tests/custom/preview_tool -v`
-（本工作区用 `.venv/bin/python` 跑；offscreen 由 conftest 设置）
+（本工作区用虚拟环境里的 `python` 跑；offscreen 由 conftest 设置）
 （需 PyQt6）。目录里实际落地 **228 个用例**（227 passed + 1 skipped）：
 `test_pt_core.py` 覆盖自然排序、扫描范围、标注解析与三轴过滤，`test_pt_pick.py`
 覆盖拷贝与移入 dsh-trash（含 `xb` 占名、重名跳号、stem 家族与不可逆性防护），

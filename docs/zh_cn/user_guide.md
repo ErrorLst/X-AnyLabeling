@@ -968,6 +968,7 @@ digit_shortcuts:
 | Ctrl + 3              | 打开图像分类器窗口                       |
 | Ctrl + 4              | 打开 PaddleOCR 窗口                    |
 | Ctrl + 5              | 打开视频分类器窗口                       |
+| Ctrl + 6              | 打开 3D 点云工作区                     |
 | Ctrl + q              | 退出当前应用程序                        |
 | Ctrl + i              | 打开图像文件                          |
 | Ctrl + o              | 打开视频文件                          |
@@ -1228,3 +1229,4 @@ font_family: null  # null 表示使用系统默认字体，也可填写字体名
 - 视频分类器：[链接](./video_classifier.md)
 - Ultralytics 训练平台：[链接](../../examples/training/ultralytics/README.md)
 - 文档解析与智能文字识别：[链接](./paddle_ocr.md)
+- 3D 点云标注：[链接](./point_cloud.md)
