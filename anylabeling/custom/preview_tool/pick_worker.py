@@ -9,13 +9,16 @@ Four kinds exist, PickJob.KINDS:
 
 * "pick" - targets is a list of core.ImageEntry images (a plain source
   path works too), each one goes through pick_core.pick_one;
-* "all" - entries is the visible list, every image that is not picked
-  yet goes through pick_core.pick_one, the picked ones are skipped;
+* "all" - entries is the visible list, every image that is not
+  copied yet goes through pick_core.pick_one, the copied ones are
+  skipped;
 * "remove" - targets is a list of (rel_dir, stem) keys (a bare stem
   works too), each one goes through pick_core.unpick_stem, which moves
   every copy of that family and its side cars into the trash folder;
-* "detect" - entries is the visible list, the picked keys come back
-  through detect_finished.
+  the copies live flat in the output folder, so the rel_dir of the
+  key is only the identity of the row;
+* "detect" - entries is the visible list, the keys of the copied
+  images come back through detect_finished.
 
 Nothing in this module deletes a file: a removal is a move into
 pick_core.trash_dir(), exactly like the pure core does it.
@@ -71,8 +74,10 @@ def _stem(value) -> str:
 def _target_key(value):
     """Return the (rel_dir, stem) key of a remove target.
 
-    A target is either a key tuple or a bare stem, which belongs to the
-    root of the input tree.
+    A target is either a key tuple or a bare stem, which belongs to
+    the root of the input tree. The rel_dir part is only the identity
+    of the row: the copies of a stem live flat in the output folder,
+    so the removal of one family covers every copy of that stem.
     """
 
     try:
@@ -82,14 +87,14 @@ def _target_key(value):
 
 
 class PickJob(QtCore.QThread):
-    """Copy, remove or detect the picked images of one directory.
+    """Copy, remove or detect the copies of one output directory.
 
     Signals:
         progress(int, int) - (done, total) of the running kind.
         item_picked(object, str) - ((rel_dir, stem), dest) of a copy.
         item_removed(object, str) - ((rel_dir, stem), moved path).
         item_failed(object, str) - ((rel_dir, stem), message).
-        detect_finished(object) - frozenset of the picked keys.
+        detect_finished(object) - frozenset of the copied keys.
         job_done(str, int, int) - (kind, ok, total).
     """
 
@@ -111,7 +116,7 @@ class PickJob(QtCore.QThread):
             kind: One of KINDS.
             entries: The visible core.ImageEntry list, used by "all"
                 and "detect".
-            output_dir: The directory that holds picked/.
+            output_dir: The directory the copies go into.
             targets: Images (core.ImageEntry or a source path) for
                 "pick", (rel_dir, stem) keys for "remove".
             parent: The owning QObject.
@@ -193,9 +198,8 @@ class PickJob(QtCore.QThread):
                 if self._stop():
                     break
                 path = str(pick_core.entry_path(target))
-                rel_dir = pick_core.entry_rel_dir(target)
                 future = pool.submit(
-                    pick_core.pick_one, path, self._output_dir, rel_dir
+                    pick_core.pick_one, path, self._output_dir
                 )
                 futures[future] = pick_core.entry_key(target)
             for future in as_completed(futures):
@@ -215,7 +219,7 @@ class PickJob(QtCore.QThread):
         self.job_done.emit("pick", ok, total)
 
     def _run_all(self) -> None:
-        """Copy the images of the visible list that are not picked yet."""
+        """Copy the images of the visible list that are not copied yet."""
 
         entries = list(self._entries)
         total = len(entries)
@@ -227,17 +231,17 @@ class PickJob(QtCore.QThread):
             key = pick_core.entry_key(entry)
             if key in picked or not path:
                 continue
-            work.append((key, path, pick_core.entry_rel_dir(entry)))
+            work.append((key, path))
         done = total - len(work)
         self.progress.emit(done, total)
         pool = ThreadPoolExecutor(max_workers=JOB_WORKERS)
         futures = {}
         try:
-            for key, path, rel_dir in work:
+            for key, path in work:
                 if self._stop():
                     break
                 future = pool.submit(
-                    pick_core.pick_one, path, self._output_dir, rel_dir
+                    pick_core.pick_one, path, self._output_dir
                 )
                 futures[future] = key
             for future in as_completed(futures):
@@ -265,11 +269,9 @@ class PickJob(QtCore.QThread):
         for key in targets:
             if self._stop():
                 break
-            rel_dir, stem = key
+            stem = key[1]
             try:
-                result = pick_core.unpick_stem(
-                    self._output_dir, stem, rel_dir
-                )
+                result = pick_core.unpick_stem(self._output_dir, stem)
             except Exception as error:
                 self.item_failed.emit(key, str(error))
                 continue
@@ -295,7 +297,7 @@ class PickJob(QtCore.QThread):
         self.job_done.emit("remove", ok, seen)
 
     def _run_detect(self) -> None:
-        """Report the (rel_dir, stem) keys already inside picked/."""
+        """Report the (rel_dir, stem) keys already copied."""
 
         stems = self._detected(self._entries)
         self.detect_finished.emit(frozenset(stems))
@@ -304,7 +306,7 @@ class PickJob(QtCore.QThread):
     # ----------------------------------------------------------- helpers
 
     def _detected(self, entries: Sequence) -> frozenset:
-        """Return the picked stems of a list, never raising."""
+        """Return the copied keys of a list, never raising."""
 
         if not entries:
             return frozenset()

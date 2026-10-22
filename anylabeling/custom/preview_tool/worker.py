@@ -75,9 +75,10 @@ def image_names(directory: str, skip_dirs=()) -> List[str]:
     The list is the flat, depth first order of core.scan_directory: one
     level contributes its files first and its subdirectories afterwards,
     each group in natural order. skip_dirs is handed over to the scan,
-    which is how the output folder of the tool stays out of its input.
-    A missing, unreadable or unlistable directory yields an empty list
-    instead of raising.
+    which is how the output folder of the tool stays out of its input
+    when that folder is a strict subtree of the scanned root. A missing,
+    unreadable or unlistable directory yields an empty list instead of
+    raising.
     """
 
     if not directory:
@@ -154,8 +155,10 @@ class PreviewWorker(QtCore.QThread):
         """Build an idle worker; set_directory decides what it reads.
 
         The output directory is only used to keep the products of the
-        tool out of the scan when they sit below the scanned root; an
-        empty value means "the default output folder of the dialog".
+        tool out of the scan: the copies land flat in that folder, so
+        the whole folder is skipped when it sits below the scanned
+        root. An empty value means "the default output folder of the
+        dialog".
         """
 
         super().__init__(parent)

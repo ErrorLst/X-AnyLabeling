@@ -9,6 +9,8 @@ import os
 import tempfile
 from types import SimpleNamespace
 
+import pytest
+
 from anylabeling.custom.preview_tool import core
 from anylabeling.custom.preview_tool import pick_core as pick
 
@@ -55,10 +57,13 @@ class TestTrashDir:
         assert pick.trash_dir() == os.path.join(
             tempfile.gettempdir(), "dsh-trash"
         )
-        assert pick.PICK_SUBDIR == "picked"
         assert pick.PICK_SEQ_START == 1
         assert ".jpg" in pick.PICK_IMAGE_EXTS
         assert ".json" not in pick.PICK_IMAGE_EXTS
+
+    def test_the_picked_folder_helpers_are_gone(self):
+        assert not hasattr(pick, "PICK_SUBDIR")
+        assert not hasattr(pick, "picked_dir")
 
 
 class TestUniqueTarget:
@@ -97,9 +102,7 @@ class TestPickState:
 
     def test_side_car_alone_is_not_picked(self, pt_dir, pt_out):
         write_image(pt_dir, "a.jpg")
-        picked = os.path.join(pt_out, "picked")
-        os.makedirs(picked)
-        write_json(picked, "a.json")
+        write_json(pt_out, "a.json")
         assert pick.pick_state(_entry("a.jpg"), pt_out) is False
 
     def test_after_a_copy(self, pt_dir, pt_out):
@@ -109,17 +112,13 @@ class TestPickState:
 
     def test_a_sequence_copy_counts(self, pt_dir, pt_out):
         image = write_image(pt_dir, "a.jpg")
-        picked = os.path.join(pt_out, "picked")
-        os.makedirs(picked)
-        write_image(picked, "a_1.jpg")
+        write_image(pt_out, "a_1.jpg")
         assert pick.pick_state(_entry(image), pt_out) is True
 
     def test_another_stem_does_not_count(self, pt_dir, pt_out):
         image = write_image(pt_dir, "a.jpg")
-        picked = os.path.join(pt_out, "picked")
-        os.makedirs(picked)
-        write_image(picked, "ab.jpg")
-        write_image(picked, "a_1x.jpg")
+        write_image(pt_out, "ab.jpg")
+        write_image(pt_out, "a_1x.jpg")
         assert pick.pick_state(_entry(image), pt_out) is False
 
     def test_entry_with_only_a_name(self, pt_dir, pt_out):
@@ -152,8 +151,8 @@ class TestPickOne:
         assert outcome.status == "ok"
         assert outcome.source == image
         assert outcome.error is None
-        assert outcome.target == os.path.join(pt_out, "picked", "a.jpg")
-        assert outcome.sidecar == os.path.join(pt_out, "picked", "a.json")
+        assert outcome.target == os.path.join(pt_out, "a.jpg")
+        assert outcome.sidecar == os.path.join(pt_out, "a.json")
         assert _read(outcome.target) == before
         assert _read(outcome.sidecar) == _read(side)
 
@@ -169,7 +168,7 @@ class TestPickOne:
         outcome = pick.pick_one(image, pt_out)
         assert outcome.status == "ok"
         assert outcome.sidecar == ""
-        assert _names(os.path.join(pt_out, "picked")) == ["a.jpg"]
+        assert _names(pt_out) == ["a.jpg"]
 
     def test_duplicate_gets_a_sequence_suffix(self, pt_dir, pt_out):
         image = write_image(pt_dir, "a.jpg")
@@ -179,7 +178,7 @@ class TestPickOne:
         assert first.target != second.target
         assert os.path.basename(second.target) == "a_1.jpg"
         assert os.path.basename(second.sidecar) == "a_1.json"
-        assert _names(os.path.join(pt_out, "picked")) == [
+        assert _names(pt_out) == [
             "a.jpg",
             "a.json",
             "a_1.jpg",
@@ -190,18 +189,19 @@ class TestPickOne:
         image = write_image(pt_dir, "a.jpg")
         for _round in range(3):
             assert pick.pick_one(image, pt_out).status == "ok"
-        assert _names(os.path.join(pt_out, "picked")) == [
+        assert _names(pt_out) == [
             "a.jpg",
             "a_1.jpg",
             "a_2.jpg",
         ]
 
-    def test_picked_folder_is_created(self, pt_dir, pt_out):
-        picked = os.path.join(pt_out, "picked")
-        assert not os.path.exists(picked)
+    def test_the_output_folder_is_created(self, pt_dir, pt_out):
+        output = os.path.join(pt_out, "out")
+        assert not os.path.exists(output)
         image = write_image(pt_dir, "a.jpg")
-        assert pick.pick_one(image, pt_out).status == "ok"
-        assert os.path.isdir(picked)
+        assert pick.pick_one(image, output).status == "ok"
+        assert os.path.isdir(output)
+        assert os.path.isfile(os.path.join(output, "a.jpg"))
 
     def test_missing_source(self, pt_out):
         outcome = pick.pick_one(os.path.join(pt_out, "gone.jpg"), pt_out)
@@ -210,18 +210,17 @@ class TestPickOne:
 
     def test_broken_destination_is_reported(self, pt_dir, pt_out):
         image = write_image(pt_dir, "a.jpg")
-        with open(os.path.join(pt_out, "picked"), "w") as handle:
+        blocked = os.path.join(pt_out, "out")
+        with open(blocked, "w") as handle:
             handle.write("x")
-        outcome = pick.pick_one(image, pt_out)
+        outcome = pick.pick_one(image, blocked)
         assert outcome.status == "error"
         assert outcome.error
 
     def test_orphan_side_car_is_not_overwritten(self, pt_dir, pt_out):
         image = write_image(pt_dir, "a.jpg")
         write_json(pt_dir, "a.json", {"shapes": [make_shape()]})
-        picked = os.path.join(pt_out, "picked")
-        os.makedirs(picked)
-        orphan = write_json(picked, "a.json", {"shapes": []})
+        orphan = write_json(pt_out, "a.json", {"shapes": []})
         outcome = pick.pick_one(image, pt_out)
         assert outcome.status == "ok"
         assert outcome.sidecar == ""
@@ -242,7 +241,7 @@ class TestUnpickOne:
         assert os.path.isfile(outcome.target)
         assert os.path.isfile(outcome.sidecar)
         assert os.path.basename(outcome.target) in trash_listing()
-        assert _names(os.path.join(pt_out, "picked")) == []
+        assert _names(pt_out) == []
 
     def test_invalid_names(self, pt_out):
         sep = chr(92)
@@ -266,7 +265,7 @@ class TestUnpickStem:
         write_json(pt_dir, "a_2.json")
         pick.pick_one(os.path.join(pt_dir, "a.jpg"), pt_out)
         pick.pick_one(os.path.join(pt_dir, "a_2.jpg"), pt_out)
-        assert _names(os.path.join(pt_out, "picked")) == [
+        assert _names(pt_out) == [
             "a.jpg",
             "a.json",
             "a_2.jpg",
@@ -280,7 +279,7 @@ class TestUnpickStem:
             assert os.path.isfile(item.target)
             assert item.target.startswith(pick.trash_dir())
             assert not os.path.exists(item.source)
-        assert _names(os.path.join(pt_out, "picked")) == []
+        assert _names(pt_out) == []
         assert "已移除 4 个文件" in result.message
         assert result.message.count("→") == 4
 
@@ -290,16 +289,14 @@ class TestUnpickStem:
         pick.pick_one(a, pt_out)
         pick.pick_one(b, pt_out)
         assert pick.unpick_stem(pt_out, "a").status == "ok"
-        assert _names(os.path.join(pt_out, "picked")) == ["b.jpg"]
+        assert _names(pt_out) == ["b.jpg"]
 
     def test_side_car_alone_is_missing(self, pt_dir, pt_out):
-        picked = os.path.join(pt_out, "picked")
-        os.makedirs(picked)
-        write_json(picked, "a.json")
+        write_json(pt_out, "a.json")
         result = pick.unpick_stem(pt_out, "a")
         assert result.status == "missing"
         assert result.moved == ()
-        assert _names(picked) == ["a.json"]
+        assert _names(pt_out) == ["a.json"]
 
     def test_missing_directory(self, pt_out):
         result = pick.unpick_stem(pt_out, "a")
@@ -311,9 +308,7 @@ class TestUnpickStem:
             assert pick.unpick_stem(pt_out, stem).status == "invalid"
 
     def test_foreign_file_with_the_same_stem_is_moved(self, pt_dir, pt_out):
-        picked = os.path.join(pt_out, "picked")
-        os.makedirs(picked)
-        foreign = write_image(picked, "a.png")
+        foreign = write_image(pt_out, "a.png")
         result = pick.unpick_stem(pt_out, "a")
         assert result.status == "ok"
         assert len(result.moved) == 1
@@ -344,7 +339,7 @@ class TestReversibleSwitch:
         assert pick.pick_one(image, pt_out).status == "ok"
         assert pick.pick_state(entry, pt_out) is True
         assert os.path.isfile(image)
-        assert _names(os.path.join(pt_out, "picked")) == ["a.jpg", "a.json"]
+        assert _names(pt_out) == ["a.jpg", "a.json"]
 
     def test_remove_remove_is_harmless(self, pt_dir, pt_out):
         image = write_image(pt_dir, "a.jpg")
@@ -392,15 +387,16 @@ class TestPickAll:
             [_entry(a), _entry(b)], pt_out, should_stop=should_stop
         )
         assert (copied, skipped, stems) == (1, 0, (("", "a"),))
-        assert not os.path.exists(os.path.join(pt_out, "picked", "b.jpg"))
+        assert not os.path.exists(os.path.join(pt_out, "b.jpg"))
 
     def test_cancel_before_the_first_entry(self, pt_dir, pt_out):
         a = write_image(pt_dir, "a.jpg")
+        output = os.path.join(pt_out, "out")
         copied, skipped, stems = pick.pick_all(
-            [_entry(a)], pt_out, should_stop=lambda: True
+            [_entry(a)], output, should_stop=lambda: True
         )
         assert (copied, skipped, stems) == (0, 0, ())
-        assert not os.path.exists(os.path.join(pt_out, "picked"))
+        assert not os.path.exists(output)
 
     def test_missing_source_is_not_counted(self, pt_dir, pt_out):
         a = write_image(pt_dir, "a.jpg")
@@ -437,136 +433,102 @@ class TestDetectPicked:
         assert pick.detect_picked([], pt_out) == frozenset()
 
 
-class TestRelativePickedDirs:
-    """picked/ keeps the relative directory of every image."""
+class TestFlatOutput:
+    """Every copy lands directly in the output folder itself."""
 
-    def test_copy_lands_in_its_subdirectory(self, pt_dir, pt_out):
+    def test_copy_lands_in_the_output_root(self, pt_dir, pt_out):
         source = write_image(pt_dir, "a.jpg")
         side = write_json(pt_dir, "a.json")
-        outcome = pick.pick_one(source, pt_out, "sub/deep")
-        target = os.path.join(
-            pt_out, "picked", "sub", "deep", "a.jpg"
-        )
+        outcome = pick.pick_one(source, pt_out)
+        target = os.path.join(pt_out, "a.jpg")
         assert outcome.status == "ok"
         assert outcome.target == target
-        assert outcome.sidecar == os.path.splitext(target)[0] + ".json"
+        assert outcome.sidecar == os.path.join(pt_out, "a.json")
         assert _read(target) == _read(source)
         assert _read(outcome.sidecar) == _read(side)
+        assert not os.path.isdir(os.path.join(pt_out, "picked"))
 
     def test_same_name_in_two_directories_does_not_collide(
         self, pt_dir, pt_out
     ):
         first = write_image(pt_dir, os.path.join("one", "a.jpg"))
         second = write_image(pt_dir, os.path.join("two", "a.jpg"))
-        one = pick.pick_one(first, pt_out, "one")
-        two = pick.pick_one(second, pt_out, "two")
-        assert one.target == os.path.join(
-            pt_out, "picked", "one", "a.jpg"
-        )
-        assert two.target == os.path.join(
-            pt_out, "picked", "two", "a.jpg"
-        )
+        one = pick.pick_one(first, pt_out)
+        two = pick.pick_one(second, pt_out)
+        assert one.target == os.path.join(pt_out, "a.jpg")
+        assert two.target == os.path.join(pt_out, "a_1.jpg")
 
-    def test_pick_state_is_scoped_to_the_subdirectory(self, pt_dir, pt_out):
-        first = write_image(pt_dir, os.path.join("one", "a.jpg"))
-        pick.pick_one(first, pt_out, "one")
-        assert pick.pick_state(_entry(first, rel_dir="one"), pt_out) is True
-        assert pick.pick_state(_entry(first, rel_dir="two"), pt_out) is False
-        assert pick.pick_state(_entry(first), pt_out) is False
-
-    def test_duplicate_in_the_same_subdirectory_gets_a_suffix(
+    def test_subdirectories_of_the_source_are_not_mirrored(
         self, pt_dir, pt_out
     ):
+        source = write_image(pt_dir, os.path.join("a", "b", "one.jpg"))
+        outcome = pick.pick_one(source, pt_out)
+        assert outcome.status == "ok"
+        assert outcome.target == os.path.join(pt_out, "one.jpg")
+
+    def test_pick_state_is_flat(self, pt_dir, pt_out):
+        first = write_image(pt_dir, os.path.join("one", "a.jpg"))
+        pick.pick_one(first, pt_out)
+        assert pick.pick_state(_entry(first, rel_dir="one"), pt_out) is True
+        assert pick.pick_state(_entry(first, rel_dir="two"), pt_out) is True
+        assert pick.pick_state(_entry(first), pt_out) is True
+
+    def test_duplicate_gets_a_sequence_suffix(self, pt_dir, pt_out):
         source = write_image(pt_dir, os.path.join("one", "a.jpg"))
         write_json(pt_dir, os.path.join("one", "a.json"))
-        first = pick.pick_one(source, pt_out, "one")
-        second = pick.pick_one(source, pt_out, "one")
+        first = pick.pick_one(source, pt_out)
+        second = pick.pick_one(source, pt_out)
         assert os.path.basename(first.target) == "a.jpg"
         assert os.path.basename(second.target) == "a_1.jpg"
         assert os.path.basename(second.sidecar) == "a_1.json"
-        assert os.path.dirname(second.target) == os.path.join(
-            pt_out, "picked", "one"
-        )
+        assert os.path.dirname(second.target) == pt_out
 
-    def test_root_and_subdirectory_names_are_independent(
+    def test_remove_touches_every_copy_of_the_stem(
         self, pt_dir, pt_out
     ):
-        pick.pick_one(write_image(pt_dir, "a.jpg"), pt_out)
-        nested = write_image(pt_dir, os.path.join("one", "a.jpg"))
-        outcome = pick.pick_one(nested, pt_out, "one")
-        assert outcome.status == "ok"
-        assert os.path.basename(outcome.target) == "a.jpg"
-
-    def test_remove_touches_only_its_relative_directory(self, pt_dir, pt_out):
         first = write_image(pt_dir, os.path.join("one", "a.jpg"))
-        second = write_image(pt_dir, os.path.join("two", "a.jpg"))
-        pick.pick_one(first, pt_out, "one")
-        pick.pick_one(second, pt_out, "two")
-        result = pick.unpick_stem(pt_out, "a", "one")
+        second = write_image(pt_dir, "b.jpg")
+        pick.pick_one(first, pt_out)
+        pick.pick_one(second, pt_out)
+        result = pick.unpick_stem(pt_out, "a")
         assert result.status == "ok"
         assert len(result.moved) == 1
-        assert os.path.isfile(
-            os.path.join(pt_out, "picked", "two", "a.jpg")
-        )
-        assert not os.path.exists(
-            os.path.join(pt_out, "picked", "one", "a.jpg")
-        )
+        assert not os.path.exists(os.path.join(pt_out, "a.jpg"))
+        assert os.path.isfile(os.path.join(pt_out, "b.jpg"))
 
-    def test_unpick_one_moves_only_its_relative_directory(
-        self, pt_dir, pt_out
-    ):
+    def test_unpick_one_uses_the_flat_name(self, pt_dir, pt_out):
         first = write_image(pt_dir, os.path.join("one", "a.jpg"))
-        second = write_image(pt_dir, os.path.join("two", "a.jpg"))
-        pick.pick_one(first, pt_out, "one")
-        pick.pick_one(second, pt_out, "two")
-        outcome = pick.unpick_one(pt_out, "a.jpg", "one")
+        second = write_image(pt_dir, "b.jpg")
+        pick.pick_one(first, pt_out)
+        pick.pick_one(second, pt_out)
+        outcome = pick.unpick_one(pt_out, "a.jpg")
         assert outcome.status == "ok"
         assert outcome.target.startswith(pick.trash_dir())
-        assert os.path.isfile(
-            os.path.join(pt_out, "picked", "two", "a.jpg")
-        )
+        assert os.path.isfile(os.path.join(pt_out, "b.jpg"))
 
-    def test_batch_keeps_every_relative_directory(self, pt_dir, pt_out):
+    def test_batch_keeps_the_key_identity(self, pt_dir, pt_out):
         first = write_image(pt_dir, os.path.join("one", "a.jpg"))
-        second = write_image(pt_dir, os.path.join("two", "a.jpg"))
+        second = write_image(pt_dir, os.path.join("two", "b.jpg"))
         entries = [
             _entry(first, rel_dir="one"),
             _entry(second, rel_dir="two"),
         ]
         copied, skipped, keys = pick.pick_all(entries, pt_out)
         assert (copied, skipped) == (2, 0)
-        assert keys == (("one", "a"), ("two", "a"))
-        assert os.path.isfile(
-            os.path.join(pt_out, "picked", "one", "a.jpg")
-        )
-        assert os.path.isfile(
-            os.path.join(pt_out, "picked", "two", "a.jpg")
-        )
+        assert keys == (("one", "a"), ("two", "b"))
+        assert os.path.isfile(os.path.join(pt_out, "a.jpg"))
+        assert os.path.isfile(os.path.join(pt_out, "b.jpg"))
 
-    def test_detect_reports_the_relative_directory(self, pt_dir, pt_out):
+    def test_detect_reports_the_key_identity(self, pt_dir, pt_out):
         first = write_image(pt_dir, os.path.join("one", "a.jpg"))
-        pick.pick_one(first, pt_out, "one")
+        pick.pick_one(first, pt_out)
         entries = [
             _entry(first, rel_dir="one"),
             _entry(first, rel_dir="two"),
         ]
         assert pick.detect_picked(entries, pt_out) == frozenset(
-            {("one", "a")}
+            {("one", "a"), ("two", "a")}
         )
-
-    def test_unsafe_relative_directories_are_refused(self, pt_dir, pt_out):
-        source = write_image(pt_dir, "a.jpg")
-        unsafe = ("../escape", os.path.abspath(pt_out), "a/../../b")
-        for rel_dir in unsafe:
-            assert pick.pick_one(source, pt_out, rel_dir).status == (
-                "invalid"
-            )
-            assert not pick.pick_state(
-                _entry(source, rel_dir=rel_dir), pt_out
-            )
-            assert pick.unpick_stem(pt_out, "a", rel_dir).status == (
-                "invalid"
-            )
 
     def test_normalize_rel_dir(self):
         assert pick.normalize_rel_dir("") == ""
@@ -584,16 +546,45 @@ class TestRelativePickedDirs:
         assert pick.entry_rel_dir(entry) == "sub"
 
 
-class TestPickedDir:
-    """The picked folder path of one relative directory."""
+class TestRemovedRelativeDirectoryApi:
+    """The rel_dir of a copy is gone from the file layer."""
 
-    def test_root(self, pt_out):
-        assert pick.picked_dir(pt_out) == os.path.join(pt_out, "picked")
+    def test_pick_one(self, pt_dir, pt_out):
+        source = write_image(pt_dir, "a.jpg")
+        with pytest.raises(TypeError):
+            pick.pick_one(source, pt_out, "sub")
 
-    def test_subdirectory(self, pt_out):
-        assert pick.picked_dir(pt_out, os.path.join("a", "b")) == (
-            os.path.join(pt_out, "picked", "a", "b")
-        )
+    def test_unpick_one(self, pt_out):
+        with pytest.raises(TypeError):
+            pick.unpick_one(pt_out, "a.jpg", "sub")
+
+    def test_unpick_stem(self, pt_out):
+        with pytest.raises(TypeError):
+            pick.unpick_stem(pt_out, "a", "sub")
+
+
+class TestOutputConflicts:
+    """A flat output folder may never be the input folder itself."""
+
+    def test_the_same_directory_conflicts(self, pt_dir):
+        assert pick.output_conflicts(pt_dir, pt_dir) is True
+        assert pick.output_conflicts(
+            pt_dir, pt_dir + os.path.sep
+        ) is True
+
+    def test_a_subdirectory_does_not_conflict(self, pt_dir):
+        assert pick.output_conflicts(
+            pt_dir, os.path.join(pt_dir, "out")
+        ) is False
+
+    def test_another_directory_does_not_conflict(self, pt_dir, pt_out):
+        assert pick.output_conflicts(pt_dir, pt_out) is False
+
+    def test_unknown_paths_never_conflict(self, pt_dir):
+        assert pick.output_conflicts(pt_dir, "") is False
+        assert pick.output_conflicts("", pt_dir) is False
+        assert pick.output_conflicts(None, None) is False
+        assert pick.output_conflicts(object(), pt_dir) is False
 
 
 class TestOutputSkipDirs:
@@ -604,10 +595,13 @@ class TestOutputSkipDirs:
         os.makedirs(out)
         assert pick.output_skip_dirs(pt_dir, out) == (out,)
 
-    def test_output_equal_to_the_input_skips_the_picked_folder(self, pt_dir):
-        assert pick.output_skip_dirs(pt_dir, pt_dir) == (
-            os.path.join(pt_dir, "picked"),
-        )
+    def test_a_deeper_output_is_skipped_as_one_subtree(self, pt_dir):
+        out = os.path.join(pt_dir, "a", "out")
+        os.makedirs(out)
+        assert pick.output_skip_dirs(pt_dir, out) == (out,)
+
+    def test_output_equal_to_the_input_needs_no_skip(self, pt_dir):
+        assert pick.output_skip_dirs(pt_dir, pt_dir) == ()
 
     def test_output_outside_the_input_needs_no_skip(self, pt_dir, pt_out):
         assert pick.output_skip_dirs(pt_dir, pt_out) == ()

@@ -186,6 +186,32 @@ class TestLauncher:
         _keep(widget, first)
         assert first is second
 
+    def test_reopen_keeps_a_maximized_window(self, qapp):
+        widget = QtWidgets.QWidget()
+        dialog = crop_tool.launch_crop_tool(widget)
+        _keep(widget, dialog)
+        dialog.showMaximized()
+        QtWidgets.QApplication.processEvents()
+        assert dialog.isMaximized() is True
+        again = crop_tool.launch_crop_tool(widget)
+        QtWidgets.QApplication.processEvents()
+        assert again is dialog
+        assert dialog.isMaximized() is True
+
+    def test_reopen_restores_a_minimized_window(self, qapp):
+        widget = QtWidgets.QWidget()
+        dialog = crop_tool.launch_crop_tool(widget)
+        _keep(widget, dialog)
+        dialog.showMinimized()
+        QtWidgets.QApplication.processEvents()
+        assert dialog.isMinimized() is True
+        again = crop_tool.launch_crop_tool(widget)
+        QtWidgets.QApplication.processEvents()
+        assert again is dialog
+        assert dialog.isMinimized() is False
+        assert dialog.isMaximized() is False
+        assert dialog.isVisible() is True
+
     def test_reuse_does_not_rescan(self, qapp, ct_store, ct_dir):
         from conftest import write_pil
 

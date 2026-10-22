@@ -40,6 +40,31 @@ def _entry(name, shapes=(), path=None):
     )
 
 
+class TestDefaultOutputDir:
+    """The default output folder is the picked folder of the cwd."""
+
+    def test_it_is_the_picked_folder_of_the_cwd(self):
+        assert core.OUTPUT_SUBDIR == "picked"
+        assert core.default_output_dir() == os.path.join(
+            os.getcwd(), "picked"
+        )
+
+    def test_the_cwd_is_fetched_on_every_call(self, monkeypatch):
+        calls = []
+
+        def fake_getcwd():
+            calls.append(True)
+            return "/pt-cwd/{}".format(len(calls))
+
+        monkeypatch.setattr(os, "getcwd", fake_getcwd)
+        assert core.default_output_dir() == os.path.join(
+            "/pt-cwd/1", "picked"
+        )
+        assert core.default_output_dir() == os.path.join(
+            "/pt-cwd/2", "picked"
+        )
+
+
 def _cfg(score=0.45, width=10.0, height=10.0, mode=None):
     """Return a filter with the given thresholds."""
 

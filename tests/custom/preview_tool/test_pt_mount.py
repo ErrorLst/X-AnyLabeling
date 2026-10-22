@@ -253,6 +253,30 @@ class TestLauncher:
         del first.rescan
         first.close()
 
+    def test_reuse_keeps_a_maximized_window(self, qapp):
+        widget = QtWidgets.QWidget()
+        _keep(widget)
+        dialog = pt_launcher.launch_preview_tool(widget)
+        _keep(dialog)
+        dialog.showMaximized()
+        again = pt_launcher.launch_preview_tool(widget)
+        assert again is dialog
+        assert dialog.isMaximized() is True
+        dialog.close()
+
+    def test_reuse_brings_a_minimized_window_back(self, qapp):
+        widget = QtWidgets.QWidget()
+        _keep(widget)
+        dialog = pt_launcher.launch_preview_tool(widget)
+        _keep(dialog)
+        dialog.showMinimized()
+        assert dialog.isMinimized() is True
+        again = pt_launcher.launch_preview_tool(widget)
+        assert again is dialog
+        assert dialog.isMinimized() is False
+        assert dialog.isVisible() is True
+        dialog.close()
+
     def test_destroyed_clears_the_attribute(self, qapp):
         widget = QtWidgets.QWidget()
         _keep(widget)

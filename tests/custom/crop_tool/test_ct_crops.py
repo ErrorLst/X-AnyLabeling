@@ -1,5 +1,6 @@
 """Unit tests of the crop naming, scanning and deletion of crop_core."""
 
+import inspect
 import os
 
 import pytest
@@ -39,12 +40,16 @@ class TestBuildCropName:
         name = core.build_crop_name("img", 0, 0, 1, 1, 0, 0, ".png")
         assert core.parse_crop_name(name).path == name
 
-    def test_round_trip_carries_the_relative_folder(self):
+    def test_record_has_no_relative_folder(self):
         name = core.build_crop_name("img", 0, 0, 1, 1, 0, 0, ".png")
-        record = core.parse_crop_name(name, "/out", "sub")
-        assert record.rel_dir == "sub"
+        record = core.parse_crop_name(name, "/out")
+        assert not hasattr(record, "rel_dir")
+        assert "rel_dir" not in core.CropRecord.__dataclass_fields__
         assert record.path == os.path.join("/out", name)
-        assert core.parse_crop_name(name).rel_dir == ""
+
+    def test_parse_crop_name_has_no_relative_folder_parameter(self):
+        parameters = inspect.signature(core.parse_crop_name).parameters
+        assert "rel_dir" not in parameters
 
 
 class TestParseCropName:
@@ -151,9 +156,9 @@ class TestScanCrops:
         core.crop_image(first, 0, 0, 2, 2, output_dir=ct_out)
         core.crop_image(second, 1, 1, 2, 2, output_dir=ct_out)
         groups = core.scan_crops(ct_out)
-        assert sorted(groups) == [("", "a"), ("", "b")]
-        assert [record.seq for record in groups[("", "a")]] == [1, 2]
-        assert len(groups[("", "b")]) == 1
+        assert sorted(groups) == ["a", "b"]
+        assert [record.seq for record in groups["a"]] == [1, 2]
+        assert len(groups["b"]) == 1
         assert core.crop_count(ct_out, "a") == 2
         assert core.crop_count(ct_out, "zzz") == 0
 
@@ -161,10 +166,10 @@ class TestScanCrops:
         source = write_pil(ct_dir, "img.png", (8, 8))
         for _ in range(10):
             core.crop_image(source, 0, 0, 2, 2, output_dir=ct_out)
-        records = core.scan_crops(ct_out)[("", "img")]
+        records = core.scan_crops(ct_out)["img"]
         assert [record.seq for record in records] == list(range(1, 11))
 
-    def test_reads_the_whole_output_tree(self, ct_out):
+    def test_only_the_output_root_is_read(self, ct_out):
         os.makedirs(os.path.join(ct_out, "a__x0_y0_w1_h1__px0_py0.png"))
         with open(os.path.join(ct_out, "notes.txt"), "wb") as handle:
             handle.write(b"x")
@@ -176,27 +181,23 @@ class TestScanCrops:
             with open(path, "wb") as handle:
                 handle.write(b"x")
         groups = core.scan_crops(ct_out)
-        assert sorted(groups) == [("", "b"), ("sub", "c")]
-        assert groups[("", "b")][0].path == keep
-        assert groups[("sub", "c")][0].path == nested
-        assert groups[("sub", "c")][0].rel_dir == "sub"
+        assert sorted(groups) == ["b"]
+        assert groups["b"][0].path == keep
+        assert core.crop_count(ct_out, "c") == 0
 
-    def test_same_stem_in_two_folders_stays_apart(self, ct_out):
-        sub = os.path.join(ct_out, "sub")
-        os.makedirs(sub)
-        root_name = core.build_crop_name("img", 1, 1, 2, 2, 0, 0, ".png")
-        sub_name = core.build_crop_name("img", 3, 3, 2, 2, 0, 0, ".png")
-        for directory, name in (
-            (ct_out, root_name),
-            (sub, sub_name),
-        ):
-            with open(os.path.join(directory, name), "w") as out:
-                out.write("x")
+    def test_same_stem_in_two_folders_shares_one_group(
+        self, ct_dir, ct_out
+    ):
+        first = write_pil(ct_dir, "img.png", (8, 8))
+        nested = os.path.join(ct_dir, "sub")
+        os.makedirs(nested)
+        second = write_pil(nested, "img.png", (8, 8))
+        core.crop_image(first, 0, 0, 2, 2, output_dir=ct_out)
+        core.crop_image(second, 1, 1, 2, 2, output_dir=ct_out)
         groups = core.scan_crops(ct_out)
-        assert sorted(groups) == [("", "img"), ("sub", "img")]
-        assert groups[("", "img")][0].x == 1
-        assert groups[("sub", "img")][0].x == 3
-        assert groups[("sub", "img")][0].rel_dir == "sub"
+        assert sorted(groups) == ["img"]
+        assert [record.x for record in groups["img"]] == [0, 1]
+        assert core.crop_count(ct_out, "img") == 2
 
     def test_missing_directory(self, ct_dir):
         gone = os.path.join(ct_dir, "nope")
@@ -271,17 +272,17 @@ class TestDeleteCrops:
             assert skipped == [(path, "输出目录不可用")]
         assert os.path.exists(path)
 
-    def test_nested_crop_is_deleted(self, ct_dir, ct_out):
-        source = write_pil(ct_dir, "img.png", (8, 8))
-        relative = os.path.join("a", "b")
-        result = core.crop_image(
-            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir=relative
-        )
-        deleted, skipped = core.delete_crops([result.path], ct_out)
-        assert deleted == [result.path]
+    def test_a_crop_in_a_subfolder_is_still_accepted(self, ct_out):
+        sub = os.path.join(ct_out, "a", "b")
+        os.makedirs(sub)
+        name = core.build_crop_name("img", 0, 0, 2, 2, 0, 0, ".png")
+        path = os.path.join(sub, name)
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+        deleted, skipped = core.delete_crops([path], ct_out)
+        assert deleted == [path]
         assert skipped == []
-        assert os.path.isdir(os.path.join(ct_out, relative)) is True
-        assert core.scan_crops(ct_out) == {}
+        assert os.path.isdir(sub) is True
 
     def test_mixed_result_counts(self, ct_dir, ct_out):
         good = self._crops(ct_dir, ct_out, 1)[0]

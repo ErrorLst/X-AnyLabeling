@@ -28,7 +28,7 @@ from .viewer import first_directory
 
 __all__ = ["PICK_MARK", "PreviewFileTree"]
 
-#: Prefix of a row whose image already exists inside picked/.
+#: Prefix of a row whose image already exists in the output folder.
 PICK_MARK = "✓  "
 
 MIN_WIDTH = 200

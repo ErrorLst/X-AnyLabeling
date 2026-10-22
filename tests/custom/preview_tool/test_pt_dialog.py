@@ -199,6 +199,18 @@ def test_the_window_follows_the_layout_of_the_other_tools(
         assert label.parent() is dialog.status_bar
 
 
+def test_the_window_can_be_minimized_and_maximized(opened, pt_store):
+    """The window frame carries the minimize and maximize buttons."""
+
+    settings, _ini = pt_store
+    dialog = opened(settings)
+    flags = dialog.windowFlags()
+    hints = QtCore.Qt.WindowType
+    assert flags & hints.WindowMinimizeButtonHint
+    assert flags & hints.WindowMaximizeButtonHint
+    assert flags & hints.WindowCloseButtonHint
+
+
 def test_filter_controls_disable_with_the_switch(opened, pt_store):
     settings, _ini = pt_store
     dialog = opened(settings)
@@ -478,9 +490,9 @@ def test_the_toggle_copies_and_removes_for_real(
 
     dialog._on_toggle_current()
     assert _wait_picked(dialog, {("", "a")})
-    copied = os.path.join(pt_out, "picked", "a.jpg")
+    copied = os.path.join(pt_out, "a.jpg")
     assert os.path.isfile(copied)
-    assert os.path.isfile(os.path.join(pt_out, "picked", "a.json"))
+    assert os.path.isfile(os.path.join(pt_out, "a.json"))
     assert dialog._toggle_btn.text() == pt_dialog.TOGGLE_REMOVE_TEXT
     assert dialog._list.row_text(0).startswith(list_panel.PICK_MARK)
 
@@ -513,8 +525,7 @@ def test_pick_all_copies_everything_that_is_left(
     assert _wait_entries(dialog)
     dialog._on_pick_all()
     assert _wait_picked(dialog, {("", "a"), ("", "b")})
-    picked_dir = os.path.join(pt_out, "picked")
-    assert sorted(os.listdir(picked_dir)) == ["a.jpg", "b.jpg"]
+    assert sorted(os.listdir(pt_out)) == ["a.jpg", "b.jpg"]
 
 
 # ---------------------------------------------------------------- output
@@ -533,6 +544,9 @@ def test_output_button_writes_the_injected_ini(
     assert dialog._choose_output_dir() == pt_out
     flush_settings(settings)
     assert make_settings(ini).output_dir() == pt_out
+    assert dialog._output_btn.toolTip() == (
+        f"{pt_dialog.OUTPUT_TIP}\n{pt_out}"
+    )
 
 
 def test_expand_spinbox_reaches_the_view_and_the_store(opened, pt_store):
@@ -849,9 +863,7 @@ def test_a_copy_advances_across_directory_borders(
         {("", "01_root"), ("a", "02_a")}
     )
     assert os.path.basename(dialog._current_path) == "03_b.png"
-    assert os.path.isfile(
-        os.path.join(pt_out, "picked", "a", "02_a.png")
-    )
+    assert os.path.isfile(os.path.join(pt_out, "02_a.png"))
 
 
 def test_the_advance_stops_at_the_end_of_the_flat_order(
@@ -989,18 +1001,72 @@ def test_the_output_folder_below_the_input_is_skipped(
     output = os.path.join(pt_dir, "out")
     settings.set_output_dir(output)
     write_image(pt_dir, "keep.png", size=(8, 8))
-    write_image(
-        output, os.path.join("picked", "product.png"), size=(8, 8)
-    )
+    write_image(output, "product.png", size=(8, 8))
     dialog = opened(settings)
     dialog.set_directory(pt_dir)
     assert _wait_entries(dialog)
     assert [entry.name for entry in dialog._entries] == ["keep.png"]
 
 
-def test_the_output_equal_to_the_input_skips_the_picked_folder(
+def test_the_output_equal_to_the_input_is_refused_as_a_setting(
+    opened, pt_store, pt_dir, pt_out
+):
+    settings, ini = pt_store
+    settings.set_output_dir(pt_out)
+    write_image(pt_dir, "a.jpg", size=(8, 8))
+    dialog = opened(settings)
+    dialog.set_directory(pt_dir)
+    assert _wait_entries(dialog)
+    assert _wait_until(lambda: dialog._scan_worker is None)
+    _quiet_probe(dialog)
+
+    dialog._on_output_dir_changed(pt_dir)
+
+    assert dialog._status.text() == pt_dialog.OUTPUT_EQUALS_INPUT_TEXT
+    flush_settings(settings)
+    assert make_settings(ini).output_dir() == pt_out
+    assert dialog._scan_worker is None
+
+
+def test_picking_actions_refuse_when_the_output_is_the_input(
+    opened, pt_store, pt_dir, monkeypatch
+):
+    settings, _ini = pt_store
+    settings.set_output_dir(pt_dir)
+    dialog = opened(settings)
+    _open_entries(dialog, pt_dir, ["a.png", "b.png"])
+    dialog._picked = frozenset({("", "a")})
+    asked = []
+    calls = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        staticmethod(
+            lambda *args, **kwargs: asked.append(True)
+            or QtWidgets.QMessageBox.StandardButton.No
+        ),
+    )
+    dialog._start_pick = lambda kind, **kwargs: calls.append(kind)
+
+    dialog._on_toggle_current()
+    assert calls == []
+    assert dialog._status.text() == pt_dialog.OUTPUT_EQUALS_INPUT_TEXT
+
+    dialog._on_remove_current()
+    assert calls == []
+    assert dialog._status.text() == pt_dialog.OUTPUT_EQUALS_INPUT_TEXT
+
+    dialog._on_pick_all()
+    assert calls == []
+    assert asked == []
+    assert dialog._status.text() == pt_dialog.OUTPUT_EQUALS_INPUT_TEXT
+
+
+def test_the_scan_lists_the_products_when_output_is_the_input(
     opened, pt_store, pt_dir
 ):
+    """The guard refuses the actions; the scan never hides the input."""
+
     settings, _ini = pt_store
     settings.set_output_dir(pt_dir)
     write_image(pt_dir, "keep.png", size=(8, 8))
@@ -1010,7 +1076,12 @@ def test_the_output_equal_to_the_input_skips_the_picked_folder(
     dialog = opened(settings)
     dialog.set_directory(pt_dir)
     assert _wait_entries(dialog)
-    assert [entry.name for entry in dialog._entries] == ["keep.png"]
+    _quiet_probe(dialog)
+    assert [entry.name for entry in dialog._entries] == [
+        "keep.png",
+        "product.png",
+    ]
+    assert dialog._output_dir_is_the_input() is True
 
 
 def test_moving_the_output_into_the_tree_rescans(
@@ -1020,9 +1091,7 @@ def test_moving_the_output_into_the_tree_rescans(
     settings.set_output_dir(pt_out)
     write_image(pt_dir, "keep.png", size=(8, 8))
     nested = os.path.join(pt_dir, "out")
-    write_image(
-        nested, os.path.join("picked", "product.png"), size=(8, 8)
-    )
+    write_image(nested, "product.png", size=(8, 8))
     dialog = opened(settings)
     dialog.set_directory(pt_dir)
     assert _wait_entries(dialog)

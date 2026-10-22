@@ -15,15 +15,19 @@ widen the other one.
 
 Picking is a two way switch of the image on screen, not a history:
 
-* not picked - the image and its json side car are copied into
-  <output>/picked/<rel_dir>/, keeping the directory it came from, the
-  leaf gains the marker of list_panel and the button becomes
-  "移入 dsh-trash";
-* picked - every copy of that (rel_dir, stem) family inside picked/
-  (image and side car) is moved into the trash folder of the system, the
-  marker disappears and the button becomes "拷贝到 picked" again.
+* not picked - the image and its json side car are copied directly
+  into the output directory, a flat folder: no subdirectory of the
+  source is mirrored and the leaf gains the marker of list_panel; the
+  button becomes "移入 dsh-trash";
+* picked - every copy of that (rel_dir, stem) family inside the output
+  directory (image and side car) is moved into the trash folder of the
+  system, the marker disappears and the button becomes
+  "拷贝到输出目录" again.
 
-A successful copy or removal of the current image advances to the next
+The output directory may never be the input directory: a flat copy of
+a source cannot be told apart from its source, so that choice is
+refused with a message and the stored setting is left alone. A
+successful copy or removal of the current image advances to the next
 leaf of the flat order, across directory borders and without wrapping
 at the end of the list; a failed, cancelled or empty operation stays
 where it is and "全部拷贝" never advances.
@@ -65,6 +69,7 @@ __all__ = [
     "MIN_WINDOW_SIZE",
     "NO_IMAGES_TEXT",
     "NOT_PICKED_TEXT",
+    "OUTPUT_EQUALS_INPUT_TEXT",
     "PICK_ALL_TEXT",
     "PICK_PROBE_DEBOUNCE_MS",
     "PreviewDialog",
@@ -91,13 +96,13 @@ MAX_SPEED = 30
 OPEN_TEXT = "打开目录…"
 OPEN_TIP = "选择一个图片目录（Ctrl+O）"
 OUTPUT_TEXT = "输出目录…"
-OUTPUT_TIP = "picked/ 安放在这个目录里，默认当前工作目录"
+OUTPUT_TIP = "挑选的图片与 json 直接放进这个目录（默认当前工作目录下的 picked/）"
 PICK_ALL_TEXT = "全部拷贝"
-PICK_ALL_TIP = "把列表里尚未挑选的图片拷进 picked/"
-TOGGLE_PICK_TEXT = "拷贝到 picked"
+PICK_ALL_TIP = "把列表里尚未挑选的图片拷进输出目录"
+TOGGLE_PICK_TEXT = "拷贝到输出目录"
 TOGGLE_PICK_TIP = "拷贝当前图片与它的 json 边车（Space）"
 TOGGLE_REMOVE_TEXT = "移入 dsh-trash"
-TOGGLE_REMOVE_TIP = "把 picked/ 里同名的全部副本移入 dsh-trash（Space）"
+TOGGLE_REMOVE_TIP = "把输出目录里同名的全部副本移入 dsh-trash（Space）"
 TOGGLE_PICK_ICON = "export"
 TOGGLE_REMOVE_ICON = "trash"
 
@@ -123,16 +128,17 @@ SPEED_SUFFIX = " 张/s"
 NO_DIRECTORY_TEXT = "尚未打开目录：把图片目录拖进窗口，或点「打开目录」"
 NO_IMAGES_TEXT = "该目录里没有图片"
 NO_CURRENT_TEXT = "当前没有可操作的图片"
-NOT_PICKED_TEXT = "当前图不在 picked/，无操作"
+NOT_PICKED_TEXT = "当前图不在输出目录，无操作"
+OUTPUT_EQUALS_INPUT_TEXT = "输出目录不能与输入目录相同：挑选的图片会与源图混在一起，请另选输出目录"
 BUSY_TEXT = "上一个任务还在进行中"
 PICK_ALL_EMPTY_TEXT = "没有需要拷贝的图片"
 PICK_ALL_TITLE = "全部拷贝"
-PICK_ALL_QUESTION = "把 %d 张尚未挑选的图片拷进 picked/？"
+PICK_ALL_QUESTION = "把 %d 张尚未挑选的图片拷进输出目录？"
 
 SCAN_TEXT = "正在扫描 %d/%d …"
 WORK_TEXT = "正在处理 %d/%d …"
 STATUS_FORMAT = "共 %d 张 · 过滤后 %d 张 · 已挑选 %d 张 · 输出 %s"
-STATUS_PICKED_FORMAT = "已拷贝到 picked/：%s"
+STATUS_PICKED_FORMAT = "已拷贝：%s"
 STATUS_REMOVED_FORMAT = "已移入 dsh-trash：%s"
 STATUS_FAILED_FORMAT = "失败：%s"
 STATUS_BACKGROUND_ON = "视图背景：纯色（再按 B 回到主题）"
@@ -233,6 +239,12 @@ class PreviewDialog(QtWidgets.QDialog):
         self._repeat_step = 0
         self._toggle_icon_name = ""
         self.setWindowTitle(WINDOW_TITLE)
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Window
+            | QtCore.Qt.WindowType.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowType.WindowMaximizeButtonHint
+            | QtCore.Qt.WindowType.WindowCloseButtonHint
+        )
         self.resize(*WINDOW_SIZE)
         self.setMinimumSize(*MIN_WINDOW_SIZE)
         self.setAcceptDrops(True)
@@ -600,7 +612,7 @@ class PreviewDialog(QtWidgets.QDialog):
             return None
 
     def _scan_output_dir(self) -> str:
-        """Return the output directory of a scan, never raising."""
+        """Return the effective output directory, never raising."""
 
         try:
             output = str(self._settings.output_dir() or "")
@@ -982,7 +994,7 @@ class PreviewDialog(QtWidgets.QDialog):
         return pick_core.entry_key(entry)
 
     def _is_picked(self, key=None) -> bool:
-        """Return True when one (rel_dir, stem) key exists in picked/."""
+        """Return True when one (rel_dir, stem) key is copied already."""
 
         if key is None:
             key = self._current_key()
@@ -1012,6 +1024,8 @@ class PreviewDialog(QtWidgets.QDialog):
     def _on_toggle_current(self) -> None:
         """Copy or remove the image on screen, the two way switch."""
 
+        if self._refuse_output_equal_to_input():
+            return
         if self._index < 0:
             self._set_status(NO_CURRENT_TEXT)
             return
@@ -1031,6 +1045,8 @@ class PreviewDialog(QtWidgets.QDialog):
     def _on_remove_current(self) -> None:
         """Delete key: remove the current image, never anything else."""
 
+        if self._refuse_output_equal_to_input():
+            return
         if self._index < 0:
             self._set_status(NO_CURRENT_TEXT)
             return
@@ -1048,8 +1064,10 @@ class PreviewDialog(QtWidgets.QDialog):
         self._start_pick("remove", targets=(key,), advance=key)
 
     def _on_pick_all(self) -> None:
-        """Copy every image of the list that is not picked yet."""
+        """Copy every image of the list that is not copied yet."""
 
+        if self._refuse_output_equal_to_input():
+            return
         pending = [
             entry for entry in self._kept
             if not self._is_picked(pick_core.entry_key(entry))
@@ -1070,7 +1088,11 @@ class PreviewDialog(QtWidgets.QDialog):
         self._start_pick("all")
 
     def _start_pick(self, kind: str, **kwargs) -> Optional[PickJob]:
-        """Start one pick job and connect every one of its signals."""
+        """Start one pick job and connect every one of its signals.
+
+        The job writes into the effective output directory; the
+        (rel_dir, stem) keys it reports stay the identity of the rows.
+        """
 
         if self._pick_busy():
             self._set_status(BUSY_TEXT)
@@ -1161,7 +1183,7 @@ class PreviewDialog(QtWidgets.QDialog):
         self._set_status(STATUS_FAILED_FORMAT % text)
 
     def _on_detect_finished(self, keys) -> None:
-        """Take the picked keys of a finished detection."""
+        """Take the copied keys of a finished detection."""
 
         picked = set()
         for value in keys or ():
@@ -1254,7 +1276,7 @@ class PreviewDialog(QtWidgets.QDialog):
         return path
 
     def _choose_output_dir(self) -> str:
-        """Ask for the directory that holds picked/."""
+        """Ask for the output directory the copies go into."""
 
         try:
             start = str(self._settings.output_dir() or "")
@@ -1273,16 +1295,50 @@ class PreviewDialog(QtWidgets.QDialog):
             self._on_output_dir_changed(path)
         return path
 
+    def _output_dir_is_the_input(self, output_dir=None) -> bool:
+        """Return True when the output directory is the input folder.
+
+        A flat copy into the input folder cannot be told apart from
+        its source, so every picking action refuses that choice. The
+        target of a pending change may be handed over; None reads the
+        effective output directory of the window.
+        """
+
+        if not self._directory:
+            return False
+        if output_dir is None:
+            output_dir = self._scan_output_dir()
+        try:
+            return bool(
+                pick_core.output_conflicts(self._directory, output_dir)
+            )
+        except Exception:
+            return False
+
+    def _refuse_output_equal_to_input(self) -> bool:
+        """Report the refused choice, True when output is the input."""
+
+        if not self._output_dir_is_the_input():
+            return False
+        self._set_status(OUTPUT_EQUALS_INPUT_TEXT)
+        return True
+
     def _on_output_dir_changed(self, path) -> None:
         """Store a new output directory, probe it and rescan the input.
 
         The output directory decides which subtree of the input has to
         be skipped, so a change may add or remove images; the tree is
-        therefore rebuilt from a fresh scan.
+        therefore rebuilt from a fresh scan. Picking the input folder
+        itself is refused: the flat copies would mix with their own
+        sources, so the stored setting is left alone and only the
+        status line explains why.
         """
 
         target = _normalize(path)
         if not target:
+            return
+        if self._output_dir_is_the_input(target):
+            self._set_status(OUTPUT_EQUALS_INPUT_TEXT)
             return
         self._write("set_output_dir", target)
         self._output_btn.setToolTip(

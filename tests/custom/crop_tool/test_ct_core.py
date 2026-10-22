@@ -4,6 +4,7 @@ This module imports no GUI class on purpose: the whole scan, naming,
 padding and write path must stay usable without a widget.
 """
 
+import inspect
 import os
 
 import PIL.Image
@@ -230,52 +231,28 @@ class TestCropImage:
         assert os.path.isdir(target)
         assert os.path.isfile(result.path)
 
-    def test_rel_dir_is_created_below_the_output(self, ct_dir, ct_out):
-        source = write_pil(ct_dir, "img.png", (8, 8))
-        relative = os.path.join("nested", "deep")
-        result = core.crop_image(
-            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir=relative
-        )
-        assert os.path.dirname(result.path) == os.path.join(
-            ct_out, relative
-        )
-        assert result.record.rel_dir == relative
-        assert os.path.isfile(result.path)
+    def test_crop_lands_in_the_output_root(self, ct_dir, ct_out):
+        nested = os.path.join(ct_dir, "nested", "deep")
+        os.makedirs(nested)
+        source = write_pil(nested, "img.png", (8, 8))
+        result = core.crop_image(source, 0, 0, 2, 2, output_dir=ct_out)
+        assert os.path.dirname(result.path) == ct_out
+        assert os.listdir(ct_out) == [os.path.basename(result.path)]
 
-    def test_rel_dir_keeps_its_own_sequence(self, ct_dir, ct_out):
-        source = write_pil(ct_dir, "img.png", (8, 8))
-        first = core.crop_image(
-            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir="sub"
-        )
-        root = core.crop_image(source, 0, 0, 2, 2, output_dir=ct_out)
-        second = core.crop_image(
-            source, 0, 0, 2, 2, output_dir=ct_out, rel_dir="sub"
-        )
-        assert os.path.dirname(first.path) == os.path.join(ct_out, "sub")
-        assert os.path.dirname(root.path) == ct_out
-        assert os.path.basename(first.path) == os.path.basename(root.path)
-        assert os.path.basename(second.path).endswith("__2.png")
-        assert second.record.seq == 2
+    def test_crop_image_has_no_relative_folder_parameter(self):
+        parameters = inspect.signature(core.crop_image).parameters
+        assert "rel_dir" not in parameters
 
-    def test_rel_dir_may_not_escape_the_output(self, ct_dir, ct_out):
+    def test_the_default_output_dir_receives_the_crop(
+        self, ct_dir, ct_make, monkeypatch
+    ):
         source = write_pil(ct_dir, "img.png", (8, 8))
-        for bad in (
-            os.pardir,
-            os.path.join(os.pardir, "up"),
-            "/absolute",
-            os.path.abspath(ct_dir),
-        ):
-            with pytest.raises(core.CropError, match="输出子目录不合法"):
-                core.crop_image(
-                    source,
-                    0,
-                    0,
-                    2,
-                    2,
-                    output_dir=ct_out,
-                    rel_dir=bad,
-                )
-        assert os.listdir(ct_out) == []
+        work = ct_make()
+        monkeypatch.chdir(work)
+        result = core.crop_image(source, 0, 0, 2, 2)
+        expected = os.path.join(work, core.OUTPUT_SUBDIR)
+        assert os.path.dirname(result.path) == expected
+        assert os.path.dirname(result.path) == core.default_output_dir()
 
     def test_result_matches_its_name(self, ct_dir, ct_out):
         source = write_pil(ct_dir, "img.png", (8, 8))

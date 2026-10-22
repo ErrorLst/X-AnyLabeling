@@ -24,6 +24,11 @@ def launch_preview_tool(parent: Any = None):
     The widget is handed over twice: as the parent of the window and as
     the explorer it takes its initial folder from. Nothing else of the
     widget is read, by this module or by the window.
+
+    A window that is already open keeps the state of its window frame:
+    a maximized window comes back maximized, a minimized one comes
+    back in its normal state, and a plain window is simply shown
+    again.
     """
 
     from .dialog import PreviewDialog
@@ -41,7 +46,12 @@ def launch_preview_tool(parent: Any = None):
         dialog.destroyed.connect(_forget)
     else:
         dialog.rescan()
-    dialog.showNormal()
+    if dialog.isMaximized():
+        dialog.showMaximized()
+    elif dialog.isMinimized():
+        dialog.showNormal()
+    else:
+        dialog.show()
     dialog.raise_()
     dialog.activateWindow()
     return dialog

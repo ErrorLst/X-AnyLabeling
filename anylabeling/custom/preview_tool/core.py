@@ -24,6 +24,7 @@ __all__ = [
     "BACKGROUND_LABEL",
     "FILTER_DEFAULT_SCORE",
     "FILTER_DEFAULT_SIZE",
+    "OUTPUT_SUBDIR",
     "PreviewFilter",
     "SizeFilterMode",
     "SHAPE_TYPES",
@@ -50,6 +51,9 @@ IMAGE_EXTS = (
 FILTER_DEFAULT_SCORE = 0.45
 FILTER_DEFAULT_SIZE = 10.0
 SCAN_WORKERS = 4
+
+#: Folder the default output directory points at, below the cwd.
+OUTPUT_SUBDIR = "picked"
 
 
 class SizeFilterMode(str, Enum):
@@ -166,11 +170,12 @@ def natural_key(value: str) -> List[Tuple[int, object]]:
 def default_output_dir() -> str:
     """Return the output directory of a run that has none configured.
 
-    The current working directory is fetched on every call: the
-    default is deliberately never cached and never written back.
+    It is the picked folder below the current working directory. The
+    working directory is fetched on every call: the default is
+    deliberately never cached and never written back.
     """
 
-    return os.getcwd()
+    return os.path.join(os.getcwd(), OUTPUT_SUBDIR)
 
 
 def _parse_shape(raw) -> Optional[ShapeInfo]:

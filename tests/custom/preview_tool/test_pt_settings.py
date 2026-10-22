@@ -78,7 +78,9 @@ class TestDefaults:
         assert settings.height_threshold() == 10.0
         assert settings.expand_px() == 5
         assert settings.speed() == 5
-        assert settings.output_dir() == os.getcwd()
+        assert settings.output_dir() == os.path.join(
+            os.getcwd(), core.OUTPUT_SUBDIR
+        )
         assert settings.categories_for("/nowhere") == []
 
     def test_there_is_no_step_parameter(self, pt_store):
@@ -217,7 +219,13 @@ class TestModes:
 
 
 class TestOutputDir:
-    """The output directory default is the cwd, fetched every time."""
+    """The default output directory is cwd/picked, fetched every time."""
+
+    def test_the_default_output_is_the_picked_folder_of_the_cwd(self):
+        assert core.OUTPUT_SUBDIR == "picked"
+        assert core.default_output_dir() == os.path.join(
+            os.getcwd(), "picked"
+        )
 
     def test_cwd_is_fetched_on_every_read(self, pt_store, monkeypatch):
         settings, _ini = pt_store
@@ -228,14 +236,14 @@ class TestOutputDir:
             return "/pt-cwd/{}".format(len(calls))
 
         monkeypatch.setattr(os, "getcwd", fake_getcwd)
-        assert settings.output_dir() == "/pt-cwd/1"
-        assert settings.output_dir() == "/pt-cwd/2"
+        assert settings.output_dir() == os.path.join("/pt-cwd/1", "picked")
+        assert settings.output_dir() == os.path.join("/pt-cwd/2", "picked")
 
-    def test_empty_value_falls_back_to_the_cwd(self, pt_store, monkeypatch):
+    def test_empty_value_falls_back_to_default(self, pt_store, monkeypatch):
         settings, _ini = pt_store
         settings.set_output_dir("")
         monkeypatch.setattr(os, "getcwd", lambda: "/pt/cwd")
-        assert settings.output_dir() == "/pt/cwd"
+        assert settings.output_dir() == os.path.join("/pt/cwd", "picked")
 
 
 class TestCategories:
@@ -380,7 +388,9 @@ class TestNeverRaises:
         assert settings.size_mode() is core.SizeFilterMode.ANY_ABOVE
         assert settings.expand_px() == 5
         assert settings.speed() == 5
-        assert settings.output_dir() == os.getcwd()
+        assert settings.output_dir() == os.path.join(
+            os.getcwd(), core.OUTPUT_SUBDIR
+        )
         assert settings.categories_for("/data") == []
 
     def test_writes(self):

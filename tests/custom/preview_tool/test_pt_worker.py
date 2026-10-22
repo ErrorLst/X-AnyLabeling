@@ -184,7 +184,7 @@ def test_image_names_are_relative_and_flat(pt_dir):
 def test_scan_skips_the_output_subtree_of_the_input(pt_dir):
     out = os.path.join(pt_dir, "out")
     write_image(pt_dir, "keep.png", size=(4, 4))
-    write_image(out, os.path.join("picked", "product.png"), size=(4, 4))
+    write_image(out, "product.png", size=(4, 4))
     write_image(out, "own.png", size=(4, 4))
 
     scan = worker.PreviewWorker(pt_dir, output_dir=out)
@@ -196,7 +196,9 @@ def test_scan_skips_the_output_subtree_of_the_input(pt_dir):
     assert seen[0].total == 1
 
 
-def test_scan_skips_the_picked_folder_when_output_is_the_input(pt_dir):
+def test_scan_keeps_the_products_when_output_is_the_input(pt_dir):
+    # The window refuses that setting, so the scan never has to hide a
+    # product of the tool: it lists the folder as the input it is.
     write_image(pt_dir, "keep.png", size=(4, 4))
     write_image(pt_dir, os.path.join("picked", "product.png"), size=(4, 4))
 
@@ -205,7 +207,10 @@ def test_scan_skips_the_picked_folder_when_output_is_the_input(pt_dir):
     scan.scanned.connect(seen.append)
     scan.run()
 
-    assert [entry.name for entry in seen[0].entries] == ["keep.png"]
+    assert [entry.name for entry in seen[0].entries] == [
+        "keep.png",
+        "product.png",
+    ]
 
 
 # ------------------------------------------------------------- preloading
@@ -317,8 +322,8 @@ def test_pick_job_copies_the_image_and_its_side_car(pt_dir, pt_out):
     assert [key for key, _dest in picked] == [("", "a")]
     dest = picked[0][1]
     assert os.path.isfile(dest)
-    assert dest == os.path.join(pt_out, "picked", "a.jpg")
-    assert os.path.isfile(os.path.join(pt_out, "picked", "a.json"))
+    assert dest == os.path.join(pt_out, "a.jpg")
+    assert os.path.isfile(os.path.join(pt_out, "a.json"))
     assert os.path.isfile(source)
     assert done == [("pick", 1, 1)]
 
@@ -357,7 +362,7 @@ def test_pick_job_all_skips_what_is_picked_already(pt_dir, pt_out):
     job.run()
     assert picked == [("", "b")]
     assert progress[-1] == (2, 2)
-    assert os.path.isfile(os.path.join(pt_out, "picked", "b.jpg"))
+    assert os.path.isfile(os.path.join(pt_out, "b.jpg"))
 
 
 def test_pick_job_remove_moves_every_copy_into_the_trash(pt_dir, pt_out):
@@ -392,8 +397,7 @@ def test_pick_job_remove_moves_every_copy_into_the_trash(pt_dir, pt_out):
         assert os.path.isfile(path)
         assert stem in os.path.basename(path)
     assert len(trash_listing(prefix=stem)) == 4
-    picked_dir = os.path.join(pt_out, "picked")
-    assert [name for name in os.listdir(picked_dir)] == []
+    assert [name for name in os.listdir(pt_out)] == []
     assert os.path.isfile(source)
 
 
@@ -435,16 +439,19 @@ def test_pick_job_detect_reports_the_picked_stems(pt_dir, pt_out):
 
 def test_pick_job_cancel_stops_before_copying(pt_dir, pt_out):
     source = write_image(pt_dir, "a.jpg")
+    output = os.path.join(pt_out, "out")
     picked = []
-    job = pick_worker.PickJob("pick", output_dir=pt_out, targets=(source,))
+    job = pick_worker.PickJob("pick", output_dir=output, targets=(source,))
     job.item_picked.connect(lambda stem, dest: picked.append(stem))
     job.cancel()
     job.run()
     assert picked == []
-    assert not os.path.isdir(os.path.join(pt_out, "picked"))
+    assert not os.path.isdir(output)
 
 
-def test_pick_job_keeps_the_relative_directory(pt_dir, pt_out):
+def test_pick_job_keeps_the_key_and_flattens_the_destination(
+    pt_dir, pt_out
+):
     source = write_image(pt_dir, os.path.join("sub", "a.jpg"))
     entry = core.ImageEntry(path=source, name="a.jpg", rel_dir="sub")
     picked = []
@@ -453,20 +460,15 @@ def test_pick_job_keeps_the_relative_directory(pt_dir, pt_out):
         lambda key, dest: picked.append((key, dest))
     )
     job.run()
-    assert picked == [
-        (
-            ("sub", "a"),
-            os.path.join(pt_out, "picked", "sub", "a.jpg"),
-        )
-    ]
+    assert picked == [(("sub", "a"), os.path.join(pt_out, "a.jpg"))]
     assert os.path.isfile(picked[0][1])
 
 
 def test_remove_job_takes_a_relative_key(pt_dir, pt_out):
     first = write_image(pt_dir, os.path.join("one", "a.jpg"))
     second = write_image(pt_dir, os.path.join("two", "a.jpg"))
-    pick_core.pick_one(first, pt_out, "one")
-    pick_core.pick_one(second, pt_out, "two")
+    pick_core.pick_one(first, pt_out)
+    pick_core.pick_one(second, pt_out)
 
     moved = []
     job = pick_worker.PickJob(
@@ -477,12 +479,14 @@ def test_remove_job_takes_a_relative_key(pt_dir, pt_out):
     )
     job.run()
 
-    assert len(moved) == 1
-    assert moved[0][0] == ("one", "a")
-    assert moved[0][1].startswith(pick_core.trash_dir())
-    assert os.path.isfile(
-        os.path.join(pt_out, "picked", "two", "a.jpg")
+    # The rel_dir of the key is only the identity of the row: the flat
+    # copies of the stem are removed together.
+    assert len(moved) == 2
+    assert all(key == ("one", "a") for key, _path in moved)
+    assert all(
+        path.startswith(pick_core.trash_dir()) for _key, path in moved
     )
+    assert [name for name in os.listdir(pt_out)] == []
 
 
 def test_moved_path_reads_the_record_of_the_core(pt_dir, pt_out):

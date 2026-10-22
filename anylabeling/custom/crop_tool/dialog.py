@@ -7,15 +7,19 @@ selecting or collapsing a folder never swaps the image by accident.
 Every image carries a badge, the number of crops the output folder
 already holds for it, read back from the crop file names, so the same
 number is drawn in the tree, in the status bar and on the green
-outlines of the view. A badge belongs to the (relative folder, stem)
-pair of its file, so two folders that both hold an img.png never share
-their count.
+outlines of the view. A badge belongs to the stem of its file.
 
-A successful crop writes the new file under the relative folder of
-its source and then jumps to the next image of the flat scan order:
-the order crosses folder boundaries, the last image of a folder is
-followed by the first image of the next one, and the end of the list
-is not wrapped. A failed crop moves nothing.
+A successful crop writes the new file flat into the output folder and
+then jumps to the next image of the flat scan order: the order crosses
+folder boundaries, the last image of a folder is followed by the first
+image of the next one, and the end of the list is not wrapped. A failed
+crop moves nothing.
+
+Known trade-off of that flat layout: the output folder holds no
+identity beyond the crop name, so two sources with the same stem in
+different folders of the input tree share one badge, one set of marks
+and one deletion family. Pick a separate output folder per input
+folder when they have to stay apart.
 
 Only two things ever touch a disk:
 
@@ -220,11 +224,11 @@ def _dir_label(path) -> str:
 class CropDialog(QtWidgets.QDialog):
     """The crop window: a folder tree, a view and one shared cache.
 
-    The cache of the window maps the (relative folder, stem) pair of a
-    source image to the crops the output tree holds for it. It is the
-    single source of the badges, of the marks of the view and of the
-    counter of the status bar, and it is rebuilt whenever a crop is
-    added or removed and whenever the output folder changes.
+    The cache of the window maps the stem of a source image to the
+    crops the output folder holds for it. It is the single source of
+    the badges, of the marks of the view and of the counter of the
+    status bar, and it is rebuilt whenever a crop is added or removed
+    and whenever the output folder changes.
     """
 
     def __init__(self, parent=None, settings=None):
@@ -247,6 +251,12 @@ class CropDialog(QtWidgets.QDialog):
         self._current_index = -1
         self._input_dir = ""
         self.setWindowTitle(WINDOW_TITLE)
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Window
+            | QtCore.Qt.WindowType.WindowMinimizeButtonHint
+            | QtCore.Qt.WindowType.WindowMaximizeButtonHint
+            | QtCore.Qt.WindowType.WindowCloseButtonHint
+        )
         self.resize(*WINDOW_SIZE)
         self.setMinimumSize(*MIN_WINDOW_SIZE)
         self.setAcceptDrops(True)
@@ -601,7 +611,7 @@ class CropDialog(QtWidgets.QDialog):
     def _item_text(self, entry) -> str:
         """Return the label of a file leaf, with its crop badge."""
 
-        count = len(self.crops_of(entry.rel_dir, _stem_of(entry.name)))
+        count = len(self.crops_of(_stem_of(entry.name)))
         if count <= 0:
             return entry.name
         return "%s  ✓%d" % (entry.name, count)
@@ -644,14 +654,6 @@ class CropDialog(QtWidgets.QDialog):
         index = self.current_index()
         if 0 <= index < len(self._entries):
             return self._entries[index].path
-        return ""
-
-    def current_rel_dir(self) -> str:
-        """Return the relative folder of the shown image, '' at the root."""
-
-        index = self.current_index()
-        if 0 <= index < len(self._entries):
-            return self._entries[index].rel_dir
         return ""
 
     def _reveal(self, index) -> None:
@@ -718,21 +720,19 @@ class CropDialog(QtWidgets.QDialog):
     def crop_current(self, x=None, y=None):
         """Crop the current box, save it and jump to the next image.
 
-        The crop is written under the relative folder of its source, so
-        the output tree mirrors the input tree. A successful crop then
-        moves the window to the next image of the flat scan order,
-        which crosses folder boundaries: the last image of a folder is
-        followed by the first image of the next folder. The end of the
-        list is not wrapped and a failed crop moves nothing. Returns
-        the path of the new crop.
+        The crop is written flat into the output folder, whatever the
+        folder of its source. A successful crop then moves the window
+        to the next image of the flat scan order, which crosses folder
+        boundaries: the last image of a folder is followed by the first
+        image of the next folder. The end of the list is not wrapped
+        and a failed crop moves nothing. Returns the path of the new
+        crop.
         """
 
         path = self.current_path()
         if not path:
             self.status_bar.showMessage(NO_IMAGE_TEXT, MESSAGE_TIMEOUT)
             return None
-        index = self.current_index()
-        rel_dir = self._entries[index].rel_dir
         if x is None or y is None:
             x, y = self.viewer.crop_pos()
         width, height = self.viewer.crop_size()
@@ -747,7 +747,6 @@ class CropDialog(QtWidgets.QDialog):
                 pad_x=pad_x,
                 pad_y=pad_y,
                 output_dir=self.output_dir(),
-                rel_dir=rel_dir,
             )
         except crop_core.CropError as error:
             self.status_bar.showMessage(str(error), MESSAGE_TIMEOUT)
@@ -756,7 +755,7 @@ class CropDialog(QtWidgets.QDialog):
             )
             return None
         stem = _stem_of(osp.basename(path))
-        self._crops.setdefault((rel_dir, stem), []).append(result.record)
+        self._crops.setdefault(stem, []).append(result.record)
         self._refresh_badges()
         self.viewer.set_marks(self.marks_of_current())
         self._refresh_status()
@@ -790,14 +789,14 @@ class CropDialog(QtWidgets.QDialog):
     def delete_marks(self):
         """Delete the crops of the current image after a confirmation.
 
-        The deletion is scoped to the (relative folder, stem) pair of
-        the shown image, so deleting the crops of img.png of one folder
-        never touches the crops of an img.png of another folder.
+        The deletion is scoped to the stem of the shown image. The
+        output folder holds no identity beyond the crop name, so two
+        sources with the same stem in different folders share one
+        deletion family; a separate output folder per input folder is
+        the way to keep them apart.
         """
 
-        records = self.crops_of(
-            self.current_rel_dir(), self.current_stem()
-        )
+        records = self.crops_of(self.current_stem())
         if not records:
             self.status_bar.showMessage(NO_CROPS_TEXT, MESSAGE_TIMEOUT)
             return None
@@ -837,25 +836,23 @@ class CropDialog(QtWidgets.QDialog):
 
         return _stem_of(osp.basename(self.current_path()))
 
-    def crops_of(self, rel_dir, stem) -> list:
-        """Return the crops of one (relative folder, stem) pair."""
+    def crops_of(self, stem) -> list:
+        """Return the crops of one source stem."""
 
         if not stem:
             return []
-        return list(self._crops.get((rel_dir, stem), []))
+        return list(self._crops.get(stem, []))
 
     def marks_of_current(self) -> list:
         """Return the (x, y, w, h) rectangles of the shown image."""
 
         return [
             (record.x, record.y, record.w, record.h)
-            for record in self.crops_of(
-                self.current_rel_dir(), self.current_stem()
-            )
+            for record in self.crops_of(self.current_stem())
         ]
 
     def rebuild_crops(self) -> dict:
-        """Read the output tree again and refresh what is derived."""
+        """Read the output folder again and refresh what is derived."""
 
         self._crops = crop_core.scan_crops(self.output_dir())
         self._refresh_badges()
@@ -874,12 +871,7 @@ class CropDialog(QtWidgets.QDialog):
             INDEX_FORMAT % (index + 1, total) if total else EMPTY_COUNT_TEXT
         )
         self.count_label.setText(
-            COUNT_FORMAT
-            % len(
-                self.crops_of(
-                    self.current_rel_dir(), self.current_stem()
-                )
-            )
+            COUNT_FORMAT % len(self.crops_of(self.current_stem()))
         )
         self.box_label.setText(BOX_FORMAT % self.viewer.crop_size())
         self._elide_paths()

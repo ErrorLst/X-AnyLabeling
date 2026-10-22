@@ -212,6 +212,15 @@ class TestLayout:
         assert dialog.output_path_label.toolTip() == dialog.output_dir()
         assert dialog.input_label.text() == ct_dir
 
+    def test_window_can_be_minimized_and_maximized(self, ct_store):
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings)
+        flags = dialog.windowFlags()
+        assert flags & QtCore.Qt.WindowType.Window
+        assert flags & QtCore.Qt.WindowType.WindowMinimizeButtonHint
+        assert flags & QtCore.Qt.WindowType.WindowMaximizeButtonHint
+        assert flags & QtCore.Qt.WindowType.WindowCloseButtonHint
+
     def test_buttons_never_become_the_default(self, ct_store):
         settings, _ini = ct_store
         dialog = _make_dialog(settings)
@@ -873,9 +882,8 @@ class TestTree:
         dialog.list.setCurrentItem(root.child(1).child(0))
         assert dialog.current_index() == 1
         assert dialog.current_path() == os.path.join(sub, "c.png")
-        assert dialog.current_rel_dir() == "b"
 
-    def test_badge_count_is_per_folder(self, ct_dir, ct_out, ct_store):
+    def test_badge_count_is_per_stem(self, ct_dir, ct_out, ct_store):
         write_pil(ct_dir, "img.png", SIZE)
         sub = os.path.join(ct_dir, "sub")
         os.makedirs(sub)
@@ -891,25 +899,29 @@ class TestTree:
             )
         core.crop_image(
             os.path.join(sub, "img.png"),
-            0,
-            0,
+            1,
+            1,
             2,
             2,
             output_dir=ct_out,
-            rel_dir="sub",
         )
         settings, _ini = ct_store
         dialog = _make_dialog(settings, ct_dir)
         dialog.set_output_dir(ct_out)
-        assert "✓2" in _leaf_text(dialog, 0)
-        assert "✓1" in _leaf_text(dialog, 1)
+        assert "✓3" in _leaf_text(dialog, 0)
+        assert "✓3" in _leaf_text(dialog, 1)
         assert dialog.marks_of_current() == [
             (0, 0, 2, 2),
             (0, 0, 2, 2),
+            (1, 1, 2, 2),
         ]
         dialog.show_image(1)
-        assert dialog.marks_of_current() == [(0, 0, 2, 2)]
-        assert dialog.count_label.text() == ct_dialog.COUNT_FORMAT % 1
+        assert dialog.marks_of_current() == [
+            (0, 0, 2, 2),
+            (0, 0, 2, 2),
+            (1, 1, 2, 2),
+        ]
+        assert dialog.count_label.text() == ct_dialog.COUNT_FORMAT % 3
 
     def test_current_leaf_follows_the_shown_image(self, ct_dir, ct_store):
         for name in ("a.png", "b.png"):
@@ -960,7 +972,7 @@ class TestAutoAdvance:
         assert dialog.crop_current() is not None
         assert dialog.current_index() == 1
         assert os.path.basename(dialog.current_path()) == "c.png"
-        assert dialog.current_rel_dir() == "b"
+        assert dialog.current_path() == os.path.join(ct_dir, "b", "c.png")
         assert dialog.list.currentItem() is dialog.leaf_item(1)
 
     def test_sibling_folders_are_crossed_in_tree_order(
@@ -983,7 +995,7 @@ class TestAutoAdvance:
         assert dialog.crop_current() is not None
         assert dialog.current_index() == 2
         assert os.path.basename(dialog.current_path()) == "b1.png"
-        assert dialog.current_rel_dir() == "b"
+        assert dialog.current_path() == os.path.join(second, "b1.png")
 
     def test_the_end_of_the_list_is_not_wrapped(
         self, ct_dir, ct_out, ct_store
@@ -1034,8 +1046,8 @@ class TestAutoAdvance:
         )
 
 
-class TestNestedOutput:
-    """Crops keep the relative folder of their source."""
+class TestFlatOutput:
+    """Crops land flat in the output root, whatever the source folder."""
 
     def _dialog(self, ct_dir, ct_out, ct_store):
         sub = os.path.join(ct_dir, "sub")
@@ -1050,19 +1062,17 @@ class TestNestedOutput:
         dialog.height_box.setValue(BOX[1])
         return dialog
 
-    def test_the_crop_lands_in_the_relative_folder(
+    def test_a_nested_source_still_lands_in_the_output_root(
         self, ct_dir, ct_out, ct_store
     ):
         dialog = self._dialog(ct_dir, ct_out, ct_store)
         assert dialog.show_image(2) is True
         path = dialog.crop_current()
         assert path is not None
-        assert os.path.dirname(path) == os.path.join(
-            ct_out, "sub", "deep"
-        )
+        assert os.path.dirname(path) == ct_out
         record = core.parse_crop_name(os.path.basename(path))
         assert record.source_stem == "deep"
-        assert dialog._crops[(os.path.join("sub", "deep"), "deep")]
+        assert dialog._crops["deep"]
 
     def test_a_root_image_stays_in_the_output_root(
         self, ct_dir, ct_out, ct_store
@@ -1073,7 +1083,7 @@ class TestNestedOutput:
         assert path is not None
         assert os.path.dirname(path) == ct_out
 
-    def test_marks_and_badges_are_read_back_from_the_subtree(
+    def test_marks_and_badges_are_read_back_from_the_root(
         self, ct_dir, ct_out, ct_store
     ):
         dialog = self._dialog(ct_dir, ct_out, ct_store)
@@ -1085,7 +1095,7 @@ class TestNestedOutput:
         assert dialog.marks_of_current() != []
         assert "✓1" in _leaf_text(dialog, 1)
 
-    def test_delete_is_scoped_to_the_current_folder(
+    def test_same_stem_in_two_folders_shares_one_family(
         self, ct_dir, ct_out, ct_store, monkeypatch
     ):
         write_pil(ct_dir, "img.png", SIZE)
@@ -1102,25 +1112,28 @@ class TestNestedOutput:
         )
         sub_crop = core.crop_image(
             os.path.join(sub, "img.png"),
-            0,
-            0,
+            1,
+            1,
             2,
             2,
             output_dir=ct_out,
-            rel_dir="sub",
         )
         settings, _ini = ct_store
         dialog = _make_dialog(settings, ct_dir)
         dialog.set_output_dir(ct_out)
+        assert "✓2" in _leaf_text(dialog, 0)
+        assert "✓2" in _leaf_text(dialog, 1)
         assert dialog.show_image(0) is True
         _question(monkeypatch, QtWidgets.QMessageBox.StandardButton.Yes)
         deleted, skipped = dialog.delete_marks()
         assert skipped == []
-        assert deleted == [root_crop.path]
+        assert sorted(deleted) == sorted(
+            [root_crop.path, sub_crop.path]
+        )
         assert os.path.exists(root_crop.path) is False
-        assert os.path.exists(sub_crop.path) is True
+        assert os.path.exists(sub_crop.path) is False
         assert _leaf_text(dialog, 0) == "img.png"
-        assert "✓1" in _leaf_text(dialog, 1)
+        assert _leaf_text(dialog, 1) == "img.png"
 
 
 class TestBoxFollowsCursor:
@@ -1301,8 +1314,7 @@ class TestDelete:
         path = os.path.join(outside, name)
         with open(path, "w", encoding="utf-8") as out:
             out.write("x")
-        key = ("", "img")
-        dialog._crops[key].append(core.parse_crop_name(name, outside))
+        dialog._crops["img"].append(core.parse_crop_name(name, outside))
         _question(monkeypatch, QtWidgets.QMessageBox.StandardButton.Yes)
         deleted, skipped = dialog.delete_marks()
         assert len(deleted) == 2

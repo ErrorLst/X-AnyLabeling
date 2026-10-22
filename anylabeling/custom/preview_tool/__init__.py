@@ -6,8 +6,9 @@ from two mount lines in LabelingWidget.__init__, one import and one
 call to install_preview_tool. The Tool menu entry it adds opens a non
 modal window that previews a folder without ever changing it: the
 source images and their side cars are only read, and the only files
-the tool writes are the copies inside <output>/picked/ - a removal
-moves every copy of one stem into <temp>/dsh-trash, it never deletes.
+the tool writes are the flat copies inside the output directory - a
+removal moves every copy of one stem into <temp>/dsh-trash, it never
+deletes.
 
 Modules:
 
@@ -36,9 +37,10 @@ Key rules:
   shapes, while the category axis stays independent and carries the
   background pseudo category of the images without annotations;
 * the button of the current image is a two way switch: it copies the
-  image and its side car into <output>/picked/<rel_dir>/, keeping the
-  relative directory below the scanned root, and moves every copy of
-  that (rel_dir, stem) family into <temp>/dsh-trash once picked;
+  image and its side car flat into the output directory - the
+  subdirectories of the scanned root are not mirrored - and moves
+  every copy of that (rel_dir, stem) family into <temp>/dsh-trash
+  once picked; the output directory may never be the scanned root;
 * a successful copy or removal of the current image jumps to the next
   leaf of the flat order, across directory borders and without
   wrapping at the end; "全部拷贝" never jumps;

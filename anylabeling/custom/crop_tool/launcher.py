@@ -16,7 +16,9 @@ def launch_crop_tool(parent: Any = None):
 
     A second call returns the window that is already open instead of
     rescanning the folders: the window keeps its own source folder,
-    output folder and image list.
+    output folder, image list and window state. A maximized window is
+    opened maximized again and a minimized one comes back in its
+    normal state.
     """
 
     from .dialog import CropDialog
@@ -32,7 +34,12 @@ def launch_crop_tool(parent: Any = None):
                 parent._crop_tool_dialog = None
 
         dialog.destroyed.connect(_forget)
-    dialog.showNormal()
+    if dialog.isMaximized():
+        dialog.showMaximized()
+    elif dialog.isMinimized():
+        dialog.showNormal()
+    else:
+        dialog.show()
     dialog.raise_()
     dialog.activateWindow()
     return dialog
