@@ -77,7 +77,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
 - `anylabeling/custom/`：88 个 .py / 46310 行（目录内全部 .py；FEATURES.md 登记其中
-  10 个自研功能，另有未登记的 `remote_training`；快照 2026-09-15 14:00 +0800，
+  10 个自研功能；快照 2026-09-15 14:00 +0800，
   有并发会话在途写入，重测命令见下）。
 - `anylabeling/custom/model_validation/`：26 个 .py / 15368 行（关键文件：`ui/` 下的
   `dialog.py` 1789、`results_page.py` 2237、`image_view.py` 1609，以及
