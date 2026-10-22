@@ -196,25 +196,25 @@ class TestDominantLabel:
 
 
 class TestResolveOutputPath:
-    """The archive name never overwrites an existing file."""
+    """The backup name never overwrites an existing file."""
 
     def test_free_name(self, rt_out):
-        path = core.resolve_output_path(rt_out, "data_renamed.zip")
-        assert path == os.path.join(rt_out, "data_renamed.zip")
+        path = core.resolve_output_path(rt_out, "data_backup.zip")
+        assert path == os.path.join(rt_out, "data_backup.zip")
 
     def test_second(self, rt_out):
-        first = core.resolve_output_path(rt_out, "data_renamed.zip")
+        first = core.resolve_output_path(rt_out, "data_backup.zip")
         open(first, "wb").close()
         assert core.resolve_output_path(
-            rt_out, "data_renamed.zip"
-        ) == os.path.join(rt_out, "data_renamed_2.zip")
+            rt_out, "data_backup.zip"
+        ) == os.path.join(rt_out, "data_backup_2.zip")
 
     def test_third(self, rt_out):
-        for name in ("data_renamed.zip", "data_renamed_2.zip"):
+        for name in ("data_backup.zip", "data_backup_2.zip"):
             open(os.path.join(rt_out, name), "wb").close()
         assert core.resolve_output_path(
-            rt_out, "data_renamed.zip"
-        ) == os.path.join(rt_out, "data_renamed_3.zip")
+            rt_out, "data_backup.zip"
+        ) == os.path.join(rt_out, "data_backup_3.zip")
 
     def test_extension_less(self, rt_out):
         open(os.path.join(rt_out, "plain"), "wb").close()
@@ -225,11 +225,11 @@ class TestResolveOutputPath:
     def test_empty_name(self, rt_out):
         assert core.resolve_output_path(
             rt_out, "  "
-        ).endswith("dataset_renamed.zip")
+        ).endswith("dataset_backup.zip")
 
     def test_chinese_name(self, rt_out):
-        path = core.resolve_output_path(rt_out, "数据集_renamed.zip")
-        assert os.path.basename(path) == "数据集_renamed.zip"
+        path = core.resolve_output_path(rt_out, "数据集_backup.zip")
+        assert os.path.basename(path) == "数据集_backup.zip"
 
 
 class TestEntryNameOk:

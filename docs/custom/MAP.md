@@ -121,7 +121,7 @@ FEATURES.md 的「代码与体量」）；该目录同样有并发会话在途�
 | 新增自研功能 | `anylabeling/custom/` + `docs/custom/contract.json` 的 features 一节（步骤见 `.dsh/skills/xal-add-custom-feature/SKILL.md`） |
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
 | 切换图片时画布缩放/滚动回到默认 | `anylabeling/custom/reset_view_on_switch/`（实例级包装 `load_file`，换图复位成首图初始态、同文件重载不复位、有意压过 `keep_prev_scale`；软挂载见 contract.json） |
-| 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，拖拽目录一键导出，源目录只读，结果输出 zip） |
+| 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，先打包备份 zip、再在源目录内直接改名，json imagePath 同步更新；备份与回滚口径见 FEATURES.md） |
 | 增强参数（单图） | `anylabeling/custom/model_validation/app_config.py`（`AugmentParams` / `plan_aug_counts` / `selectable_fields` / `draw_selection`）、`anylabeling/custom/model_validation/augment.py`（`build_transforms` / `augment_sample_with_reason`）、`anylabeling/custom/model_validation/ui/config_page.py`（增强参数网格 9 项：对比度 / 亮度 / 旋转 / 平移 / 缩放 / 两个翻转 / 种子；选中概率 p 与比例 r 同处数量行） |
 | 结果页列（增强列）/ 右键预览提示行 | `anylabeling/custom/model_validation/ui/results_page.py`（`COLUMN_AUGMENT` + `AUGMENT_FIELD_LABELS`、`PreviewNoteLabel`；两者只改界面，不改报告与导出） |
 | 固定框裁图（数据集逐张裁切） | `anylabeling/custom/crop_tool/`（Tool 菜单「裁图工具」：拖入目录（含子目录）、左侧目录树 + 文件、W×H 固定框、右键裁切后自动跳下一张（跨目录连续）、A/D 换图、文件名即记录、输出保留相对子目录、Del 经确认删自己的裁切子图；默认输出 = `os.getcwd()/crop`） |

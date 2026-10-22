@@ -1,4 +1,4 @@
-"""Tests of the rename dialog: text display, drops, one click export."""
+"""Tests of the rename dialog: display, drops, backup then rename."""
 
 import os
 from types import SimpleNamespace
@@ -10,6 +10,7 @@ from anylabeling.custom.rename_tool import rename_core as core
 
 from conftest import (
     make_pair,
+    read_json_file,
     read_zip,
     snapshot,
     write_image,
@@ -40,13 +41,13 @@ def _mappings(lines):
 
 
 def _renames(lines):
-    """Return the planned rename lines, progress lines excluded."""
+    """Return the planned and done rename lines, progress excluded."""
 
     return [line for line in _mappings(lines) if not _progress(line)]
 
 
 def _progress_count(dialog):
-    """Return the number of progress lines printed by the last write."""
+    """Return the number of progress lines printed by the last run."""
 
     return len([line for line in _lines(dialog) if _progress(line)])
 
@@ -110,11 +111,11 @@ def _read(path):
         return handle.read()
 
 
-def _zip_name(source):
-    """Return the default archive name of a source folder."""
+def _backup_name(source):
+    """Return the default backup name of a source folder."""
 
     base = os.path.basename(os.path.normpath(source))
-    return base + core.ZIP_DEFAULT_SUFFIX + ".zip"
+    return base + core.BACKUP_DEFAULT_SUFFIX + ".zip"
 
 
 def _dataset(root):
@@ -167,7 +168,7 @@ class TestLayout:
 
     def test_primary_button(self, qapp):
         dialog = rt_dialog.RenameDialog()
-        assert dialog.execute_button.text() == "重命名"
+        assert dialog.execute_button.text() == "备份并重命名"
         assert dialog.execute_button.objectName() == "primary"
         assert dialog.execute_button.isEnabled() is False
 
@@ -182,7 +183,7 @@ class TestLayout:
         assert dialog.findChildren(QtWidgets.QLineEdit) == []
 
     def test_no_output_controls(self, qapp):
-        """The output folder is derived, nothing selects it."""
+        """The backup folder is derived, nothing selects it."""
 
         dialog = rt_dialog.RenameDialog()
         assert not hasattr(dialog, "output_button")
@@ -196,11 +197,12 @@ class TestLayout:
             for label in dialog.findChildren(QtWidgets.QLabel)
         )
 
-    def test_hint_names_the_export_location(self, qapp):
+    def test_hint_names_the_backup_and_the_rename(self, qapp):
         dialog = rt_dialog.RenameDialog()
         text = dialog.hint_label.text()
         assert "数据集同级目录" in text
-        assert core.ZIP_DEFAULT_SUFFIX + ".zip" in text
+        assert core.BACKUP_DEFAULT_SUFFIX + ".zip" in text
+        assert "源目录内直接重命名" in text
 
     def test_progress_is_hidden(self, qapp):
         dialog = rt_dialog.RenameDialog()
@@ -212,7 +214,7 @@ class TestLayout:
 
 
 class TestDefaults:
-    """Choosing the source derives the export folder and parses it."""
+    """Choosing the source derives the backup folder and parses it."""
 
     def test_export_dir_is_the_source_parent(self, rt_parent):
         _parent, data = rt_parent
@@ -284,7 +286,7 @@ class TestDefaults:
 
 
 class TestDragAndDrop:
-    """Dropping a folder opens it; dropping nothing else exports."""
+    """Dropping a folder opens it; dropping nothing else renames."""
 
     def test_drop_folder_sets_the_source(self, rt_parent):
         _parent, data = rt_parent
@@ -326,7 +328,7 @@ class TestDragAndDrop:
         assert "已忽略" in message
         assert "仅取第一个文件夹" in message
 
-    def test_drop_never_exports(self, rt_parent):
+    def test_drop_never_renames(self, rt_parent):
         parent, data = rt_parent
         make_pair(data, "a", "person")
         dialog = rt_dialog.RenameDialog()
@@ -334,8 +336,9 @@ class TestDragAndDrop:
         dialog.dropEvent(event)
         assert dialog.source_dir() == data
         assert os.listdir(parent) == ["data"]
+        assert sorted(os.listdir(data)) == ["a.jpg", "a.json"]
 
-    def test_drop_then_click_exports_next_to_the_source(
+    def test_drop_then_click_backs_up_then_renames(
         self, rt_parent, monkeypatch
     ):
         parent, data = rt_parent
@@ -345,10 +348,14 @@ class TestDragAndDrop:
         event, _state = _drop_event(data)
         dialog.dropEvent(event)
         result = dialog.execute()
-        path = os.path.join(parent, _zip_name(data))
-        assert result["zip_path"] == path
+        path = os.path.join(parent, _backup_name(data))
+        assert result["backup_path"] == path
         assert os.path.isfile(path)
-        assert sorted(os.listdir(data)) == ["a.jpg", "a.json"]
+        assert sorted(os.listdir(data)) == [
+            "person_1.jpg",
+            "person_1.json",
+        ]
+        assert sorted(read_zip(path)) == ["a.jpg", "a.json"]
 
     def test_drag_enter_accepts_a_folder(self, rt_dataset):
         dialog = rt_dialog.RenameDialog()
@@ -407,7 +414,10 @@ class TestParseOutput:
         write_json(data, "c.json", shapes=[])
         dialog = _dialog(data)
         lines = _lines(dialog)
-        assert "忽略 1 个无同名图片的 json（不写入 zip）" in lines
+        assert (
+            "忽略 1 个无同名图片的 json"
+            "（不重命名、原样留在目录中）"
+        ) in lines
         assert not any(line.startswith("忽略") and "c.json" in line
                        for line in lines)
 
@@ -454,21 +464,21 @@ class TestParseOutput:
         assert not any("阻塞" in line for line in lines)
         assert dialog.execute_button.isEnabled() is True
 
-    def test_pending_none_prints_a_notice(self, rt_parent):
+    def test_pending_none_prints_a_notice_and_disables(self, rt_parent):
         _parent, data = rt_parent
         make_pair(data, "person_1", "person")
         dialog = _dialog(data)
         lines = _lines(dialog)
-        assert "没有需要改名的文件" in lines
+        assert "没有需要改名的文件（不备份、不修改源目录）" in lines
         assert _renames(lines) == []
-        assert dialog.execute_button.isEnabled() is True
+        assert dialog.execute_button.isEnabled() is False
 
     def test_empty_folder_prints_its_notice(self, rt_parent):
         _parent, data = rt_parent
         dialog = _dialog(data)
         lines = _lines(dialog)
-        assert "目录为空：可以重命名（会得到一个 0 条目的 zip）" in lines
-        assert dialog.execute_button.isEnabled() is True
+        assert "目录为空：没有可重命名的文件" in lines
+        assert dialog.execute_button.isEnabled() is False
 
     def test_unreadable_folder_is_reported(self, rt_parent):
         _parent, data = rt_parent
@@ -494,22 +504,20 @@ class TestParseOutput:
 
 
 class TestExecute:
-    """One click writes the archive next to the source folder."""
+    """One click writes the backup, then renames the folder in place."""
 
-    def test_click_writes_the_archive(self, rt_parent, monkeypatch):
+    def test_click_backs_up_then_renames(self, rt_parent, monkeypatch):
         parent, data = rt_parent
         _dataset(data)
         seen = _capture(monkeypatch, "information")
         dialog = _dialog(data)
         before = snapshot(data)
         result = dialog.execute()
-        path = os.path.join(parent, _zip_name(data))
-        assert result["zip_path"] == path
+        path = os.path.join(parent, _backup_name(data))
+        assert result["backup_path"] == path
         assert os.path.isfile(path)
-        assert sorted(os.listdir(data)) == sorted(snapshot(data))
-        assert sorted(os.listdir(parent)) == ["data", _zip_name(data)]
-        entries = read_zip(path)
-        assert sorted(entries) == [
+        assert sorted(read_zip(path)) == sorted(before)
+        assert sorted(os.listdir(data)) == [
             "classes.txt",
             "person_1.jpg",
             "person_1.json",
@@ -518,17 +526,33 @@ class TestExecute:
             "person_3.jpg",
             "person_3.json",
         ]
-        assert zip_doc(path, "person_2.json")["imagePath"] == "person_2.jpg"
-        assert entries["person_1.jpg"] == b"image:person_1.jpg"
-        assert entries["person_1.json"] == _read(
-            os.path.join(data, "person_1.json")
+        assert read_json_file(data, "person_2.json")["imagePath"] == (
+            "person_2.jpg"
         )
-        assert zip_doc(path, "person_3.json")["imagePath"] == "person_3.jpg"
+        assert read_json_file(data, "person_3.json")["imagePath"] == (
+            "person_3.jpg"
+        )
+        entries = read_zip(path)
+        assert entries["a.jpg"] == b"image:a.jpg"
         assert entries["classes.txt"] == b"person\n"
+        assert zip_doc(path, "a.json")["imagePath"] == "a.jpg"
+        assert result["files"] == 7
+        assert result["renamed"] == 4
         assert seen and path in str(seen[0][2])
-        assert snapshot(data) == before
 
-    def test_write_log_lists_only_renamed_entries(
+    def test_backup_keeps_the_original_json_bytes(
+        self, rt_parent, monkeypatch
+    ):
+        parent, data = rt_parent
+        _dataset(data)
+        raw = _read(os.path.join(data, "a.json"))
+        _capture(monkeypatch, "information")
+        dialog = _dialog(data)
+        dialog.execute()
+        path = os.path.join(parent, _backup_name(data))
+        assert read_zip(path)["a.json"] == raw
+
+    def test_write_log_lists_only_renamed_files(
         self, rt_parent, monkeypatch
     ):
         _parent, data = rt_parent
@@ -545,9 +569,7 @@ class TestExecute:
         assert len(_renames(lines)) == 4
         assert "person_1.jpg" not in "\n".join(_renames(lines))
 
-    def test_write_progress_counts_the_renames(
-        self, rt_parent, monkeypatch
-    ):
+    def test_progress_counts_the_renames(self, rt_parent, monkeypatch):
         _parent, data = rt_parent
         _dataset(data)
         _capture(monkeypatch, "information")
@@ -562,22 +584,23 @@ class TestExecute:
         assert progress[1] == ("a.json -> person_2.json    2/4", "2/4")
         assert progress[2] == ("b_aug1.jpg -> person_3.jpg    3/4", "3/4")
         assert progress[3] == ("b_aug1.json -> person_3.json    4/4", "4/4")
+        assert dialog.progress.value() == 4
+        assert dialog.progress.maximum() == 4
 
-    def test_write_summary_line(self, rt_parent, monkeypatch):
+    def test_closing_lines(self, rt_parent, monkeypatch):
         _parent, data = rt_parent
         _dataset(data)
         _capture(monkeypatch, "information")
         dialog = _dialog(data)
         result = dialog.execute()
         lines = _lines(dialog)
-        assert "已导出：%s" % result["zip_path"] in lines
+        assert "已备份：%s" % result["backup_path"] in lines
+        assert "已重命名：4 个文件（源目录内直接改名）" in lines
         assert (
             "共 7 个文件：改名 4、保持原名 2、原样镜像 1、忽略 0" in lines
         )
 
-    def test_summary_keeps_the_kept_name_despite_ignored(
-        self, rt_parent, monkeypatch
-    ):
+    def test_summary_counts_ignored_files(self, rt_parent, monkeypatch):
         """The four buckets of the closing line add up to its total."""
 
         _parent, data = rt_parent
@@ -588,7 +611,7 @@ class TestExecute:
         dialog = _dialog(data)
         result = dialog.execute()
         lines = _lines(dialog)
-        assert result["files"] == 4
+        assert result["files"] == 5
         assert result["renamed"] == 2
         assert result["ignored"] == 1
         closing = [
@@ -598,94 +621,51 @@ class TestExecute:
         assert closing == [
             "共 5 个文件：改名 2、保持原名 2、原样镜像 0、忽略 1"
         ]
-        assert result["files"] + result["ignored"] == 5
 
-    def test_write_bar_advances_on_renames_only(
-        self, rt_parent, monkeypatch
-    ):
-        """The bar follows the renamed files, not the archive entries."""
-
-        _parent, data = rt_parent
-        make_pair(data, "person_1", "person")
-        make_pair(data, "b", "person")
-        _capture(monkeypatch, "information")
-        dialog = _dialog(data)
-        seen = []
-
-        def _write(_plan, path, progress=None):
-            dialog.progress.setRange(
-                0, len(dialog._rename_pairs(_plan))
-            )
-            progress(1, 4, "person_1.jpg", "person_1.jpg", False)
-            seen.append(dialog.progress.value())
-            progress(2, 4, "person_1.json", "person_1.json", False)
-            seen.append(dialog.progress.value())
-            progress(3, 4, "person_2.jpg", "b.jpg", True)
-            seen.append(dialog.progress.value())
-            progress(4, 4, "person_2.json", "b.json", True)
-            seen.append(dialog.progress.value())
-            with open(path, "wb") as handle:
-                handle.write(b"zip")
-            return {
-                "zip_path": path,
-                "files": 4,
-                "entries": [],
-                "renamed": 2,
-                "ignored": 0,
-                "blockers": [],
-                "source_untouched": True,
-            }
-
-        monkeypatch.setattr(rt_dialog.rename_core, "write_zip", _write)
-        assert dialog.execute() is not None
-        assert dialog.progress.maximum() == 2
-        assert seen == [0, 0, 1, 2]
-        assert dialog.progress.value() == 2
-
-    def test_result_lines_survive_the_parse_lines(
-        self, rt_parent, monkeypatch
-    ):
-        _parent, data = rt_parent
-        _dataset(data)
-        _capture(monkeypatch, "information")
-        dialog = _dialog(data)
-        dialog.execute()
-        lines = _lines(dialog)
-        assert "待改名 4 个：" in lines
-        assert lines.count("a.jpg -> person_2.jpg") == 1
-
-    def test_existing_archive_is_not_overwritten(
+    def test_existing_backup_is_not_overwritten(
         self, rt_parent, monkeypatch
     ):
         parent, data = rt_parent
         _dataset(data)
         _capture(monkeypatch, "information")
-        old = os.path.join(parent, _zip_name(data))
+        old = os.path.join(parent, _backup_name(data))
         with open(old, "wb") as handle:
             handle.write(b"old")
-        before = snapshot(data)
         dialog = _dialog(data)
         result = dialog.execute()
-        stem = os.path.splitext(_zip_name(data))[0]
-        assert result["zip_path"] == os.path.join(parent, stem + "_2.zip")
+        stem = os.path.splitext(_backup_name(data))[0]
+        assert result["backup_path"] == os.path.join(parent, stem + "_2.zip")
         assert _read(old) == b"old"
-        assert snapshot(data) == before
+        assert sorted(os.listdir(data)) == [
+            "classes.txt",
+            "person_1.jpg",
+            "person_1.json",
+            "person_2.jpg",
+            "person_2.json",
+            "person_3.jpg",
+            "person_3.json",
+        ]
 
-    def test_second_click_makes_a_second_archive(
+    def test_second_click_finds_nothing_to_do(
         self, rt_parent, monkeypatch
     ):
         parent, data = rt_parent
         _dataset(data)
         _capture(monkeypatch, "information")
+        seen = _capture(monkeypatch, "warning")
         dialog = _dialog(data)
         first = dialog.execute()
+        assert dialog.execute_button.isEnabled() is False
         second = dialog.execute()
-        assert first["zip_path"] != second["zip_path"]
-        assert second["zip_path"].endswith("_2.zip")
-        assert os.path.isfile(first["zip_path"])
-        assert os.path.isfile(second["zip_path"])
-        assert os.path.dirname(first["zip_path"]) == parent
-        assert os.path.dirname(second["zip_path"]) == parent
+        assert second is None
+        assert seen
+        assert rt_dialog.NOTHING_TO_RENAME_TEXT in str(seen[0][2])
+        assert sorted(os.listdir(parent)) == sorted(
+            ["data", _backup_name(data)]
+        )
+        assert first["backup_path"] == os.path.join(
+            parent, _backup_name(data)
+        )
 
     def test_no_confirmation_question(self, rt_parent, monkeypatch):
         _parent, data = rt_parent
@@ -701,7 +681,7 @@ class TestExecute:
         assert dialog.execute() is not None
         assert asked == []
 
-    def test_write_failure_keeps_the_progress_and_reports(
+    def test_backup_failure_keeps_the_progress_and_reports(
         self, rt_parent, monkeypatch
     ):
         _parent, data = rt_parent
@@ -713,16 +693,16 @@ class TestExecute:
             part = path + core.PART_SUFFIX
             raise core.RenameError("坏了（半成品已保留：%s）" % part)
 
-        monkeypatch.setattr(rt_dialog.rename_core, "write_zip", _boom)
+        monkeypatch.setattr(rt_dialog.rename_core, "write_backup", _boom)
         assert dialog.execute() is None
         assert seen and ".part" in str(seen[0][2])
         lines = _lines(dialog)
-        assert not any(line.startswith("已导出：") for line in lines)
+        assert not any(line.startswith("已备份：") for line in lines)
         assert any(line.startswith("重命名失败：") for line in lines)
         assert any(line.startswith("半成品已保留：") for line in lines)
         assert "重命名失败" in dialog.status_bar.currentMessage()
 
-    def test_write_failure_reports_a_plain_error(
+    def test_backup_failure_reports_a_plain_error(
         self, rt_parent, monkeypatch
     ):
         _parent, data = rt_parent
@@ -733,35 +713,39 @@ class TestExecute:
         def _boom(_plan, path, progress=None):
             raise core.RenameError("坏了")
 
-        monkeypatch.setattr(rt_dialog.rename_core, "write_zip", _boom)
+        monkeypatch.setattr(rt_dialog.rename_core, "write_backup", _boom)
         assert dialog.execute() is None
         lines = _lines(dialog)
         assert "重命名失败：坏了" in lines
-        assert not any(line.startswith("已导出：") for line in lines)
+        assert not any(line.startswith("已备份：") for line in lines)
 
-    def test_write_failure_keeps_the_progress_lines(
-        self, rt_parent, monkeypatch
-    ):
-        _parent, data = rt_parent
-        make_pair(data, "a", "person")
-        make_pair(data, "b", "person")
+    def test_rename_failure_names_the_backup(self, rt_parent, monkeypatch):
+        parent, data = rt_parent
+        _dataset(data)
         _capture(monkeypatch, "warning")
         dialog = _dialog(data)
 
-        def _boom(plan, path, progress=None):
-            if progress is not None:
-                progress(1, 2, "person_1.jpg", "a.jpg", True)
+        def _boom(_plan, progress=None):
             raise core.RenameError("坏了")
 
-        monkeypatch.setattr(rt_dialog.rename_core, "write_zip", _boom)
+        monkeypatch.setattr(rt_dialog.rename_core, "apply_renames", _boom)
         assert dialog.execute() is None
+        path = os.path.join(parent, _backup_name(data))
         lines = _lines(dialog)
-        assert "a.jpg -> person_1.jpg    1/4" in lines
-        assert any(line.startswith("重命名失败：") for line in lines)
+        assert os.path.isfile(path)
+        assert "重命名失败：坏了" in lines
+        assert rt_dialog.FAIL_BACKUP_FORMAT % path in lines
+        assert sorted(os.listdir(data)) == [
+            "a.jpg",
+            "a.json",
+            "b_aug1.jpg",
+            "b_aug1.json",
+            "classes.txt",
+            "person_1.jpg",
+            "person_1.json",
+        ]
 
-    def test_scan_failure_is_reported(
-        self, rt_parent, monkeypatch
-    ):
+    def test_scan_failure_is_reported(self, rt_parent, monkeypatch):
         _parent, data = rt_parent
         _dataset(data)
         seen = _capture(monkeypatch, "warning")
@@ -818,7 +802,7 @@ class TestBlockedFolder:
         assert seen
 
     def test_without_parent_warns(self, rt_parent, monkeypatch):
-        """A source without a parent folder cannot be exported."""
+        """A source without a parent folder cannot be backed up."""
 
         parent, data = rt_parent
         make_pair(data, "a", "person")
@@ -870,12 +854,14 @@ class TestBlockedFolder:
         _parent, data = rt_parent
         make_pair(data, "a", "person")
         write_json(data, "c.json", shapes=[])
+        before = snapshot(data)["c.json"]
         _capture(monkeypatch, "information")
         dialog = _dialog(data)
         assert dialog.execute_button.isEnabled() is True
         result = dialog.execute()
         assert result is not None
-        assert "c.json" not in read_zip(result["zip_path"])
+        assert "c.json" in read_zip(result["backup_path"])
+        assert snapshot(data)["c.json"] == before
 
 
 class TestB1B2Example:
@@ -923,7 +909,10 @@ class TestB1B2Example:
             "共 5 个文件：图片 2、成对 json 1、其他 1、忽略 1（原样镜像 1）"
             in text
         )
-        assert "忽略 1 个无同名图片的 json（不写入 zip）" in text
+        assert (
+            "忽略 1 个无同名图片的 json"
+            "（不重命名、原样留在目录中）"
+        ) in text
         assert "发现 1 处阻塞" in text
         assert "图片缺少同名 json（1 张）：" in text
         assert "b.png" in text
@@ -948,12 +937,25 @@ class TestB1B2Example:
         assert "b.json -> person_2.json" in lines
         result = dialog.execute()
         assert result is not None
-        entries = read_zip(result["zip_path"])
-        assert "c.json" not in entries
-        assert zip_doc(result["zip_path"], "person_2.json")["imagePath"] == (
+        entries = read_zip(result["backup_path"])
+        assert "c.json" in entries
+        assert zip_doc(result["backup_path"], "b.json")["imagePath"] == (
+            "b.png"
+        )
+        assert read_json_file(data, "person_2.json")["imagePath"] == (
             "person_2.png"
         )
+        assert sorted(os.listdir(data)) == [
+            "c.json",
+            "classes.txt",
+            "person_1.jpg",
+            "person_1.json",
+            "person_2.json",
+            "person_2.png",
+        ]
         progress = [line for line in _lines(dialog) if _progress(line)]
         assert len(progress) == 4
         assert progress[-1].endswith("4/4")
-        assert sorted(os.listdir(parent)) == sorted(["data", _zip_name(data)])
+        assert sorted(os.listdir(parent)) == sorted(
+            ["data", _backup_name(data)]
+        )

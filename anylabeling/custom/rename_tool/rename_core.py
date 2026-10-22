@@ -1,12 +1,21 @@
-"""Rename a flat dataset folder by dominant label, output as one zip.
+"""Rename a flat dataset folder by dominant label, in place after a backup.
 
-The tool never touches the source directory. It reads the top level of the
-folder the user picked, pairs every image with the json of the same stem,
-derives the dominant label of that json, computes the name each file
-should carry inside the archive, and finally writes a single zip whose
-entry names *are* those computed names. The source folder keeps its
-bytes, its mtimes and even its file list: no rename, no write, no
-temporary file and no staging folder is ever created next to it.
+The tool works on the top level of one folder. It pairs every image with
+the json of the same stem, derives the dominant label of that json and
+computes the name each pair should carry. Execution is two steps:
+
+1. write_backup: every top level file of the folder is written into one
+   zip under its current name. Images are stored, everything else is
+   deflated; the archive is built as <backup>.part and moved over the
+   final name with os.replace once it is closed, so a failure never
+   leaves a half written archive under the final name.
+2. apply_renames: the image/json pairs whose target name differs are
+   renamed inside the folder itself. A renamed json is rewritten as well
+   so its imagePath names the new image file. Every source file is first
+   moved to a private staging name, then to its target, which keeps a
+   target free even when it equals the source name of another item. A
+   failure triggers a best effort rollback of the moves made so far; the
+   backup from step 1 stays the final safety net.
 
 Naming rules:
 
@@ -17,30 +26,26 @@ Naming rules:
 * labels are sanitized (file name illegal characters collapse into a
   single underscore) before the occurrence count is taken;
 * a json without the image of the same stem is ignored: it is not part
-  of the plan at all - not an item, not a mirrored entry, not a zip
-  entry, not counted by total_files() - and it never blocks. It is only
-  reported as a number by RenamePlan.stats() and RenamePlan.ignored.
+  of the plan at all - not an item, not a renamed file, not counted by
+  total_files() - and it never blocks. It is only reported as a number
+  by RenamePlan.stats() and RenamePlan.ignored. The backup still keeps
+  it, because the backup mirrors the folder as it is.
 
-Blocking conditions - any of them disables execution, no zip is written
-and no .part file is created:
+Blocking conditions - any of them disables execution, no backup is
+written and no file is renamed:
 
 * an image without the json of the same stem;
 * a json that cannot be parsed, or whose top level is not an object;
 * a sub directory (only top level files are handled);
 * one stem carrying several images or several json files;
 * a computed target name that collides with a mirrored entry name;
-* a file name that is not a legal archive entry name;
+* a file name that is not a legal target name;
 * a plan that does not carry every top level file exactly once.
 
-Archive entry names are validated before anything is opened and by the
-preview too: a name must be non empty, must not contain a slash or two
-dots and must not be an absolute path, and every source file appears
-exactly once.
-
-Writing is atomic per archive: the data goes to <name>.zip.part first
-and is moved over the final name with os.replace once the archive is
-closed. A failure leaves the .part file in place on purpose (the
-exception carries its full path) and never deletes anything.
+Target names are validated before anything is opened and by the preview
+too: a name must be non empty, must not contain a slash or two dots and
+must not be an absolute path, and every source file appears exactly
+once.
 """
 
 from __future__ import annotations
@@ -57,16 +62,18 @@ from typing import Callable, Dict, List, Optional, Tuple
 __all__ = [
     "ACTION_ALREADY",
     "ACTION_RENAME",
+    "BACKUP_DEFAULT_SUFFIX",
+    "BACKUP_FALLBACK_FORMAT",
     "COMPLIANT",
     "IMAGE_EXTS",
     "METHOD_IMAGE",
     "METHOD_OTHER",
     "PART_SUFFIX",
+    "STAGING_PREFIX",
     "RenameError",
     "RenameItem",
     "RenamePlan",
-    "ZIP_DEFAULT_SUFFIX",
-    "ZIP_FALLBACK_FORMAT",
+    "apply_renames",
     "dominant_label",
     "json_with_image_path",
     "natural_key",
@@ -74,13 +81,14 @@ __all__ = [
     "resolve_output_path",
     "resolve_targets",
     "sanitize_label",
-    "write_zip",
+    "write_backup",
 ]
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 PART_SUFFIX = ".part"
-ZIP_DEFAULT_SUFFIX = "_renamed"
-ZIP_FALLBACK_FORMAT = "{stem}_{index}{suffix}"
+BACKUP_DEFAULT_SUFFIX = "_backup"
+BACKUP_FALLBACK_FORMAT = "{stem}_{index}{suffix}"
+STAGING_PREFIX = ".xal-rename-"
 METHOD_IMAGE = zipfile.ZIP_STORED
 METHOD_OTHER = zipfile.ZIP_DEFLATED
 
@@ -93,7 +101,7 @@ _WINDOWS_SEP = chr(92)
 
 
 class RenameError(Exception):
-    """Raised when a rename plan cannot be turned into a zip archive."""
+    """Raised when a rename plan cannot be backed up or applied."""
 
 
 @dataclass
@@ -113,17 +121,17 @@ class RenameItem:
     error: str = ""
 
     def target_image_name(self) -> str:
-        """Return the entry name of the image inside the zip."""
+        """Return the target file name of the image."""
 
         return self.target_stem + osp.splitext(self.image_name)[1]
 
     def target_json_name(self) -> str:
-        """Return the entry name of the json inside the zip."""
+        """Return the target file name of the json."""
 
         return self.target_stem + ".json"
 
     def image_entry_name(self) -> str:
-        """Return the image entry name of this item.
+        """Return the planned file name of the image.
 
         A plan that was never resolved (a blocked folder) has no target
         stem yet: the file then keeps its source name.
@@ -134,7 +142,7 @@ class RenameItem:
         return self.target_image_name()
 
     def json_entry_name(self) -> str:
-        """Return the json entry name of this item, source name if none."""
+        """Return the planned file name of the json, source name if none."""
 
         if not self.target_stem:
             return self.json_name
@@ -186,11 +194,11 @@ class RenamePlan:
         return [item for item in self.items if not item.is_renamed()]
 
     def entries(self) -> List[Tuple[str, str]]:
-        """Return (source name, entry name) pairs in natural order.
+        """Return (source name, target name) pairs in natural order.
 
         An item whose json is missing from the folder (the B1 blocker)
         contributes its image only: the phantom json name is never part
-        of the archive, and never counted either.
+        of the plan, and never counted either.
         """
 
         pairs: List[Tuple[str, str]] = []
@@ -203,7 +211,7 @@ class RenamePlan:
         return pairs
 
     def total_files(self) -> int:
-        """Return the number of top level files mirrored into the zip."""
+        """Return the number of plan entries, ignored json excluded."""
 
         return len(self.entries())
 
@@ -213,7 +221,7 @@ class RenamePlan:
         total counts every top level file, that is every entry plus
         every ignored json; the four other keys are mutually exclusive
         and always add up to total, and total - ignored is the entry
-        count of the archive. The buckets are filled from the listing
+        count of the plan. The buckets are filled from the listing
         itself - images, json paired with an image, json without one
         (ignored) and everything else - so no file can escape them even
         when a stem carries variant json spellings. A folder that
@@ -280,7 +288,7 @@ class RenamePlan:
 
 
 def entry_name_ok(name: str) -> bool:
-    """Return True when name is a legal archive entry name."""
+    """Return True when name is a legal target file name."""
 
     if not name or name in (".", ".."):
         return False
@@ -378,21 +386,21 @@ def dominant_label(json_path: str) -> Tuple[str, str]:
 
 
 def resolve_output_path(directory: str, filename: str) -> str:
-    """Return a zip path inside directory that does not exist yet.
+    """Return a backup path inside directory that does not exist yet.
 
     The requested name is used as is when it is free, otherwise _2, _3
     ... is inserted before the extension until an unused name shows up.
-    An empty file name falls back to dataset_renamed.zip.
+    An empty file name falls back to dataset_backup.zip.
     """
 
-    name = (filename or "").strip() or "dataset_renamed.zip"
+    name = (filename or "").strip() or "dataset_backup.zip"
     root, ext = osp.splitext(name)
     if not ext:
         ext = ".zip"
     candidate = osp.join(directory, name)
     index = 2
     while osp.exists(candidate):
-        candidate = osp.join(directory, ZIP_FALLBACK_FORMAT.format(
+        candidate = osp.join(directory, BACKUP_FALLBACK_FORMAT.format(
             stem=root, index=index, suffix=ext
         ))
         index += 1
@@ -580,7 +588,7 @@ def resolve_targets(plan: RenamePlan) -> RenamePlan:
 
     A compliant item (<label>_<n> matching its own dominant label)
     keeps its number, everything else takes the smallest free number
-    of its label. Entry names colliding with a kept name append one
+    of its label. A target name colliding with a kept name appends one
     blocker.
     """
 
@@ -658,9 +666,9 @@ def _top_level_files(directory: str) -> Optional[List[str]]:
 
 
 def check_entry_names(plan: RenamePlan) -> List[str]:
-    """Return the entry name problems of plan, empty when it is clean.
+    """Return the target name problems of plan, empty when it is clean.
 
-    Beyond the shape of every entry name, the plan has to carry every
+    Beyond the shape of every target name, the plan has to carry every
     top level file of the source folder exactly once: a file the plan
     never mirrors is as wrong as a file it mirrors twice. The ignored
     json files are the one exception - they are deliberately left out
@@ -701,8 +709,8 @@ def json_with_image_path(json_path: str, target_image: str) -> bytes:
     """Return the bytes of json_path with imagePath retargeted.
 
     Only imagePath changes: the value is the base name of the target
-    image entry, keeping the directory prefix of the original value
-    when it had one. Nothing is written to disk here.
+    image, keeping the directory prefix of the original value when it
+    had one. Nothing is written to disk here.
     """
 
     try:
@@ -725,37 +733,111 @@ def json_with_image_path(json_path: str, target_image: str) -> bytes:
     return text.encode("utf-8")
 
 
-def write_zip(
+def _rename_file(source: str, target: str) -> None:
+    """Move one file, refusing to overwrite an existing target."""
+
+    if osp.exists(target):
+        raise RenameError("目标文件已存在，拒绝覆盖：%s" % target)
+    os.rename(source, target)
+
+
+def _read_bytes(path: str) -> bytes:
+    """Return the whole payload of one file."""
+
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _write_bytes(path: str, payload: bytes) -> None:
+    """Replace the whole payload of one file."""
+
+    with open(path, "wb") as handle:
+        handle.write(payload)
+
+
+def _allocate_staging(
+    directory: str, name: str, used: set, counter: int
+) -> Tuple[str, int]:
+    """Return a free staging path for one file plus the next counter.
+
+    The staging name keeps the extension of the source file, so a
+    reader that opens the folder during the rename still sees a known
+    file type, and it never collides with an existing file or with a
+    staging name handed out earlier in the same run.
+    """
+
+    ext = osp.splitext(name)[1]
+    while True:
+        candidate = osp.join(
+            directory, "%s%d%s" % (STAGING_PREFIX, counter, ext)
+        )
+        counter += 1
+        if candidate in used:
+            continue
+        if osp.exists(candidate):
+            continue
+        used.add(candidate)
+        return candidate, counter
+
+
+def _rollback(
+    moves: List[Tuple[str, str]], restore: List[Tuple[str, bytes]]
+) -> str:
+    """Undo the moves and json rewrites of a failed apply_renames.
+
+    Every step is attempted even when an earlier one fails. Returns the
+    empty string when the folder is back to its original listing, or a
+    Chinese note that names the first problem otherwise.
+    """
+
+    problems: List[str] = []
+    for source, target in reversed(moves):
+        try:
+            if osp.exists(target) and not osp.exists(source):
+                os.rename(target, source)
+        except OSError as error:
+            problems.append("%s -> %s：%s" % (target, source, error))
+    for path, payload in reversed(restore):
+        try:
+            _write_bytes(path, payload)
+        except OSError as error:
+            problems.append("%s：%s" % (path, error))
+    if problems:
+        return "；回滚不完整：%s" % "；".join(problems)
+    return "；已回滚"
+
+
+def write_backup(
     plan: RenamePlan,
     zip_path: str,
-    progress: Optional[Callable[[int, int, str, str, bool], None]] = None,
+    progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Dict[str, object]:
-    """Write the mirror of the source folder into zip_path.
+    """Write every top level file of the source folder into zip_path.
 
-    The archive is built as <zip_path>.part and moved over the final
-    name with os.replace once it is closed, so a failure never leaves a
-    half written archive under the final name. The .part file is kept
-    on purpose when something goes wrong and its path is part of the
+    The archive is a faithful copy taken before apply_renames: every
+    file keeps its current name and its current bytes, including the
+    ignored json files that are not part of the plan. The archive is
+    built as <zip_path>.part and moved over the final name with
+    os.replace once it is closed, so a failure never leaves a half
+    written archive under the final name. The .part file is kept on
+    purpose when something goes wrong and its path is part of the
     raised RenameError message. Images are stored, everything else is
     deflated.
 
-    progress(done, total, entry_name, source_name, changed) is called
-    once per entry, without throttling, and once more as
-    progress(total, total, "Done", "", False) when the archive is
-    closed. done counts entries of the archive; changed tells whether
-    that entry carries a new name. The ignored json files of the plan
-    are not part of the archive and never reach the callback.
+    progress(done, total, name) is called once per entry, without
+    throttling, and once more as progress(total, total, "Done") when
+    the archive is closed.
     """
 
     if plan.blocked():
         raise RenameError(
-            "计划存在阻塞项，拒绝写 zip：%s" % "；".join(plan.blockers)
+            "计划存在阻塞项，拒绝备份：%s" % "；".join(plan.blockers)
         )
-    if osp.exists(zip_path):
-        raise RenameError("输出文件已存在，拒绝覆盖：%s" % zip_path)
     problems = check_entry_names(plan)
     if problems:
         raise RenameError("；".join(problems))
+    if osp.exists(zip_path):
+        raise RenameError("备份文件已存在，拒绝覆盖：%s" % zip_path)
     directory = plan.directory
     try:
         root = osp.realpath(directory)
@@ -766,7 +848,7 @@ def write_zip(
         inside = False
     if inside:
         raise RenameError(
-            "输出 zip 不能放在源目录内：%s" % osp.realpath(zip_path)
+            "备份 zip 不能放在源目录内：%s" % osp.realpath(zip_path)
         )
     part = zip_path + PART_SUFFIX
     if osp.exists(part):
@@ -776,49 +858,29 @@ def write_zip(
     parent = osp.dirname(zip_path)
     if parent and not osp.isdir(parent):
         os.makedirs(parent, exist_ok=True)
-
-    entries = plan.entries()
-    entry_map = dict(entries)
-    total = len(entries)
-    renamed = 0
+    files = _top_level_files(directory)
+    if files is None:
+        raise RenameError("无法读取目录：%s" % directory)
+    files.sort(key=natural_key)
+    total = len(files)
     done = 0
     try:
         with zipfile.ZipFile(
             part, "w", compression=METHOD_OTHER, allowZip64=True
         ) as archive:
-            for source, entry_name in entries:
-                full = osp.join(directory, source)
-                item = plan.item_by_filename(source)
-                lower = osp.splitext(source)[1].lower()
-                changed = (
-                    item is not None
-                    and item.is_renamed()
-                    and entry_name != source
+            for name in files:
+                full = osp.join(directory, name)
+                lower = osp.splitext(name)[1].lower()
+                method = (
+                    METHOD_IMAGE if lower in IMAGE_EXTS
+                    else METHOD_OTHER
                 )
-                if lower == ".json" and changed:
-                    image_entry = entry_map.get(
-                        item.image_name, item.image_name
-                    )
-                    archive.writestr(
-                        entry_name,
-                        json_with_image_path(full, image_entry),
-                        compress_type=METHOD_OTHER,
-                    )
-                elif lower in IMAGE_EXTS:
-                    archive.write(
-                        full, entry_name, compress_type=METHOD_IMAGE
-                    )
-                else:
-                    archive.write(
-                        full, entry_name, compress_type=METHOD_OTHER
-                    )
+                archive.write(full, name, compress_type=method)
                 done += 1
-                if changed:
-                    renamed += 1
                 if progress is not None:
-                    progress(done, total, entry_name, source, changed)
+                    progress(done, total, name)
             if progress is not None:
-                progress(total, total, "Done", "", False)
+                progress(total, total, "Done")
         os.replace(part, zip_path)
     except Exception as error:  # noqa: BLE001
         raise RenameError(
@@ -826,11 +888,119 @@ def write_zip(
             % (type(error).__name__, error, part)
         )
     return {
-        "zip_path": zip_path,
+        "backup_path": zip_path,
         "files": total,
-        "entries": [name for _source, name in entries],
-        "renamed": renamed,
+        "entries": list(files),
         "ignored": len(plan.ignored),
-        "blockers": [],
+        "mirrored": len(plan.mirrored),
         "source_untouched": True,
+    }
+
+
+def apply_renames(
+    plan: RenamePlan,
+    progress: Optional[Callable[[int, int, str, str], None]] = None,
+) -> Dict[str, object]:
+    """Rename the planned files inside the source folder itself.
+
+    Only the items whose action is ACTION_RENAME are touched: their
+    image and their json are renamed to the computed target names and
+    the imagePath of the json is rewritten to the new image name. An
+    item that is compliant already, a mirrored file and an ignored json
+    keep their name and their bytes.
+
+    Every source file first goes to a private staging name, then the
+    images go to their target names, then the jsons are rewritten and
+    moved to theirs. The staging step keeps a target free even when it
+    equals the source name of another item (a swap or a cycle). A
+    failure triggers a best effort rollback and raises RenameError; the
+    backup written by write_backup is the final safety net.
+
+    progress(done, total, source_name, target_name) is called once per
+    renamed file, then once more as progress(total, total, "Done", "").
+    """
+
+    if plan.blocked():
+        raise RenameError(
+            "计划存在阻塞项，拒绝重命名：%s" % "；".join(plan.blockers)
+        )
+    problems = check_entry_names(plan)
+    if problems:
+        raise RenameError("；".join(problems))
+    directory = plan.directory
+    items = plan.valid_items()
+    moves: List[Tuple[str, str]] = []
+    restore: List[Tuple[str, bytes]] = []
+
+    def _move(source: str, target: str) -> None:
+        _rename_file(source, target)
+        moves.append((source, target))
+
+    try:
+        staged_images: Dict[str, str] = {}
+        staged_jsons: Dict[str, str] = {}
+        used: set = set()
+        counter = 0
+        for item in items:
+            for source_name, table in (
+                (item.image_name, staged_images),
+                (item.json_name, staged_jsons),
+            ):
+                source = osp.join(directory, source_name)
+                staging, counter = _allocate_staging(
+                    directory, source_name, used, counter
+                )
+                _move(source, staging)
+                table[source_name] = staging
+        total = 2 * len(items)
+        done = 0
+        for item in items:
+            image_staging = staged_images[item.image_name]
+            image_target = osp.join(directory, item.target_image_name())
+            _move(image_staging, image_target)
+            done += 1
+            if progress is not None:
+                progress(
+                    done, total, item.image_name,
+                    item.target_image_name(),
+                )
+            json_staging = staged_jsons[item.json_name]
+            payload = _read_bytes(json_staging)
+            restore.append(
+                (osp.join(directory, item.json_name), payload)
+            )
+            _write_bytes(
+                json_staging,
+                json_with_image_path(
+                    json_staging, item.target_image_name()
+                ),
+            )
+            json_target = osp.join(directory, item.target_json_name())
+            _move(json_staging, json_target)
+            done += 1
+            if progress is not None:
+                progress(
+                    done, total, item.json_name,
+                    item.target_json_name(),
+                )
+        if progress is not None and items:
+            progress(total, total, "Done", "")
+    except Exception as error:  # noqa: BLE001
+        rollback = _rollback(moves, restore)
+        raise RenameError(
+            "%s：%s%s" % (type(error).__name__, error, rollback)
+        )
+    renamed = 2 * len(items)
+    entries: List[Tuple[str, str]] = []
+    for item in items:
+        entries.append((item.image_name, item.target_image_name()))
+        entries.append((item.json_name, item.target_json_name()))
+    return {
+        "directory": directory,
+        "renamed": renamed,
+        "renamed_items": len(items),
+        "kept": 2 * len(plan.unchanged_items()),
+        "mirrored": len(plan.mirrored),
+        "ignored": len(plan.ignored),
+        "moves": entries,
     }

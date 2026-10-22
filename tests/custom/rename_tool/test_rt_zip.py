@@ -1,10 +1,8 @@
-"""Tests of the archive writer: mirror, names, bytes and progress."""
+"""Tests of the backup writer: original names, bytes and progress."""
 
 import json
 import os
 import zipfile
-
-import pytest
 
 from anylabeling.custom.rename_tool import rename_core as core
 
@@ -19,11 +17,11 @@ from conftest import (
 
 
 def _run(root, out, name="result.zip"):
-    """Plan, write the archive and return (plan, path, summary)."""
+    """Plan, write the backup and return (plan, path, summary)."""
 
     plan = core.resolve_targets(core.plan_directory(root))
     path = os.path.join(out, name)
-    summary = core.write_zip(plan, path)
+    summary = core.write_backup(plan, path)
     return plan, path, summary
 
 
@@ -35,7 +33,7 @@ def _info(path):
 
 
 class TestSourceUntouched:
-    """The source folder keeps its bytes, its mtimes and its listing."""
+    """Writing the backup keeps bytes, mtimes and the listing."""
 
     def _dataset(self, root):
         make_pair(root, "a", "person")
@@ -57,41 +55,33 @@ class TestSourceUntouched:
         assert sorted(os.listdir(rt_dataset)) == before
         assert not [n for n in os.listdir(rt_dataset) if ".part" in n]
 
-    def test_reading_the_folder_writes_nothing(self, rt_dataset):
-        self._dataset(rt_dataset)
-        before = snapshot(rt_dataset)
-        plan = core.plan_directory(rt_dataset)
-        core.resolve_targets(plan)
-        assert snapshot(rt_dataset) == before
-
     def test_summary_flags_the_source(self, rt_dataset, rt_out):
         self._dataset(rt_dataset)
         _plan, _path, summary = _run(rt_dataset, rt_out)
         assert summary["source_untouched"] is True
-        assert summary["blockers"] == []
         assert summary["files"] == 7
-        assert summary["renamed"] == 4
+        assert summary["ignored"] == 0
+        assert summary["mirrored"] == 3
 
 
-class TestEntries:
-    """Entry names are exactly the computed target names."""
+class TestBackupContent:
+    """The archive is the folder as it is, current names and bytes."""
 
-    def test_names_match_the_plan(self, rt_dataset, rt_out):
+    def test_names_match_the_folder(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         make_pair(rt_dataset, "a_aug1", "person")
         write_image(rt_dataset, "notes.txt", b"n")
-        plan, path, _summary = _run(rt_dataset, rt_out)
-        assert sorted(read_zip(path)) == sorted(
-            entry for _source, entry in plan.entries()
-        )
-
-    def test_target_names(self, rt_dataset, rt_out):
-        make_pair(rt_dataset, "a", "person")
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert sorted(read_zip(path)) == [
-            "person_1.jpg",
-            "person_1.json",
-        ]
+        assert sorted(read_zip(path)) == sorted(os.listdir(rt_dataset))
+
+    def test_current_names_not_target_names(self, rt_dataset, rt_out):
+        make_pair(rt_dataset, "a", "person")
+        plan = core.resolve_targets(core.plan_directory(rt_dataset))
+        assert plan.valid_items()[0].target_image_name() == (
+            "person_1.jpg"
+        )
+        _plan, path, _summary = _run(rt_dataset, rt_out)
+        assert sorted(read_zip(path)) == ["a.jpg", "a.json"]
 
     def test_no_directory_entries(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
@@ -111,7 +101,7 @@ class TestEntries:
         assert len(read_zip(path)) == plan.total_files()
         assert summary["files"] == plan.total_files()
 
-    def test_already_items_keep_their_bytes(self, rt_dataset, rt_out):
+    def test_kept_files_keep_their_bytes(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "person_1", "person")
         make_pair(rt_dataset, "a", "person")
         payload = os.path.join(rt_dataset, "person_1.jpg")
@@ -130,18 +120,6 @@ class TestEntries:
         assert entries["blob.bin"] == blob
         assert entries["说明.txt"] == "文本".encode("utf-8")
 
-    def test_aug_name_is_renamed_like_any_other(self, rt_dataset, rt_out):
-        make_pair(rt_dataset, "a_aug1", "person")
-        _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert sorted(read_zip(path)) == [
-            "person_1.jpg",
-            "person_1.json",
-        ]
-
-
-class TestFullMirror:
-    """Every top level file lands in the archive exactly once (R9)."""
-
     def test_unclaimed_files_are_mirrored_verbatim(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         write_image(rt_dataset, "a.txt", b"companion text")
@@ -151,50 +129,19 @@ class TestFullMirror:
         assert plan.total_files() == len(os.listdir(rt_dataset))
         _plan, path, _summary = _run(rt_dataset, rt_out)
         entries = read_zip(path)
-        assert set(entries) == {
-            "person_1.jpg",
-            "person_1.json",
-            "a.txt",
-            ".hidden",
-        }
         assert entries["a.txt"] == b"companion text"
         assert entries[".hidden"] == b"\x00\xffbinary"
 
-    def test_png_pair_plus_text(self, rt_dataset, rt_out):
-        make_pair(rt_dataset, "a", "person", ext=".png")
-        write_image(rt_dataset, "a.txt", b"text")
-        plan = core.plan_directory(rt_dataset)
-        assert plan.mirrored == ["a.txt"]
-        assert plan.total_files() == len(os.listdir(rt_dataset))
-        _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert set(read_zip(path)) == {
-            "person_1.png",
-            "person_1.json",
-            "a.txt",
-        }
 
-    def test_entry_set_matches_the_plan(self, rt_dataset, rt_out):
-        make_pair(rt_dataset, "a", "person")
-        make_pair(rt_dataset, "a_aug1", "person")
-        write_image(rt_dataset, "classes.txt", b"person\n")
-        plan = core.resolve_targets(core.plan_directory(rt_dataset))
-        _plan, path, _summary = _run(rt_dataset, rt_out)
-        mapped = {entry for _source, entry in plan.entries()}
-        assert set(read_zip(path)) == mapped
-        assert len(plan.entries()) == len(os.listdir(rt_dataset))
+class TestJsonVerbatim:
+    """The backup keeps the json exactly as it is on disk."""
 
-
-class TestImagePath:
-    """A renamed json carries the new image name."""
-
-    def test_plain(self, rt_dataset, rt_out):
+    def test_image_path_is_not_rewritten(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert zip_doc(path, "person_1.json")["imagePath"] == (
-            "person_1.jpg"
-        )
+        assert zip_doc(path, "a.json")["imagePath"] == "a.jpg"
 
-    def test_with_directory_prefix(self, rt_dataset, rt_out):
+    def test_directory_prefix_is_kept(self, rt_dataset, rt_out):
         write_image(rt_dataset, "a.jpg")
         write_json(
             rt_dataset,
@@ -203,31 +150,50 @@ class TestImagePath:
             image_path="images/a.jpg",
         )
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        doc = zip_doc(path, "person_1.json")
-        assert doc["imagePath"] == "images/person_1.jpg"
+        doc = zip_doc(path, "a.json")
+        assert doc["imagePath"] == "images/a.jpg"
 
-    def test_aug_name_carries_its_new_image_path(self, rt_dataset, rt_out):
+    def test_bytes_match_the_file(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
-        make_pair(rt_dataset, "a_aug1", "person")
-        _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert zip_doc(path, "person_2.json")["imagePath"] == (
-            "person_2.jpg"
-        )
-
-    def test_unchanged_json_is_verbatim(self, rt_dataset, rt_out):
-        make_pair(rt_dataset, "person_1", "person")
-        with open(os.path.join(rt_dataset, "person_1.json"), "rb") as fh:
+        with open(os.path.join(rt_dataset, "a.json"), "rb") as fh:
             raw = fh.read()
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert read_zip(path)["person_1.json"] == raw
+        assert read_zip(path)["a.json"] == raw
 
     def test_json_stays_parseable(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        doc = zip_doc(path, "person_1.json")
+        doc = zip_doc(path, "a.json")
         assert [shape["label"] for shape in doc["shapes"]] == ["person"]
         assert doc["imageData"] is None
         assert doc["flags"] == {}
+
+
+class TestIgnoredJson:
+    """A json without an image still lands in the backup."""
+
+    def test_it_is_included_and_counted(self, rt_dataset, rt_out):
+        make_pair(rt_dataset, "a", "person")
+        write_json(rt_dataset, "c.json", shapes=[])
+        write_image(rt_dataset, "classes.txt", b"x")
+        _plan, path, summary = _run(rt_dataset, rt_out)
+        assert summary["ignored"] == 1
+        assert "c.json" in read_zip(path)
+        assert summary["files"] == 4
+
+    def test_only_orphan_json(self, rt_dataset, rt_out):
+        write_json(rt_dataset, "c.json", shapes=[])
+        _plan, path, summary = _run(rt_dataset, rt_out)
+        assert sorted(read_zip(path)) == ["c.json"]
+        assert summary["files"] == 1
+        assert summary["ignored"] == 1
+
+    def test_empty_folder(self, rt_dataset, rt_out):
+        plan = core.resolve_targets(core.plan_directory(rt_dataset))
+        path = os.path.join(rt_out, "result.zip")
+        summary = core.write_backup(plan, path)
+        assert read_zip(path) == {}
+        assert summary["files"] == 0
 
 
 class TestCompression:
@@ -238,18 +204,14 @@ class TestCompression:
         write_image(rt_dataset, "notes.txt", b"n" * 400)
         _plan, path, _summary = _run(rt_dataset, rt_out)
         infos = _info(path)
-        assert infos["person_1.jpg"].compress_type == zipfile.ZIP_STORED
-        assert infos["person_1.json"].compress_type == (
-            zipfile.ZIP_DEFLATED
-        )
+        assert infos["a.jpg"].compress_type == zipfile.ZIP_STORED
+        assert infos["a.json"].compress_type == zipfile.ZIP_DEFLATED
         assert infos["notes.txt"].compress_type == zipfile.ZIP_DEFLATED
 
     def test_png_is_stored(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person", ext=".png")
         _plan, path, _summary = _run(rt_dataset, rt_out)
-        assert _info(path)["person_1.png"].compress_type == (
-            zipfile.ZIP_STORED
-        )
+        assert _info(path)["a.png"].compress_type == zipfile.ZIP_STORED
 
     def test_archive_allows_zip64(self, rt_dataset, rt_out, monkeypatch):
         make_pair(rt_dataset, "a", "person")
@@ -267,7 +229,7 @@ class TestCompression:
 
 
 class TestProgress:
-    """write_zip reports every entry once, then the closing call."""
+    """write_backup reports every entry once, then the closing call."""
 
     def test_one_callback_per_entry(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
@@ -275,14 +237,14 @@ class TestProgress:
         write_image(rt_dataset, "classes.txt", b"person\n")
         plan = core.resolve_targets(core.plan_directory(rt_dataset))
         seen = []
-        core.write_zip(
+        core.write_backup(
             plan,
             os.path.join(rt_out, "result.zip"),
             progress=lambda *args: seen.append(args),
         )
         total = plan.total_files()
         assert len(seen) == total + 1
-        assert seen[-1] == (total, total, "Done", "", False)
+        assert seen[-1] == (total, total, "Done")
 
     def test_done_counts_are_strictly_increasing(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
@@ -290,7 +252,7 @@ class TestProgress:
         write_image(rt_dataset, "classes.txt", b"person\n")
         plan = core.resolve_targets(core.plan_directory(rt_dataset))
         seen = []
-        core.write_zip(
+        core.write_backup(
             plan,
             os.path.join(rt_out, "result.zip"),
             progress=lambda *args: seen.append(args),
@@ -299,47 +261,15 @@ class TestProgress:
         assert done == list(range(1, plan.total_files() + 1))
         assert all(entry[1] == plan.total_files() for entry in seen[:-1])
 
-    def test_reports_names_and_the_changed_flag(self, rt_dataset, rt_out):
+    def test_reports_the_current_names(self, rt_dataset, rt_out):
         make_pair(rt_dataset, "a", "person")
         write_image(rt_dataset, "classes.txt", b"person\n")
         plan = core.resolve_targets(core.plan_directory(rt_dataset))
         seen = []
-        core.write_zip(
+        core.write_backup(
             plan,
             os.path.join(rt_out, "result.zip"),
             progress=lambda *args: seen.append(args),
         )
-        payload = read_zip(os.path.join(rt_out, "result.zip"))
-        entries = {entry[2]: entry for entry in seen[:-1]}
-        assert set(entries) == set(payload)
-        for entry in entries.values():
-            assert isinstance(entry[4], bool)
-        assert entries["person_1.jpg"][3] == "a.jpg"
-        assert entries["person_1.jpg"][4] is True
-        assert entries["person_1.json"][3] == "a.json"
-        assert entries["person_1.json"][4] is True
-        assert entries["classes.txt"][3] == "classes.txt"
-        assert entries["classes.txt"][4] is False
-
-
-class TestIgnoredJson:
-    """A json without an image stays out of the archive (R7)."""
-
-    def test_summary_counts_it(self, rt_dataset, rt_out):
-        make_pair(rt_dataset, "a", "person")
-        write_json(rt_dataset, "c.json", shapes=[])
-        write_image(rt_dataset, "classes.txt", b"x")
-        plan = core.resolve_targets(core.plan_directory(rt_dataset))
-        _plan, path, summary = _run(rt_dataset, rt_out)
-        assert summary["ignored"] == 1
-        assert "c.json" not in read_zip(path)
-        assert summary["files"] == plan.total_files() == 3
-
-    def test_only_orphan_json_gives_an_empty_zip(self, rt_dataset, rt_out):
-        write_json(rt_dataset, "c.json", shapes=[])
-        plan = core.resolve_targets(core.plan_directory(rt_dataset))
-        assert plan.blocked() is False
-        _plan, path, summary = _run(rt_dataset, rt_out)
-        assert read_zip(path) == {}
-        assert summary["files"] == 0
-        assert summary["ignored"] == 1
+        names = [entry[2] for entry in seen[:-1]]
+        assert sorted(names) == sorted(os.listdir(rt_dataset))

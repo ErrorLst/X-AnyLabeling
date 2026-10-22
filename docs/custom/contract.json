@@ -120,7 +120,7 @@
       }
     },
     "rename_tool": {
-      "summary": "按标注主分类批量重命名图片与 json，源目录严格只读，结果输出为一个 zip。",
+      "summary": "按标注主分类批量重命名图片与 json：先打包备份 zip，再在源目录内直接改名并同步 json imagePath。",
       "code": ["anylabeling/custom/rename_tool/"],
       "tests": ["tests/custom/rename_tool/"],
       "enter": [

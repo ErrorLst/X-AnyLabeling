@@ -166,6 +166,14 @@ def make_pair(root, stem, label, ext=".jpg", shapes=None):
     return stem
 
 
+def read_json_file(root, name):
+    """Return the parsed json file of a folder."""
+
+    path = os.path.join(root, name)
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def snapshot(root):
     """Return {name: (size, mtime_ns, sha256)} of every top level file."""
 

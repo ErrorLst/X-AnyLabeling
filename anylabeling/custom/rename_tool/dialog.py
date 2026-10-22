@@ -1,15 +1,18 @@
-"""Rename window: set a folder, read the log, get one zip.
+"""Rename window: set a folder, back it up, rename it in place.
 
 The dialog is deliberately thin: rename_core owns every rule, this
-module only drives the core and reports the result. Nothing here
-touches the source folder either - the scan only reads it, and the
-execution calls write_zip, whose only output is the archive the user
-asked for. The window is opened from the Tool menu by
-install_rename_tool, which is idempotent so a repeated mount call
-cannot leave a second menu entry behind.
+module only drives the core and reports the result. One click runs two
+steps in order. rename_core.write_backup mirrors the whole source
+folder into one zip next to it, then rename_core.apply_renames renames
+the planned pairs inside the source folder itself and rewrites the
+imagePath of every renamed json. The backup is the safety net of the
+second step; it is written and closed before the first file moves. The
+window is opened from the Tool menu by install_rename_tool, which is
+idempotent so a repeated mount call cannot leave a second menu entry
+behind.
 
 The source folder comes from the file dialog or from a drag and drop
-of one folder; the archive name and its folder are derived from that
+of one folder; the backup name and its folder are derived from that
 folder when the main button is clicked, so there is neither a file
 name editor nor an output folder to pick: the zip lands next to the
 dataset folder. Picking or dropping a folder parses it right away and
@@ -21,17 +24,22 @@ printed: a file that keeps its name is only counted in the closing
 summary, never listed by name.
 
 A blocked folder disables the main button instead of opening a popup,
-and the reason stays visible in the display and the status bar. One
-click then runs the packaging and streams its progress into the same
-display; the progress counter of the write phase counts the entries
-that are really renamed, not the entries of the archive.
+and the reason stays visible in the display and the status bar. A
+folder without a single file to rename disables the button too, so an
+empty backup is never produced. One click then writes the backup and
+streams the renamed files into the same display; the progress counter
+follows the files that really change their name. After the run the
+plan is parsed again without touching the display, so the button state
+matches the folder on disk: the second click on an already renamed
+folder finds nothing to do and is disabled.
 
-No thread is used: the scan and the archiving run on the main thread
-with QCoreApplication.processEvents driving the progress bar, exactly
-like the export progress of the model validation dialog. The window is
-disabled while that happens, so no reentry is possible, and there is
-no cancel button: a cancelled archive would leave a .part file whose
-state the user cannot see.
+No thread is used: the scan, the backup and the rename run on the main
+thread with QCoreApplication.processEvents driving the progress bar,
+exactly like the export progress of the model validation dialog. The
+window is disabled while that happens, so no reentry is possible, and
+there is no cancel button: a cancelled backup would leave a .part file
+whose state the user cannot see, and a cancelled rename would leave a
+half renamed folder.
 """
 
 from __future__ import annotations
@@ -59,44 +67,50 @@ __all__ = [
 WINDOW_TITLE = "重命名"
 WINDOW_SIZE = (960, 620)
 PRIMARY_BUTTON_NAME = "primary"
-PRIMARY_BUTTON_TEXT = "重命名"
+PRIMARY_BUTTON_TEXT = "备份并重命名"
 LOG_NAME = "rename_log"
 DISPLAY_MAX_BLOCKS = 5000
 
 LOG_PLACEHOLDER = "选择或拖入一个数据集目录后开始解析…"
 SOURCE_NEEDED_TEXT = "请先选择源目录。"
 PLAN_MISSING_TEXT = "目录尚未解析成功，无法重命名。"
-NO_PARENT_TEXT = "源目录没有上级目录，无法导出"
+NO_PARENT_TEXT = "源目录没有上级目录，无法备份"
+NOTHING_TO_RENAME_TEXT = "没有需要改名的文件，未做任何操作。"
 
 SUMMARY_FORMAT = (
     "共 %d 个文件：图片 %d、成对 json %d、其他 %d、忽略 %d（原样镜像 %d）"
 )
-IGNORED_FORMAT = "忽略 %d 个无同名图片的 json（不写入 zip）"
+IGNORED_FORMAT = "忽略 %d 个无同名图片的 json（不重命名、原样留在目录中）"
 BLOCKED_FORMAT = "发现 %d 处阻塞，不能重命名，未写入任何文件（含 .part）："
 BLOCKED_B1_FORMAT = "图片缺少同名 json（%d 张）："
 BLOCKED_OTHER_TEXT = "其他问题："
 PENDING_FORMAT = "待改名 %d 个："
-PENDING_NONE_TEXT = "没有需要改名的文件"
-EMPTY_PLAN_TEXT = "目录为空：可以重命名（会得到一个 0 条目的 zip）"
+PENDING_NONE_TEXT = "没有需要改名的文件（不备份、不修改源目录）"
+EMPTY_PLAN_TEXT = "目录为空：没有可重命名的文件"
 PARSE_FAIL_FORMAT = "无法解析目录：%s"
 RENAME_LINE_FORMAT = "%s -> %s"
 PROGRESS_LINE_FORMAT = "%s -> %s    %d/%d"
-DONE_FORMAT = "已导出：%s"
+DONE_BACKUP_FORMAT = "已备份：%s"
+DONE_RENAME_FORMAT = "已重命名：%d 个文件（源目录内直接改名）"
 DONE_SUMMARY_FORMAT = (
     "共 %d 个文件：改名 %d、保持原名 %d、原样镜像 %d、忽略 %d"
 )
 FAIL_FORMAT = "重命名失败：%s"
 FAIL_PART_FORMAT = "半成品已保留：%s"
+FAIL_BACKUP_FORMAT = "已备份：%s（可从该 zip 恢复源目录）"
 FAIL_PART_PATTERN = re.compile(r"半成品已保留：(.+?)[）)]")
 FAIL_TITLE = "重命名失败"
 
-HINT_TEXT = "导出到数据集同级目录：<源目录名>%s.zip（重名自动加 _2、_3…）"
-NAME_HINT_TEXT = HINT_TEXT % rename_core.ZIP_DEFAULT_SUFFIX
-DROP_ONLY_FOLDERS = "仅支持文件夹，未改动源目录"
+HINT_TEXT = (
+    "先备份到数据集同级目录：<源目录名>%s.zip"
+    "（重名自动加 _2、_3…），随后在源目录内直接重命名"
+)
+NAME_HINT_TEXT = HINT_TEXT % rename_core.BACKUP_DEFAULT_SUFFIX
+DROP_ONLY_FOLDERS = "仅支持文件夹，未做任何改动"
 DROP_FILE_REASON = "仅支持文件夹"
 DROP_EXTRA_FOLDER_REASON = "仅取第一个文件夹"
 DROP_IGNORED_PREFIX = "已忽略: "
-ZIP_NAME_FORMAT = "%s%s.zip"
+BACKUP_NAME_FORMAT = "%s%s.zip"
 
 
 def install_rename_tool(widget):
@@ -107,11 +121,11 @@ def install_rename_tool(widget):
 
     Args:
         widget: The labeling widget to extend. It has to expose
-            ``menus.tool``.
+            menus.tool.
 
     Returns:
-        The installed QAction, or ``None`` when the widget has no
-        Tool menu.
+        The installed QAction, or None when the widget has no Tool
+        menu.
     """
 
     menus = getattr(widget, "menus", None)
@@ -126,7 +140,10 @@ def install_rename_tool(widget):
         "重命名",
         lambda _checked=False: launch_rename_tool(widget),
         icon="convert",
-        tip="按标注主分类批量重命名图片与 json，拖入目录一键导出 zip",
+        tip=(
+            "按标注主分类批量重命名图片与 json：先打包备份 zip，"
+            "再在源目录内直接改名"
+        ),
     )
     menu.addAction(action)
     widget._rename_tool_action = action
@@ -142,12 +159,12 @@ def launch_rename_tool(parent=None):
 
 
 class RenameDialog(QtWidgets.QDialog):
-    """One click rename window: set a folder, get one zip next to it.
+    """One click rename window: backup next to the folder, rename inside.
 
     The text display is the whole report. It is read only and capped
     at DISPLAY_MAX_BLOCKS lines; because Qt clears the widget memory
-    under that cap, the lines are kept in ``self._lines`` as well and
-    read back through plain_text() / log_lines().
+    under that cap, the lines are kept in self._lines as well and read
+    back through plain_text() / log_lines().
     """
 
     def __init__(self, parent=None):
@@ -227,7 +244,7 @@ class RenameDialog(QtWidgets.QDialog):
         """Keep the same answer while the drag moves over the window.
 
         Qt only delivers the drop once the move event is accepted, so
-        this repeats the folder test of ``dragEnterEvent`` through the
+        this repeats the folder test of dragEnterEvent through the
         same helper instead of leaving the event to the default
         handler, which would ignore it and cancel the drop.
 
@@ -241,7 +258,7 @@ class RenameDialog(QtWidgets.QDialog):
         """Accept a drag event exactly when it carries a folder.
 
         Args:
-            event: A drag enter/move event exposing ``mimeData`` plus
+            event: A drag enter/move event exposing mimeData plus
                 the two answer methods of the Qt event API.
         """
 
@@ -256,7 +273,7 @@ class RenameDialog(QtWidgets.QDialog):
 
         Only folders are accepted: a dropped file is reported in the
         status bar and the current source directory is kept. Dropping
-        never exports anything, it only parses the folder; the user
+        never renames anything, it only parses the folder; the user
         still clicks the main button.
         """
 
@@ -329,12 +346,12 @@ class RenameDialog(QtWidgets.QDialog):
         return "" if text in ("", "未选择") else text
 
     def export_dir(self, directory: str) -> str:
-        """Return the folder the zip of directory is exported into.
+        """Return the folder the backup of directory is written into.
 
         The zip always lands next to the dataset folder, that is in
         the parent folder of the source directory. A source without a
         usable parent - a filesystem root - has no such folder and
-        yields an empty string, which aborts the export.
+        yields an empty string, which aborts the backup.
 
         Args:
             directory: The source folder, absolute or not.
@@ -381,15 +398,17 @@ class RenameDialog(QtWidgets.QDialog):
     def _refresh_actions(self):
         """Enable the main button exactly when a run is possible.
 
-        The four conditions are: a source folder, an export folder
-        derived from it, a parsed plan that is not blocked, and no
-        running scan or write.
+        The five conditions are: a source folder, a backup folder
+        derived from it, a parsed plan that is not blocked, at least
+        one planned rename (nothing to do otherwise), and no running
+        scan, backup or rename.
         """
 
         source = self.source_dir()
         ready = bool(source) and bool(self.export_dir(source))
         ready = ready and self._plan is not None
         ready = ready and not self._plan.blocked()
+        ready = ready and bool(self._plan.valid_items())
         self.execute_button.setEnabled(bool(ready) and not self._busy)
 
     # ------------------------------------------------------------ 解析
@@ -427,6 +446,33 @@ class RenameDialog(QtWidgets.QDialog):
             self.setEnabled(True)
             self._refresh_actions()
         self._apply_plan(plan)
+        return plan
+
+    def _refresh_plan(self):
+        """Parse the folder again after a run, keeping the display.
+
+        The text display keeps the lines of the finished run; only the
+        in memory plan is replaced, so the button follows the folder as
+        it is on disk now. A folder that cannot be read again leaves
+        the dialog without a plan and the button disabled.
+        """
+
+        directory = self.source_dir()
+        if not directory:
+            return None
+        try:
+            plan = rename_core.plan_directory(directory)
+            if not plan.blocked():
+                rename_core.resolve_targets(plan)
+            problems = rename_core.check_entry_names(plan)
+            if problems:
+                plan.blockers.extend(problems)
+        except rename_core.RenameError:
+            self._plan = None
+            self._refresh_actions()
+            return None
+        self._plan = plan
+        self._refresh_actions()
         return plan
 
     def _fail_parse(self, error):
@@ -551,7 +597,7 @@ class RenameDialog(QtWidgets.QDialog):
         One pair per file that really gets a new name: the image of a
         renamed item plus its json when that json exists. The json of
         an item whose json is missing (the B1 blocker) is never part of
-        the archive and never part of this list.
+        the plan and never part of this list.
         """
 
         pairs = []
@@ -565,16 +611,18 @@ class RenameDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ 执行
 
     def execute(self):
-        """Export the archive of the current plan.
+        """Back the folder up, then rename it in place.
 
         The plan comes from the parse that ran when the source folder
         was set; a blocked plan keeps the button disabled, and this
-        method refuses such a plan defensively as well.
+        method refuses such a plan defensively as well. A plan without
+        a single rename is refused too: there is nothing to do and an
+        empty backup would only be noise.
 
         Returns:
-            The write_zip result dictionary, or None when nothing was
-            exported (no source, no parent folder, a blocked or
-            missing plan, or an error).
+            The merged backup/rename result dictionary, or None when
+            nothing was done (no source, no parent folder, a blocked
+            or missing plan, nothing to rename, or an error).
         """
 
         directory = self.source_dir()
@@ -592,32 +640,48 @@ class RenameDialog(QtWidgets.QDialog):
         if plan.blocked():
             self._report_blocked(plan)
             return None
+        if not plan.valid_items():
+            self._warn(NOTHING_TO_RENAME_TEXT)
+            return None
         name = osp.basename(osp.normpath(directory))
         target = rename_core.resolve_output_path(
-            out_dir, ZIP_NAME_FORMAT % (name, rename_core.ZIP_DEFAULT_SUFFIX)
+            out_dir,
+            BACKUP_NAME_FORMAT % (
+                name, rename_core.BACKUP_DEFAULT_SUFFIX
+            ),
         )
-        return self._write(plan, target)
+        return self._run(plan, target)
 
-    def _write(self, plan, path: str):
-        """Write the archive of plan into path, streaming its progress.
+    def _run(self, plan, path: str):
+        """Write the backup of plan into path, then rename in place.
 
-        The display gets one line per renamed entry and two closing
-        lines; a failure appends its reason instead of a success line
-        and keeps the progress lines that were already printed.
+        The display gets one progress line per renamed file and three
+        closing lines; a failure appends its reason instead of a
+        success line, keeps the progress lines that were already
+        printed and names the backup when it was already written.
         """
 
-        self._begin_write_log(len(self._rename_pairs(plan)))
+        pairs = self._rename_pairs(plan)
+        self._begin_write_log(len(pairs))
         self._busy = True
         self._refresh_actions()
         self.setEnabled(False)
+        backup = None
         try:
-            result = rename_core.write_zip(
+            backup = rename_core.write_backup(
                 plan,
                 path,
-                progress=self._write_progress,
+                progress=self._backup_progress,
+            )
+            self.progress.setRange(0, max(self._rename_total, 1))
+            self.progress.setValue(0)
+            self.status_bar.showMessage("正在重命名：%s" % plan.directory)
+            result = rename_core.apply_renames(
+                plan, progress=self._rename_progress
             )
         except Exception as error:  # noqa: BLE001
-            self._finish_write_log(plan, error)
+            self._finish_write_log(plan, error, backup=backup)
+            self._refresh_plan()
             self._report_failure(error)
             return None
         finally:
@@ -625,12 +689,16 @@ class RenameDialog(QtWidgets.QDialog):
             self._busy = False
             self.setEnabled(True)
             self._refresh_actions()
-        self._finish_write_log(plan, None, result)
-        self._report_success(result)
-        return result
+        merged = dict(backup)
+        merged.update(result)
+        merged["backup_path"] = backup["backup_path"]
+        self._finish_write_log(plan, None, result=merged)
+        self._refresh_plan()
+        self._report_success(merged)
+        return merged
 
     def _begin_write_log(self, total: int):
-        """Reset the progress counter of the write phase."""
+        """Reset the progress counter of the rename phase."""
 
         self._rename_total = max(int(total), 0)
         self._rename_done = 0
@@ -640,45 +708,48 @@ class RenameDialog(QtWidgets.QDialog):
         QtCore.QCoreApplication.processEvents()
         return self._rename_total
 
-    def _write_progress(
-        self,
-        done: int,
-        total: int,
-        entry_name: str,
-        source_name: str,
-        changed: bool,
-    ):
-        """Print one line per renamed entry of the archive.
+    def _backup_progress(self, done: int, total: int, message: str):
+        """Drive the progress bar while the backup is written."""
 
-        The write_zip callback counts the entries of the archive, but
-        the display only reports the entries that really change their
-        name: i is "the i-th renamed file" and N was set by
-        _begin_write_log to the number of files the plan renames. An
-        entry that keeps its name leaves the bar alone, so the value
-        follows the renamed files only and never walks backwards.
+        if message == "Done":
+            return None
+        self.progress.show()
+        self.progress.setRange(0, max(int(total), 1))
+        self.progress.setValue(int(done))
+        self.status_bar.showMessage(
+            "正在备份：%s（%d/%d）" % (message, done, total)
+        )
+        QtCore.QCoreApplication.processEvents()
+        return None
+
+    def _rename_progress(
+        self, done: int, total: int, source_name: str, target_name: str
+    ):
+        """Print one line per renamed file of the folder.
+
+        The apply_renames callback counts the files it moves; the
+        display reports exactly those files: i is "the i-th renamed
+        file" and N was set by _begin_write_log to the number of files
+        the plan renames.
         """
 
-        if entry_name == "Done":
+        if source_name == "Done":
             return None
-        if not changed:
-            QtCore.QCoreApplication.processEvents()
-            return None
-        source = source_name or entry_name
         self._rename_done += 1
         line = PROGRESS_LINE_FORMAT % (
-            source,
-            entry_name,
+            source_name,
+            target_name,
             self._rename_done,
             self._rename_total,
         )
         self._append_line(line)
         self.progress.setValue(self._rename_done)
-        self.status_bar.showMessage("正在打包：%s" % entry_name)
+        self.status_bar.showMessage("正在重命名：%s" % target_name)
         QtCore.QCoreApplication.processEvents()
         return line
 
-    def _finish_write_log(self, plan, error=None, result=None):
-        """Print the closing lines of the write phase."""
+    def _finish_write_log(self, plan, error=None, result=None, backup=None):
+        """Print the closing lines of the run."""
 
         if error is not None:
             text = FAIL_FORMAT % error
@@ -686,30 +757,30 @@ class RenameDialog(QtWidgets.QDialog):
             match = FAIL_PART_PATTERN.search(str(error))
             if match is not None:
                 self._append_line(FAIL_PART_FORMAT % match.group(1))
+            if backup is not None:
+                self._append_line(
+                    FAIL_BACKUP_FORMAT % backup["backup_path"]
+                )
             self.status_bar.showMessage(text)
             return list(self._lines)
         result = result or {}
-        zip_path = result.get("zip_path", "")
+        backup_path = result.get("backup_path", "")
         files = result.get("files", 0)
         renamed = result.get("renamed", 0)
+        kept = result.get("kept", 0)
+        mirrored = result.get("mirrored", len(plan.mirrored))
         ignored = result.get("ignored", len(plan.ignored))
-        mirrored = len(plan.mirrored)
-        # files is the entry count of the archive, so it leaves out the
-        # ignored json: the closing line counts the whole source folder,
-        # like the parse summary does. The four buckets print there are
-        # mutually exclusive and add up to that total.
-        source_total = files + ignored
-        kept = files - renamed - mirrored
-        self._append_line(DONE_FORMAT % zip_path)
+        self._append_line(DONE_BACKUP_FORMAT % backup_path)
+        self._append_line(DONE_RENAME_FORMAT % renamed)
         summary = DONE_SUMMARY_FORMAT % (
-            source_total,
+            files,
             renamed,
             kept,
             mirrored,
             ignored,
         )
         self._append_line(summary)
-        self.status_bar.showMessage(DONE_FORMAT % zip_path)
+        self.status_bar.showMessage(DONE_BACKUP_FORMAT % backup_path)
         return list(self._lines)
 
     # ------------------------------------------------------------ 报告
@@ -722,10 +793,13 @@ class RenameDialog(QtWidgets.QDialog):
         return text
 
     def _report_success(self, result):
-        """Tell the user the full path of the archive."""
+        """Tell the user where the backup is and how many files moved."""
 
-        text = DONE_FORMAT % result["zip_path"]
-        self.status_bar.showMessage(text)
+        text = "%s\n%s" % (
+            DONE_BACKUP_FORMAT % result["backup_path"],
+            DONE_RENAME_FORMAT % result["renamed"],
+        )
+        self.status_bar.showMessage(text.replace("\n", "；"))
         QtWidgets.QMessageBox.information(self, WINDOW_TITLE, text)
         return text
 
