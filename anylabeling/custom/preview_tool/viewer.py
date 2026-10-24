@@ -1,10 +1,11 @@
 """The image view of the preview tool.
 
-The view shows one image at a time, keeps the zoom level and the
-relative position of the viewport when the image changes, and carries
-the annotation layer of overlay.py. The mouse wheel zooms up to
-MAX_ZOOM, the left button pans, a double click fits the image again and
-a dropped directory is reported to the dialog.
+The view shows one image at a time and carries the annotation layer of
+overlay.py. When the next image has the same size as the shown one the
+zoom and the scroll position are kept exactly; an image of another size
+is fitted and centred again. The mouse wheel zooms up to MAX_ZOOM, the
+left button pans, a double click fits the image again and a dropped
+directory is reported to the dialog.
 
 The empty state is a label in the viewport instead of a scene item, so
 it stays centred without touching the scene transform.
@@ -311,18 +312,17 @@ class PreviewView(QtWidgets.QGraphicsView):
         self._hint.hide()
 
     def _apply_pixmap(self, pixmap, shapes: Optional[Sequence]) -> None:
-        """Show one pixmap and keep the framing of the previous image."""
+        """Show one pixmap, keeping the view of a same size image."""
 
         previous = None
-        prop_x = 0.5
-        prop_y = 0.5
         if self._has_image and self._pixmap_item is not None:
-            previous = self._zoom
             rect = self._pixmap_item.boundingRect()
-            centre = self.mapToScene(self.viewport().rect().center())
-            if rect.width() > 0 and rect.height() > 0:
-                prop_x = _clamp(centre.x() / rect.width(), 0.0, 1.0)
-                prop_y = _clamp(centre.y() / rect.height(), 0.0, 1.0)
+            previous = (
+                (int(rect.width()), int(rect.height())),
+                self._zoom,
+                self.horizontalScrollBar().value(),
+                self.verticalScrollBar().value(),
+            )
         self._scene.removeItem(self._layer)
         self._scene.clear()
         self._scene.addItem(self._layer)
@@ -336,14 +336,21 @@ class PreviewView(QtWidgets.QGraphicsView):
             self._layer.build(shapes, self._expand_px)
         else:
             self._layer.clear()
-        self.setSceneRect(self._pixmap_item.boundingRect())
-        if previous is None:
+        rect = self._pixmap_item.boundingRect()
+        self.setSceneRect(rect)
+        size = (int(rect.width()), int(rect.height()))
+        if previous is None or previous[0] != size:
             self.reset_view()
         else:
-            self._restore_view(previous, prop_x, prop_y)
+            self._restore_view(previous[1], previous[2], previous[3])
 
-    def _restore_view(self, zoom: float, prop_x: float, prop_y: float):
-        """Apply the zoom and the relative centre of the last image."""
+    def _restore_view(self, zoom: float, scroll_x: int, scroll_y: int):
+        """Restore the zoom and the scroll position of the last image.
+
+        Both images have the same size here, so the fitted scale, the
+        scene rectangle and the viewport are unchanged and the
+        remembered scroll bar values reproduce the old view exactly.
+        """
 
         if self._pixmap_item is None:
             return
@@ -362,7 +369,8 @@ class PreviewView(QtWidgets.QGraphicsView):
         if zoom > 1.0:
             self._zoom = min(zoom, MAX_ZOOM)
             self.scale(self._zoom, self._zoom)
-        self.centerOn(prop_x * rect.width(), prop_y * rect.height())
+        self.horizontalScrollBar().setValue(int(scroll_x))
+        self.verticalScrollBar().setValue(int(scroll_y))
 
     # ------------------------------------------------------------ events
 
@@ -519,12 +527,6 @@ def _to_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    """Clamp one value between two bounds."""
-
-    return max(low, min(high, value))
 
 
 def _is_dark() -> bool:

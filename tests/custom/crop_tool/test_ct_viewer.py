@@ -145,6 +145,101 @@ class TestLoadImage:
         assert view.mark_count() == 0
 
 
+class TestSwitchKeepsTheView:
+    """A same size image keeps the framing; another size fits again."""
+
+    def _load_shown(self, view, qapp, path):
+        """Show a view, load one image and let Qt settle the viewport."""
+
+        view.show()
+        qapp.processEvents()
+        assert view.load_image(path) is True
+        qapp.processEvents()
+
+    def _state(self, view):
+        """Return the zoom, both scroll values and the box corner."""
+
+        return (
+            view.zoom_level(),
+            view.horizontalScrollBar().value(),
+            view.verticalScrollBar().value(),
+            view.crop_pos(),
+        )
+
+    def test_a_same_size_image_keeps_the_view_and_the_box(
+        self, qapp, ct_dir
+    ):
+        first = write_pil(ct_dir, "first.png", (800, 600))
+        second = write_pil(ct_dir, "second.png", (800, 600))
+        view = _view()
+        try:
+            self._load_shown(view, qapp, first)
+            view.set_crop_size(20, 10)
+            view.move_crop_to(123, 45)
+            view.apply_zoom(2.0, QtCore.QPoint(300, 200))
+            qapp.processEvents()
+            horizontal = view.horizontalScrollBar()
+            vertical = view.verticalScrollBar()
+            horizontal.setValue(horizontal.value() + 31)
+            vertical.setValue(vertical.value() + 17)
+            qapp.processEvents()
+            saved = self._state(view)
+
+            assert view.load_image(second) is True
+            qapp.processEvents()
+
+            assert view.image_size() == (800, 600)
+            assert self._state(view) == saved
+        finally:
+            view.deleteLater()
+
+    def test_a_different_size_image_fits_and_centers_the_box(
+        self, qapp, ct_dir
+    ):
+        first = write_pil(ct_dir, "first.png", (800, 600))
+        second = write_pil(ct_dir, "second.png", (400, 300))
+        view = _view()
+        try:
+            self._load_shown(view, qapp, first)
+            view.set_crop_size(20, 10)
+            view.move_crop_to(123, 45)
+            view.apply_zoom(2.0, QtCore.QPoint(300, 200))
+            qapp.processEvents()
+
+            assert view.load_image(second) is True
+            qapp.processEvents()
+
+            assert view.image_size() == (400, 300)
+            assert view.zoom_level() == ct_viewer.MIN_ZOOM
+            assert view.horizontalScrollBar().value() == 0
+            assert view.verticalScrollBar().value() == 0
+            assert view.crop_pos() == (190, 145)
+        finally:
+            view.deleteLater()
+
+    def test_a_failed_load_keeps_the_view_and_the_box(
+        self, qapp, ct_dir
+    ):
+        path = write_pil(ct_dir, "kept.png", (800, 600))
+        view = _view()
+        try:
+            self._load_shown(view, qapp, path)
+            view.set_crop_size(20, 10)
+            view.move_crop_to(123, 45)
+            view.apply_zoom(2.0, QtCore.QPoint(300, 200))
+            qapp.processEvents()
+            saved = self._state(view)
+
+            assert view.load_image(
+                os.path.join(ct_dir, "gone.png")
+            ) is False
+            qapp.processEvents()
+
+            assert self._state(view) == saved
+        finally:
+            view.deleteLater()
+
+
 class TestCropBox:
     """The box is clamped inside the image and never clipped."""
 

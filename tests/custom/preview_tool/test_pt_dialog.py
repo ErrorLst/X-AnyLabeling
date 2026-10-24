@@ -844,6 +844,43 @@ def test_a_filter_rebuild_keeps_the_current_image(
     assert dialog._current_path == entries[0].path
 
 
+def test_navigation_keeps_the_view_of_a_same_size_image(
+    qapp, opened, pt_store, pt_dir
+):
+    settings, _ini = pt_store
+    write_image(pt_dir, "a.png", size=(800, 600))
+    write_image(pt_dir, "b.png", size=(800, 600))
+    write_image(pt_dir, "c.png", size=(400, 300))
+    dialog = opened(settings)
+    dialog.show()
+    qapp.processEvents()
+    entries = _open_entries(dialog, pt_dir, ["a.png", "b.png", "c.png"])
+    qapp.processEvents()
+    view = dialog._view
+    view.apply_zoom(2.0, QtCore.QPoint(300, 200))
+    qapp.processEvents()
+    horizontal = view.horizontalScrollBar()
+    vertical = view.verticalScrollBar()
+    horizontal.setValue(horizontal.value() + 23)
+    vertical.setValue(vertical.value() + 11)
+    qapp.processEvents()
+    saved = (view.zoom_level(), horizontal.value(), vertical.value())
+
+    dialog._navigate(1)
+    qapp.processEvents()
+    assert dialog._current_path == entries[1].path
+    assert view.zoom_level() == saved[0]
+    assert horizontal.value() == saved[1]
+    assert vertical.value() == saved[2]
+
+    dialog._navigate(1)
+    qapp.processEvents()
+    assert dialog._current_path == entries[2].path
+    assert view.zoom_level() == 1.0
+    assert horizontal.value() == 0
+    assert vertical.value() == 0
+
+
 # ------------------------------------------------------------ auto jump
 
 

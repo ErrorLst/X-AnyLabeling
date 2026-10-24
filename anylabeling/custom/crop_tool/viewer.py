@@ -7,6 +7,11 @@ no drag to draw a region and no keyboard shortcut. The left button
 pans, the wheel zooms around the pointer and a double click fits the
 image back into the window.
 
+A new image whose width and height are exactly the ones of the image
+on screen keeps the zoom, the scroll position and the corner of the
+box: the whole framing is restored without any conversion. An image of
+another size is fitted and centred again and its box is recentred.
+
 The view also paints the crop regions that already exist in the output
 directory as green outlines, so a crop made in an earlier session stays
 visible. Those rectangles come from the file names alone and are
@@ -167,7 +172,9 @@ class CropView(QtWidgets.QGraphicsView):
         without allocating its buffer. The reader runs with the
         automatic EXIF transform switched off: the view shows the same
         pixels as the main canvas, which does not transform them
-        either.
+        either. An image of the same size keeps the zoom, the scroll
+        position and the corner of the crop box; an image of another
+        size is fitted and centred again and its box is recentred.
         """
 
         self._error = ''
@@ -188,17 +195,41 @@ class CropView(QtWidgets.QGraphicsView):
         if image.isNull():
             self._error = ERROR_DECODE_FAILED % path
             return False
+        previous = self._same_size_state(image.width(), image.height())
         self._pixmap = QtGui.QPixmap.fromImage(image)
         self._size = (image.width(), image.height())
-        self._crop_pos = [0, 0]
         self._marks = []
         self._error = ''
         self._empty_label.hide()
         self._sync_scene()
-        self.reset_view()
-        self.center_crop()
+        if previous is None:
+            self._crop_pos = [0, 0]
+            self.reset_view()
+            self.center_crop()
+        else:
+            self._crop_pos = list(self._clamp(*previous[3]))
+            self._restore_view(previous[0], previous[1], previous[2])
         self.viewport().update()
         return True
+
+    def _same_size_state(self, width, height):
+        """Return the view state of a same size image, None otherwise.
+
+        The state is only returned when the image on screen has exactly
+        the width and the height of the new one: the fitted scale, both
+        scroll ranges and the box clamp are then the same, so the view
+        can be restored without any conversion. The tuple holds the
+        zoom, both scroll bar values and the corner of the box.
+        """
+
+        if self._pixmap is None or self._size != (width, height):
+            return None
+        return (
+            self._zoom,
+            self.horizontalScrollBar().value(),
+            self.verticalScrollBar().value(),
+            list(self._crop_pos),
+        )
 
     def _limit(self) -> int:
         """Return the pixel budget of a source image."""
@@ -423,6 +454,19 @@ class CropView(QtWidgets.QGraphicsView):
         self._base_scale = max(1e-6, self.transform().m11())
         if abs(self._zoom - MIN_ZOOM) > 1e-9:
             self.scale(self._zoom, self._zoom)
+
+    def _restore_view(self, zoom, scroll_x, scroll_y) -> None:
+        """Restore the zoom and the scroll of a same size image.
+
+        The image on screen has the size of the previous one, so the
+        fitted scale and both scroll ranges are unchanged and the
+        remembered scroll bar values reproduce the old view exactly.
+        """
+
+        self._zoom = max(MIN_ZOOM, min(MAX_ZOOM, float(zoom)))
+        self._refit()
+        self.horizontalScrollBar().setValue(int(scroll_x))
+        self.verticalScrollBar().setValue(int(scroll_y))
 
     def _can_fit(self) -> bool:
         """Return True when the view and its image can be fitted."""

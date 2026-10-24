@@ -187,6 +187,73 @@ def test_view_zoom_is_clamped_and_reset(pt_dir):
         view.deleteLater()
 
 
+def test_a_same_size_switch_keeps_the_zoom_and_the_position(
+    qapp, pt_dir
+):
+    first = write_image(pt_dir, "first.png", size=(800, 600))
+    second = write_image(pt_dir, "second.png", size=(800, 600))
+    view = viewer.PreviewView()
+    try:
+        view.resize(600, 400)
+        view.show()
+        qapp.processEvents()
+        view.show_image(QtGui.QImage(first))
+        qapp.processEvents()
+        view.apply_zoom(2.0, QtCore.QPoint(450, 300))
+        qapp.processEvents()
+        horizontal = view.horizontalScrollBar()
+        vertical = view.verticalScrollBar()
+        horizontal.setValue(horizontal.value() + 37)
+        vertical.setValue(vertical.value() + 21)
+        qapp.processEvents()
+        saved = (
+            view.zoom_level(),
+            horizontal.value(),
+            vertical.value(),
+            view.mapToScene(view.viewport().rect().center()),
+        )
+
+        view.show_image(QtGui.QImage(second))
+        qapp.processEvents()
+
+        center = view.mapToScene(view.viewport().rect().center())
+        assert view.image_size() == (800, 600)
+        assert view.zoom_level() == saved[0]
+        assert horizontal.value() == saved[1]
+        assert vertical.value() == saved[2]
+        assert abs(center.x() - saved[3].x()) < 0.01
+        assert abs(center.y() - saved[3].y()) < 0.01
+    finally:
+        view.deleteLater()
+
+
+def test_a_size_change_fits_the_image_again(qapp, pt_dir):
+    big = write_image(pt_dir, "big.png", size=(800, 600))
+    small = write_image(pt_dir, "small.png", size=(400, 300))
+    view = viewer.PreviewView()
+    try:
+        view.resize(600, 400)
+        view.show()
+        qapp.processEvents()
+        view.show_image(QtGui.QImage(big))
+        qapp.processEvents()
+        view.apply_zoom(2.0, QtCore.QPoint(450, 300))
+        qapp.processEvents()
+
+        view.show_image(QtGui.QImage(small))
+        qapp.processEvents()
+
+        center = view.mapToScene(view.viewport().rect().center())
+        assert view.image_size() == (400, 300)
+        assert view.zoom_level() == 1.0
+        assert view.horizontalScrollBar().value() == 0
+        assert view.verticalScrollBar().value() == 0
+        assert abs(center.x() - 200.0) < 1.0
+        assert abs(center.y() - 150.0) < 1.0
+    finally:
+        view.deleteLater()
+
+
 def _wheel_event(position, delta=120):
     """Build a wheel event at one viewport position."""
 

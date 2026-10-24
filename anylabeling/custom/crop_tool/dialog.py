@@ -426,6 +426,10 @@ class CropDialog(QtWidgets.QDialog):
         self.rebuild_crops()
         self._fill_list()
         if self._entries:
+            # A folder is opened from scratch: its first image always
+            # fits and centres, even when it has the size of the last
+            # image of the folder that was open before.
+            self.viewer.clear_image()
             self.show_image(0)
         else:
             self._show_empty_hint()
@@ -669,16 +673,19 @@ class CropDialog(QtWidgets.QDialog):
         self.list.scrollToItem(item)
 
     def show_image(self, index) -> bool:
-        """Show one image of the tree and refresh marks and counters."""
+        """Show one image of the tree and refresh marks and counters.
+
+        The view restores the zoom, the scroll position and the corner
+        of the box when the image has the size of the one on screen,
+        and fits and centres both when the size changed, so this method
+        never recenters the box itself.
+        """
 
         if not 0 <= index < len(self._entries):
             return False
         self._current_index = index
         self._reveal(index)
         self.viewer.load_image(self._entries[index].path)
-        # The box keeps its width and height across images and recenters
-        # inside the new one, so a small image never clips it.
-        self.viewer.center_crop()
         self.viewer.set_marks(self.marks_of_current())
         self._refresh_status()
         self._update_size_hint()

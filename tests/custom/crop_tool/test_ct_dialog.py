@@ -749,6 +749,62 @@ class TestNavigation:
         assert dialog.current_index() == 1
         assert os.path.basename(dialog.current_path()) == "b.png"
 
+    def test_a_same_size_image_keeps_the_view_and_the_box(
+        self, qapp, ct_dir, ct_store
+    ):
+        write_pil(ct_dir, "a.png", (800, 600))
+        write_pil(ct_dir, "b.png", (800, 600))
+        settings, _ini = ct_store
+        dialog = _show(_make_dialog(settings, ct_dir))
+        view = dialog.viewer
+        view.set_crop_size(20, 10)
+        view.move_crop_to(123, 45)
+        view.apply_zoom(2.0, QtCore.QPoint(300, 200))
+        qapp.processEvents()
+        horizontal = view.horizontalScrollBar()
+        vertical = view.verticalScrollBar()
+        horizontal.setValue(horizontal.value() + 31)
+        vertical.setValue(vertical.value() + 17)
+        qapp.processEvents()
+        saved = (
+            view.zoom_level(),
+            horizontal.value(),
+            vertical.value(),
+            view.crop_pos(),
+        )
+
+        assert dialog.next_image() is True
+        qapp.processEvents()
+
+        assert view.image_size() == (800, 600)
+        assert (
+            view.zoom_level(),
+            horizontal.value(),
+            vertical.value(),
+            view.crop_pos(),
+        ) == saved
+
+    def test_a_new_folder_starts_fitted(self, qapp, ct_make, ct_store):
+        first = ct_make()
+        second = ct_make()
+        write_pil(first, "a.png", (800, 600))
+        write_pil(second, "a.png", (800, 600))
+        settings, _ini = ct_store
+        dialog = _show(_make_dialog(settings, first))
+        view = dialog.viewer
+        view.set_crop_size(20, 10)
+        view.move_crop_to(123, 45)
+        view.apply_zoom(2.0, QtCore.QPoint(300, 200))
+        qapp.processEvents()
+
+        dialog.set_input_dir(second)
+        qapp.processEvents()
+
+        assert view.zoom_level() == 1.0
+        assert view.horizontalScrollBar().value() == 0
+        assert view.verticalScrollBar().value() == 0
+        assert view.crop_pos() == ((800 - 20) // 2, (600 - 10) // 2)
+
     def test_cursor_label_is_updated(self, ct_dir, ct_store):
         write_pil(ct_dir, "a.png", SIZE)
         settings, _ini = ct_store

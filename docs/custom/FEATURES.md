@@ -1760,10 +1760,10 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 
 ### 代码与体量
 
-`anylabeling/custom/crop_tool/`（6 个文件 2817 行：`crop_core.py` 821 行是不依赖 Qt 的文件层 ——
-递归扫描、可逆命名与解析、补齐与内边距、原子写、白名单删除，`dialog.py` 1078 行是窗口与交互，
-`viewer.py` 697 行是缩放/平移/裁切框/标记，`settings.py` 130 行、`__init__.py` 46 行、
-`launcher.py` 45 行）；测试 `tests/custom/crop_tool/`（7 个文件 3516 行，267 个用例）。
+`anylabeling/custom/crop_tool/`（6 个文件 2868 行：`crop_core.py` 821 行是不依赖 Qt 的文件层 ——
+递归扫描、可逆命名与解析、补齐与内边距、原子写、白名单删除，`dialog.py` 1085 行是窗口与交互，
+`viewer.py` 741 行是缩放/平移/裁切框/标记，`settings.py` 130 行、`__init__.py` 46 行、
+`launcher.py` 45 行）；测试 `tests/custom/crop_tool/`（7 个文件 3667 行，272 个用例）。
 
 本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以 `docs/custom/contract.json` 为准。
 
@@ -1866,17 +1866,24 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   旧版本留下的 `input_dir` / `output_dir` 键一律被忽略。窗口永远空着打开；填充固定 0，不
   持久化；不用线程（扫描与重建标记各一次 `scandir`），非模态窗口 + 每主窗口单实例复用
   （`widget._crop_tool_dialog` + `destroyed` 清理），无取消按钮。
+- **R14 同尺寸换图保持视图**：换到另一张图时，若新图与当前图的宽、高**完全相同**，视图缩放、
+  水平/垂直滚动位置与固定裁切框左上角原样保留（按保存的滚动条值精确恢复，不重算相对中心）；
+  宽或高不同、以及打开新目录后的第一张图，则重新适应窗口、视图居中、裁切框居中（仍按
+  `_crop_size` 夹取）。加载失败不改动视图与裁切框。
 
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/crop_tool -v`
-（用虚拟环境里的 python 跑；需 PyQt6）。目录里实际落地 **267 个用例**（263 passed + 2 条
-Windows 环境失败 + 2 skipped）：`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
+（用虚拟环境里的 python 跑；需 PyQt6）。目录里实际落地 **272 个用例**（270 passed + 1 条
+Windows 长路径失败 + 1 skipped；该失败为基线已有的 `test_name_too_long`）：
+`test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
 （递归扫描顺序、输入的 `rel_dir`、输出子树跳过、扁平落盘、命名与解析、跳号与原子写、
 格式与 mode 收敛、越界补齐与内边距、上限与 `DecompressionBombError`、程序目录默认输出），
-`test_ct_viewer.py` 覆盖缩放/平移/裁切框跟随、光标锚定缩放与快捷键冒泡，
+`test_ct_viewer.py` 覆盖缩放/平移/裁切框跟随、光标锚定缩放、快捷键冒泡与同尺寸换图的
+缩放/滚动/裁切框保留（异尺寸重新适配并居中、加载失败不动），
 `test_ct_dialog.py` 覆盖目录树、裁切后不换图、确认框与白名单删除、标记与徽标、扁平输出与
-同 stem 合并 family、窗口 flags 与空窗口启动，`test_ct_settings.py` 覆盖默认值与「输出目录
+同 stem 合并 family、窗口 flags 与空窗口启动、同尺寸换图保留视图与框、换目录首图复位，
+`test_ct_settings.py` 覆盖默认值与「输出目录
 只在内存」，`test_ct_install.py` 覆盖挂载点两行、菜单项幂等安装与重开保留最大化/最小化状态。
 
 ### 已知坑
@@ -1919,15 +1926,15 @@ Windows 环境失败 + 2 skipped）：`test_ct_core.py` 与 `test_ct_crops.py` �
 
 ### 代码与体量
 
-`anylabeling/custom/preview_tool/`（13 个文件 5849 行：`dialog.py` 1687 行是窗口与交互，
+`anylabeling/custom/preview_tool/`（13 个文件 5851 行：`dialog.py` 1687 行是窗口与交互，
 `pick_core.py` 660 行是不依赖 Qt 的挑选与移除文件层（`dsh-trash` 的移动、stem 家族匹配、
 探测、输出目录==输入目录的冲突判定），`core.py` 534 行是递归扫描、标注解析与过滤（纯数据
-层，含程序目录与默认输出目录「程序目录下的 picked/」），`viewer.py` 537 行是缩放与平移视图，
+层，含程序目录与默认输出目录「程序目录下的 picked/」），`viewer.py` 539 行是缩放与平移视图，
 `worker.py` 493 行是递归目录扫描与 QImage 预加载，`settings.py` 444 行是 QSettings 包装，
 `list_panel.py` 405 行是「目录树 + 文件」树控件与 picked 标记，`pick_worker.py` 350 行是
 拷贝、移除与探测线程，`overlay.py` 338 行是标注层与矩形外扩，`category_filter.py` 209 行是
 多选类别菜单，`installer.py` 75 行、`__init__.py` 60 行、`launcher.py` 57 行只做入口与挂载）；
-测试 `tests/custom/preview_tool/`（9 个文件 4747 行，共 308 个用例，其中 1 个图标用例在
+测试 `tests/custom/preview_tool/`（9 个文件 4851 行，共 311 个用例，其中 1 个图标用例在
 offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`，行数取 `wc -l`。
 
 本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以
@@ -2040,12 +2047,16 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
   下一张**：跨目录连续、列表末尾不循环、失败/取消/部分失败不跳、「全部拷贝」完成后
   不跳。树重建（换目录 / 过滤变化）时保留用户折叠状态；当前图被过滤掉时沿用既有
   「回到第一个可见行」行为；输出目录变化会重扫（跳过集合可能变化）。
+- **R19 同尺寸换图保持视图**：换到下一张图时，若新图与当前图的宽、高**完全相同**，缩放级别、
+  水平/垂直滚动位置与视图中心原样保留（按保存的滚动条值精确恢复，不做相对中心换算，长序列
+  不累积漂移）；宽或高不同时回到适应窗口并居中。预加载线程对当前图的二次 `show_image`、
+  过滤刷新重显当前图都走同一条同尺寸恢复路径，因此幂等。
 
 ### 测试
 
 `python -m pytest -p no:cacheprovider tests/custom/preview_tool -v`
 （本工作区用虚拟环境里的 `python` 跑；offscreen 由 conftest 设置）
-（需 PyQt6）。目录里实际落地 **308 个用例**（307 passed + 1 skipped）：
+（需 PyQt6）。目录里实际落地 **311 个用例**（310 passed + 1 skipped）：
 `test_pt_core.py` 覆盖递归扫描顺序、`rel_dir`、标注解析、三轴过滤与默认输出
 「程序目录下的 picked/」，`test_pt_pick.py` 覆盖扁平输出目录下的拷贝与移入 dsh-trash（含 `xb` 占名、
 重名跳号、stem 家族、跨子目录同名合并、移除家族合并、`output_conflicts` 与不可逆性
@@ -2053,7 +2064,8 @@ offscreen 下 skip）。口径：目录内全部 `*.py`、排除 `__pycache__`�
 `test_pt_settings.py` 覆盖 7 项默认值、输出目录只在内存与按目录类别键，`test_pt_worker.py` 覆盖递归扫描、
 预加载线程与取消，`test_pt_dialog.py` 与 `test_pt_ui.py` 覆盖窗口（含最小化/最大化
 flags）、开关按钮、快捷键、状态行、输出==输入守卫、自动跳转（跨目录 / 末尾不循环 /
-失败不跳）与光标锚定缩放，`test_pt_mount.py` 覆盖挂载点两行、菜单项幂等安装、每个
+失败不跳）、光标锚定缩放与同尺寸换图保留缩放/视图位置（异尺寸重新适配），
+`test_pt_mount.py` 覆盖挂载点两行、菜单项幂等安装、每个
 widget 一个窗口、空窗口启动（不读主窗口 last_open_dir）与重开保留最大化/最小化状态。
 
 ### 已知坑
