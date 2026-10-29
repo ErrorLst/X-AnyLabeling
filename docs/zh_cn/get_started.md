@@ -305,13 +305,22 @@ set PYTHONPATH=C:\path\to\X-AnyLabeling
 
 ### 3.2 编译命令
 
-```bash
-# Windows-CPU
-bash scripts/build_executable.sh win-cpu
+Windows 下使用 PowerShell，不需要 Bash：
+
+```powershell
+# Windows-CPU（默认）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_executable.ps1
+
+# 也可以直接运行批处理：
+scripts\build_windows.bat
 
 # Windows-GPU
-bash scripts/build_executable.sh win-gpu
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_executable.ps1 -Target win-gpu -Variant CUDA12
+```
 
+Linux 和 macOS 使用 Bash：
+
+```bash
 # Linux-CPU
 bash scripts/build_executable.sh linux-cpu
 
@@ -323,10 +332,8 @@ bash scripts/build_executable.sh macos
 ```
 
 > [!TIP]
-> 如果在 Windows 上执行上述命令时遇到权限问题，在确保完成上述准备步骤后，可以直接执行以下命令：
-> ```bash
-> pyinstaller --noconfirm packaging/pyinstaller/specs/x-anylabeling-win-cpu.spec
-> pyinstaller --noconfirm packaging/pyinstaller/specs/x-anylabeling-win-gpu.spec
-> ```
+> Windows 下请使用 `scripts\build_executable.ps1`（或 `scripts\build_windows.bat`），不要直接调用
+> PyInstaller：脚本会在打包前做 Low 完整性权限预检，并在打包后清除输出 exe 上的沙箱 ACL
+> 和完整性标记。如果在 DSH 内操作，请从普通 Windows 终端运行，或先把会话切到完全权限。
 
 </details>

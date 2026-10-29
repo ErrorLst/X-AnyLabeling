@@ -222,6 +222,35 @@ class TestSaveFormat:
         assert set(core.SAVE_FORMATS) <= set(core.IMAGE_EXTS)
 
 
+class TestResolveSaveSize:
+    """The saved size follows a zero axis and rejects nonsense."""
+
+    def test_the_default_pair_keeps_the_crop_size(self):
+        assert core.resolve_save_size(10, 20) == (10, 20)
+
+    def test_both_axes_are_used(self):
+        assert core.resolve_save_size(10, 20, 4, 6) == (4, 6)
+
+    def test_a_zero_axis_follows_the_crop(self):
+        assert core.resolve_save_size(10, 20, 4, 0) == (4, 20)
+        assert core.resolve_save_size(10, 20, 0, 6) == (10, 6)
+
+    def test_a_negative_size_is_rejected(self):
+        with pytest.raises(core.CropError, match="保存尺寸不能为负"):
+            core.resolve_save_size(10, 20, -1, 0)
+
+    def test_a_text_size_is_rejected(self):
+        with pytest.raises(core.CropError, match="保存尺寸不是整数"):
+            core.resolve_save_size(10, 20, "x", 0)
+
+    def test_the_pixel_guard_reads_the_module_attribute(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(core, "MAX_CROP_PIXELS", 4)
+        with pytest.raises(core.CropError, match="保存尺寸过大"):
+            core.resolve_save_size(2, 2, 3, 3)
+
+
 class TestCropImage:
     """Composition, padding, format convergence and atomic write."""
 
@@ -369,6 +398,138 @@ class TestCropImage:
             handle.write(b"not an image")
         with pytest.raises(core.CropError, match="图片无法读取"):
             core.crop_image(path, 0, 0, 2, 2, output_dir=ct_out)
+        assert os.listdir(ct_out) == []
+
+    def test_saved_size_is_applied(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        result = core.crop_image(
+            source,
+            0,
+            0,
+            4,
+            4,
+            save_width=2,
+            save_height=2,
+            output_dir=ct_out,
+        )
+        assert result.size == (2, 2)
+        assert (result.record.w, result.record.h) == (4, 4)
+        assert os.path.basename(result.path) == (
+            "img__x0_y0_w4_h4__px0_py0.png"
+        )
+        with PIL.Image.open(result.path) as opened:
+            assert opened.size == (2, 2)
+
+    def test_upscale_is_applied(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        result = core.crop_image(
+            source,
+            0,
+            0,
+            2,
+            2,
+            save_width=6,
+            save_height=9,
+            output_dir=ct_out,
+        )
+        assert result.size == (6, 9)
+        with PIL.Image.open(result.path) as opened:
+            assert opened.size == (6, 9)
+
+    def test_a_zero_axis_follows_the_crop(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        result = core.crop_image(
+            source,
+            0,
+            0,
+            8,
+            6,
+            save_width=4,
+            save_height=0,
+            output_dir=ct_out,
+        )
+        assert result.size == (4, 6)
+        assert result.record.h == 6
+        with PIL.Image.open(result.path) as opened:
+            assert opened.size == (4, 6)
+
+    def test_the_default_pair_does_not_resample(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        result = core.crop_image(source, 2, 3, 4, 4, output_dir=ct_out)
+        assert result.size == (4, 4)
+        expected = make_image((8, 8), "RGB").crop((2, 3, 6, 7))
+        with PIL.Image.open(result.path) as opened:
+            assert opened.tobytes() == expected.tobytes()
+
+    def test_resampling_keeps_the_mode(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8), "RGBA")
+        result = core.crop_image(
+            source,
+            0,
+            0,
+            4,
+            4,
+            save_width=2,
+            save_height=2,
+            output_dir=ct_out,
+        )
+        assert result.mode == "RGBA"
+        with PIL.Image.open(result.path) as opened:
+            assert opened.mode == "RGBA"
+            assert opened.size == (2, 2)
+
+    def test_a_sixteen_bit_source_is_resampled(self, ct_dir, ct_out):
+        source = write_pil(ct_dir, "img.png", (8, 8), "I;16")
+        result = core.crop_image(
+            source,
+            0,
+            0,
+            4,
+            4,
+            save_width=2,
+            save_height=2,
+            output_dir=ct_out,
+        )
+        with PIL.Image.open(result.path) as opened:
+            assert opened.mode == "I;16"
+            assert opened.size == (2, 2)
+
+    def test_saved_pixel_guard(self, ct_dir, ct_out, monkeypatch):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+        monkeypatch.setattr(core, "MAX_CROP_PIXELS", 4)
+        with pytest.raises(core.CropError, match="保存尺寸过大"):
+            core.crop_image(
+                source,
+                0,
+                0,
+                2,
+                2,
+                save_width=3,
+                save_height=3,
+                output_dir=ct_out,
+            )
+        assert os.listdir(ct_out) == []
+
+    def test_a_resample_failure_is_reported(
+        self, ct_dir, ct_out, monkeypatch
+    ):
+        source = write_pil(ct_dir, "img.png", (8, 8))
+
+        def _boom(_image, _size, _filter=None, **_kwargs):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(PIL.Image.Image, "resize", _boom)
+        with pytest.raises(core.CropError, match="缩放裁切结果失败"):
+            core.crop_image(
+                source,
+                0,
+                0,
+                4,
+                4,
+                save_width=2,
+                save_height=2,
+                output_dir=ct_out,
+            )
         assert os.listdir(ct_out) == []
 
     def test_read_only_output_directory(

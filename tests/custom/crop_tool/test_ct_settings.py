@@ -34,11 +34,15 @@ class TestDefaults:
         assert settings.height() == 640
         assert settings.pad_width() == 0
         assert settings.pad_height() == 0
+        assert settings.save_width() == 0
+        assert settings.save_height() == 0
         assert DEFAULTS == {
             "width": 640,
             "height": 640,
             "pad_width": 0,
             "pad_height": 0,
+            "save_width": 0,
+            "save_height": 0,
         }
 
 class TestRoundTrip:
@@ -50,10 +54,14 @@ class TestRoundTrip:
         settings.set_height(321)
         settings.set_pad_width(7)
         settings.set_pad_height(8)
+        settings.set_save_width(160)
+        settings.set_save_height(240)
         assert settings.width() == 320
         assert settings.height() == 321
         assert settings.pad_width() == 7
         assert settings.pad_height() == 8
+        assert settings.save_width() == 160
+        assert settings.save_height() == 240
 
     def test_directories_stay_in_memory(self, ct_store, monkeypatch):
         settings, ini = ct_store
@@ -71,6 +79,15 @@ class TestRoundTrip:
         flush_settings(settings)
         raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
         assert int(raw.value(KEY_PREFIX + "width")) == 320
+
+    def test_the_saved_size_keys_carry_the_prefix(self, ct_store):
+        settings, ini = ct_store
+        settings.set_save_width(320)
+        settings.set_save_height(240)
+        flush_settings(settings)
+        raw = QtCore.QSettings(ini, QtCore.QSettings.Format.IniFormat)
+        assert int(raw.value(KEY_PREFIX + "save_width")) == 320
+        assert int(raw.value(KEY_PREFIX + "save_height")) == 240
 
     def test_the_store_stays_in_the_scratch_directory(self, ct_store):
         settings, ini = ct_store
@@ -144,3 +161,15 @@ class TestClamping:
     def test_high_padding_is_clamped(self, ct_make):
         settings = _prepare(ct_make, "pad_width", 100000)
         assert settings.pad_width() == core.SIZE_MAX
+
+    def test_a_negative_saved_width_is_clamped_to_zero(self, ct_make):
+        settings = _prepare(ct_make, "save_width", -5)
+        assert settings.save_width() == 0
+
+    def test_a_high_saved_height_is_clamped(self, ct_make):
+        settings = _prepare(ct_make, "save_height", 100000)
+        assert settings.save_height() == core.SIZE_MAX
+
+    def test_a_text_saved_width_falls_back(self, ct_make):
+        settings = _prepare(ct_make, "save_width", "abc")
+        assert settings.save_width() == DEFAULTS["save_width"]

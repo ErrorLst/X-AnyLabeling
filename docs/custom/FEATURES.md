@@ -30,8 +30,9 @@
 | label_filter | 按标签分类过滤文件列表（Tool 菜单运行时追加，实例级包装 import_image_folder） | `anylabeling/custom/label_filter/` | `tests/custom/label_filter/` | 1 个（1 行 import + 1 行调用） | 2 |
 | crash_log | 崩溃与运行日志落盘 `~/.xanylabeling/logs/xany-*.log`（faulthandler + 异常钩子 + Qt 钩子；异常退出检测） | `anylabeling/custom/crash_log/` | `tests/custom/crash_log/` | 1 个（1 行 import + 1 行调用） | 0 |
 | reset_view_on_switch | 换到另一张图片时画布缩放/滚动复位成首图初始态（有意压过 keep_prev_scale；同文件重载不复位） | `anylabeling/custom/reset_view_on_switch/` | 同目录 `tests/custom/reset_view_on_switch/` | 1 个（1 行 import + 1 行调用） | 1 |
-| crop_tool | 拖入目录（含子目录）后用固定 W×H 裁切框逐张裁图：左侧目录树 + 文件、右键裁切后停留在当前图（换图靠 A/D）、文件名即记录、裁切全部直接落在输出目录根（不建子目录）、窗口可最大化、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
+| crop_tool | 拖入目录（含子目录）后用固定 W×H 裁切框逐张裁图（第二行可指定保存尺寸做上下采样）：左侧目录树 + 文件、右键裁切后停留在当前图（换图靠 A/D）、文件名即记录、裁切全部直接落在输出目录根（不建子目录）、窗口可最大化、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 | preview_tool | 拖入图片目录（含子目录）按目录树顺序预览并叠加 LabelMe 标注；左侧目录树 + 文件；按得分/尺寸/类别过滤（总开关）；把当前图与边车 json 直接拷进所选输出目录（扁平、不建子目录）或把同 stem 副本移入 dsh-trash，输出目录不得等于输入目录，单文件处理后自动跳下一张（跨目录连续）；窗口可最大化；启动空窗口、输出目录不持久化 | `anylabeling/custom/preview_tool/` | `tests/custom/preview_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
+| filter_tool | Tool 菜单「滤镜工具」：像素值过滤 / 直方图均衡化 / 高斯滤波按右侧列表顺序叠加，左侧并排显示原图与滤镜预览；确认后当前图与之后所有图片自动应用；只改画布显示，不改原图、标注与导出 | `anylabeling/custom/filter_tool/` | `tests/custom/filter_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -1749,7 +1750,9 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 ### 职责
 
 数据集逐张裁切：把图片目录（含任意层子目录）拖进子窗口，用一个固定的 W×H 裁切框（可选内边距）
-逐张裁图，右键裁切、A/D 换图；左侧是「目录树 + 文件」的联合列表。**文件名即记录**：裁切子图的名字里编码了原图 stem、区域、内边距与序号，
+逐张裁图，右键裁切、A/D 换图；左侧是「目录树 + 文件」的联合列表。第二行「保存尺寸」的 W/H 决定
+落盘文件的像素尺寸：0 表示该轴跟随裁切尺寸，非零则按固定 Lanczos 滤镜上下采样（见 R15）。
+**文件名即记录**：裁切子图的名字里编码了原图 stem、区域、内边距与序号，
 所以输出目录一读就知道「哪些原图裁过、每张裁了哪些区域」，不写 `.crop_record.json`、不读
 输入目录里的任何文件。唯一的删除入口是 Del：先弹确认框、默认答「否」，确认后只删输出目录里
 名字符合裁切模板的自己的子图。
@@ -1760,10 +1763,10 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 
 ### 代码与体量
 
-`anylabeling/custom/crop_tool/`（6 个文件 2868 行：`crop_core.py` 821 行是不依赖 Qt 的文件层 ——
-递归扫描、可逆命名与解析、补齐与内边距、原子写、白名单删除，`dialog.py` 1085 行是窗口与交互，
-`viewer.py` 741 行是缩放/平移/裁切框/标记，`settings.py` 130 行、`__init__.py` 46 行、
-`launcher.py` 45 行）；测试 `tests/custom/crop_tool/`（7 个文件 3667 行，272 个用例）。
+`anylabeling/custom/crop_tool/`（6 个文件 3038 行：`crop_core.py` 902 行是不依赖 Qt 的文件层 ——
+递归扫描、可逆命名与解析、补齐与内边距、保存尺寸上下采样、原子写、白名单删除，
+`dialog.py` 1145 行是窗口与交互，`viewer.py` 741 行是缩放/平移/裁切框/标记，`settings.py` 156 行、
+`__init__.py` 49 行、`launcher.py` 45 行）；测试 `tests/custom/crop_tool/`（7 个文件 3956 行，297 个用例）。
 
 本文件不写行号；入口与内部函数的分工用符号名定位，快照行号以 `docs/custom/contract.json` 为准。
 
@@ -1771,8 +1774,9 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 
 `anylabeling/custom/crop_tool/__init__.py` 导出的 `install_crop_tool`（幂等安装，重复调用不会加出
 第二个 Tool 菜单项）与 `launch_crop_tool`（非模态窗口，复用已有实例）；
-`anylabeling/custom/crop_tool/crop_core.py` 导出的 `crop_image` / `scan_crops` / `delete_crops`
-（文件层三个公开入口：裁一张、扫一个目录、按白名单删若干张）。
+`anylabeling/custom/crop_tool/crop_core.py` 导出的 `crop_image` / `scan_crops` / `delete_crops` /
+`resolve_save_size`（文件层公开入口：裁一张、扫一个目录、按白名单删若干张、保存尺寸规则
+「0 轴跟随裁切尺寸」的唯一实现）。
 
 ### 挂载点（锚点原文，行号见 contract.json）与软挂载
 
@@ -1820,7 +1824,7 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
 - **R5 裁切几何**：先按 W×H 建填 0 背景（L/I;16* -> 0、RGB -> (0,0,0)、RGBA -> (0,0,0,255)），
   把「源图 ∩ 裁切框」贴到对应位置（越界区域显式填 0，不依赖 PIL 的隐式补零），再画内边距带
   （夹到 `min(pad, 边长 // 2)`）涂 0；x/y 夹取到 ≥ 0；越界与「图片小于裁切框」由同一条规则补齐，
-  都不报错。
+  都不报错。组合完成后按 R15 处理保存尺寸（需要时再缩放）。
 - **R6 EXIF 方向**：两侧都不做 exif_transpose（与主画布一致，物理纠正留给上游
   `process_image_exif`）-> 所见即所裁；测试用 orientation=6 的 JPEG 钉死这条。
 - **R7 上限保护**：源图 W*H > `MAX_IMAGE_PIXELS`(1e8) 既拒绝显示也拒绝裁切；框 w*h >
@@ -1860,7 +1864,8 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   触发：点文件叶子、A/D（←/→）或树内选择；成功裁切**不换图**（失败/无图同样不动）。重扫
   （换目录/改输出目录）后树恢复全展开。
 - **R13 持久化、默认值与线程**：`QSettings("anylabeling", "anylabeling")` 只存
-  `custom/crop_tool/{width,height,pad_width,pad_height}`，默认 640/640/0/0；**目录都不落盘**：
+  `custom/crop_tool/{width,height,pad_width,pad_height,save_width,save_height}`，默认
+  640/640/0/0/0/0；**目录都不落盘**：
   输入目录只在内存里，输出目录默认是 `<程序所在目录>/crop`（源码运行 = 仓库根，冻结版 =
   exe 所在目录，每次现取、不缓存、不写回），用户在窗口里选的输出目录也只对本次窗口有效；
   旧版本留下的 `input_dir` / `output_dir` 键一律被忽略。窗口永远空着打开；填充固定 0，不
@@ -1870,21 +1875,34 @@ SIGKILL、真实 spawn worker 不抢父进程 marker 的回归、跨天轮转后
   水平/垂直滚动位置与固定裁切框左上角原样保留（按保存的滚动条值精确恢复，不重算相对中心）；
   宽或高不同、以及打开新目录后的第一张图，则重新适应窗口、视图居中、裁切框居中（仍按
   `_crop_size` 夹取）。加载失败不改动视图与裁切框。
+- **R15 保存尺寸（上下采样）**：裁切先在 W×H 画布上组合（R5），随后若「保存尺寸」与裁切尺寸不同，
+  用固定 Lanczos 滤镜（`crop_core.RESAMPLE`）缩放到恰好 `(save_width, save_height)` 再编码；
+  **0 表示该轴跟随裁切尺寸**（两轴都 0 = 不缩放，走与改动前完全相同的路径，不调用 resize），
+  两轴独立，因此允许非等比缩放。保存尺寸只影响落盘文件的像素尺寸，不改变裁切框、源坐标、marks、
+  徽标、删除 family 与文件名（和填充色一样不编码进名字；实际尺寸读文件头即可）；`CropResult.size`
+  返回的是落盘尺寸。上限与错误：保存像素数 > `MAX_CROP_PIXELS` -> `CropError`（上限常量调用时读
+  模块属性，便于测试）；负数/非整数 -> `CropError`；Pillow 不支持的模式（旧版 Pillow 的 `I;16*`）
+  -> `CropError("缩放裁切结果失败…")`，三者都不留半成品文件。UI 在顶行下方独占一行：
+  「保存尺寸: W [ ] H [ ]」+ 提示「0 = 与裁切尺寸相同（不缩放）」，两个框都进键盘过滤器（焦点在
+  它们上面时 A/D/Del 仍生效）；参数持久化见 R13。
 
 ### 测试
 
 `QT_QPA_PLATFORM=offscreen python -m pytest -p no:cacheprovider tests/custom/crop_tool -v`
-（用虚拟环境里的 python 跑；需 PyQt6）。目录里实际落地 **272 个用例**（270 passed + 1 条
-Windows 长路径失败 + 1 skipped；该失败为基线已有的 `test_name_too_long`）：
+（用虚拟环境里的 python 跑；需 PyQt6）。目录里实际落地 **297 个用例**（本机 Windows 上
+293 passed + 2 条环境性失败 + 2 skipped；两条失败为基线既有：`test_name_too_long` 是 Windows
+长路径、`test_symlink_is_skipped` 是当前账户没有建符号链接的特权）：
 `test_ct_core.py` 与 `test_ct_crops.py` 覆盖文件层
 （递归扫描顺序、输入的 `rel_dir`、输出子树跳过、扁平落盘、命名与解析、跳号与原子写、
-格式与 mode 收敛、越界补齐与内边距、上限与 `DecompressionBombError`、程序目录默认输出），
+格式与 mode 收敛、越界补齐与内边距、保存尺寸（0 轴跟随、上下采样、mode 保持、超限/负数/非整数、
+缩放失败）、上限与 `DecompressionBombError`、程序目录默认输出），
 `test_ct_viewer.py` 覆盖缩放/平移/裁切框跟随、光标锚定缩放、快捷键冒泡与同尺寸换图的
 缩放/滚动/裁切框保留（异尺寸重新适配并居中、加载失败不动），
 `test_ct_dialog.py` 覆盖目录树、裁切后不换图、确认框与白名单删除、标记与徽标、扁平输出与
-同 stem 合并 family、窗口 flags 与空窗口启动、同尺寸换图保留视图与框、换目录首图复位，
-`test_ct_settings.py` 覆盖默认值与「输出目录
-只在内存」，`test_ct_install.py` 覆盖挂载点两行、菜单项幂等安装与重开保留最大化/最小化状态。
+同 stem 合并 family、窗口 flags 与空窗口启动、同尺寸换图保留视图与框、换目录首图复位、
+保存尺寸两框（默认/载入/写回/实际文件尺寸/失败告警），
+`test_ct_settings.py` 覆盖默认值、「输出目录只在内存」与保存尺寸键的读写夹取，
+`test_ct_install.py` 覆盖挂载点两行、菜单项幂等安装与重开保留最大化/最小化状态。
 
 ### 已知坑
 
@@ -1904,6 +1922,14 @@ Windows 长路径失败 + 1 skipped；该失败为基线已有的 `test_name_too
 - 滚轮锚定缩放只在两轴都能滚动时完全生效：某一轴放大后仍小于视口时，QGraphicsView 在该轴
   保持居中（滚动条范围为 0），这是视图对齐机制的限制。
 - 与上游「保存裁剪图像」（按标注形状批量裁切）是两件事：本功能按固定框裁，不读标注。
+- 保存尺寸是**渲染参数**，不编码进文件名（与填充色一致）：同一区域在不同保存尺寸下得到不同尺寸的
+  文件，名字只差序号；要确认某张裁切图的尺寸，读文件头即可。
+- 上采样不增加信息、下采样会丢细节；反复缩放会逐次劣化（工具不做无损中间层）。
+- `I;16*` 等 16 位模式的缩放依赖 Pillow 的 16 位重采样支持（本机 Pillow 12.3 已验证）；更老的
+  Pillow 会报「缩放裁切结果失败」而不是崩溃。
+- 保存尺寸为 0 表示「跟随裁切尺寸」（逐轴），不是特殊含义的 1 像素；改裁切框不会改保存尺寸，
+  两者相互独立。
+- 保存尺寸只影响落盘，不影响 marks（marks 是源图坐标的矩形）、徽标计数与 Del 的删除 family。
 
 ## preview_tool
 
@@ -2099,6 +2125,90 @@ widget 一个窗口、空窗口启动（不读主窗口 last_open_dir）与重�
 - 只有边车 json 不构成已挑选：判定只看图片扩展名白名单。
 - Qt 资源 `export.svg` / `trash.svg` 只在 app 启动时注册，offscreen 测试下
   `QIcon` 为空，图标用例因此 skip。
+
+## filter_tool
+
+### 职责
+
+Tool 菜单「滤镜工具」打开一个非模态窗口：左侧并排显示「原始图像」与「滤镜预览」，
+右侧是滤镜链列表（从上到下依次执行）。三种滤镜：像素值过滤（上下界之外按通道填
+指定值，默认 0）、直方图均衡化（可在直方图统计中排除一个亮度值，例如 0）、高斯滤波
+（核大小 + σ）。确认后链立即作用于当前画布，之后每次切换图片都自动套用；取消/关闭
+丢弃本次编辑。链只存在会话内，不写配置。
+
+### 代码与体量
+
+`anylabeling/custom/filter_tool/`（7 个文件 1872 行）；测试 `tests/custom/filter_tool/`
+（6 个文件 991 行）。
+
+### 入口符号
+
+`anylabeling.custom.filter_tool.install_filter_tool`（幂等安装）、
+`anylabeling.custom.filter_tool.launch_filter_tool`、
+`anylabeling.custom.filter_tool.display.FilterDisplayController`、
+`anylabeling.custom.filter_tool.core.apply_chain`。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：`from anylabeling.custom.filter_tool import install_filter_tool`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`）：`install_filter_tool(self)`
+- 软挂载：`Canvas.paintEvent` 由 `FilterDisplayController` 在 custom 内做实例级包装
+  （`anylabeling/custom/filter_tool/display.py`），上游画布文件零改动；
+  `widget._filter_tool_dialog` 由 `launch_filter_tool` 持有并复用。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.menus` | direct | Tool 菜单 action 追加 |
+| `LabelingWidget.canvas` | direct | 显示钩子的宿主 |
+| `LabelingWidget.filename` | direct | 预览窗口显示当前图片名 |
+| `LabelingWidget.image` | direct | 画布像素缺失时的源图回退 |
+| `LabelingWidget.statusBar()` | direct | 确认/关闭后的一行状态提示（Qt 基类 API，未登记 contract） |
+| `Canvas.pixmap` | wrapped | 绘制期临时替换成 filtered，finally 还原 |
+| `Canvas.compare_pixmap` | wrapped | 同一画布分屏的对照图也套同一链 |
+| `Canvas.paintEvent` | wrapped | 唯一的显示挂载点 |
+| `LabelingWidget.load_file` | transitive | 换图后由新 pixmap 自动触发重新过滤，无需额外挂载 |
+
+### 行为级契约（不可机器校验）
+
+- **只影响显示**：paintEvent 包装体保存 `canvas.pixmap`/`compare_pixmap`，替换成滤镜结果，
+  `finally` 原样还原。画笔、魔棒、自动标注、`render_visualization`、保存与导出读到的
+  仍是原图；`widget.image`、`image_data`、标注 json 和磁盘文件全程不被改写。
+- **换图自动生效**：链存在 controller 上；新图通过 `Canvas.load_pixmap` 替换 pixmap，
+  filtered 缓存键 `(cacheKey, w, h, version, dpr)` 变化后重算，不需要额外包装 load_file。
+- **滤镜顺序**：列表从上到下执行；未勾选的行保留但不执行；空链或全部停用等于关闭滤镜。
+- **双窗格同步**：原始图像和滤镜预览的滚轮缩放、左键拖拽、双击复位保持同步；
+  两侧视口尺寸相同时复制相同变换与滚动位置，尺寸不同时对齐场景中心。
+- **像素值过滤**：逐通道，边界含；`low <= v <= high` 保留，否则置 `fill`；默认 0/255/0
+  是无操作；UI 保证 `low <= high`。
+- **直方图均衡化**：RGB→YCrCb 只均衡 Y，保留 Cb/Cr，灰度图输出仍精确灰度；直方图只统计
+  未被排除的亮度值；排除值仍按 LUT 映射；全部排除或只有一个亮度级时返回原图。
+- **高斯滤波**：`cv2.GaussianBlur` 作用 RGB，核大小取正奇数，σ=0 由核大小推导；alpha 不变。
+- **QImage 转换**：使用 `Format_RGBA8888` 并处理 `bytesPerLine` 行填充；premultiplied 源先
+  反预乘，半透明颜色不偏暗；alpha 与 devicePixelRatio 在 round-trip 中保留。
+- **缓存与失败回退**：每个源 pixmap 至多缓存一个 filtered QPixmap（上限 2 项），失败也缓存
+  null 标记防止逐帧重试；任何异常只让本轮回退原图，不影响图片数据。
+- **预览基底**：取 `canvas.pixmap.toImage()`（当前显示、未套滤镜的像素，含已有的亮度/
+  对比度调整），回退 `widget.image`；没有图片时窗口仍可编辑并确认，供之后打开的图片使用。
+- **窗口生命周期**：非模态、每个 widget 一个实例；关闭/取消丢弃工作副本，确认后隐藏；
+  重新打开时从 controller 读回生效链；窗口内「刷新」重新读取主窗口当前图。
+
+### 测试
+
+`python -m pytest -p no:cacheprovider tests/custom/filter_tool -v`（PyQt6 offscreen）。
+纯算法、QImage 转换、paint 钩子、真实 Canvas 渲染、窗口列表/参数/确认与 launcher 均有覆盖。
+
+### 已知坑
+
+- `Canvas.pixmap` 被画笔/魔棒/标注编辑读取，所以滤镜结果绝不能被持久写回该属性；
+  只能在 `paintEvent` 内临时替换并在 `finally` 还原。
+- 缓存键必须同时包含 `cacheKey`、尺寸、版本和 dpr；只按尺寸缓存会在换图后命中旧结果。
+- 亮度/对比度本身就是显示层替换，滤镜在其之后合成；预览基底也包含它，因此预览与画布一致。
+- 大图首帧与参数预览是同步处理（只算一次，之后缓存）；不缩图、不跨线程。
+- navigator 缩略图、预览/裁图工具窗口、文件列表缩略图不套滤镜（各自有独立显示管线）。
+- 16-bit 图片按 Qt 显示层的 8-bit 处理；原始 16-bit 数据不变。
+- 链不持久化；重启应用后默认无滤镜，避免下次启动意外带滤镜。
 
 ## 变更台账
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-system=${1:-}
+system=${1:-win-cpu}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 SPEC_DIR="${ROOT_DIR}/packaging/pyinstaller/specs"
@@ -10,8 +10,11 @@ export X_ANYLABELING_ROOT="${ROOT_DIR}"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") {win-cpu|win-gpu|linux-cpu|linux-gpu|macos}
-       $(basename "$0") {win-cpu-installer|win-gpu-installer|linux-cpu-bundle|linux-gpu-bundle|macos-installer}
+Usage: $(basename "$0") [target]
+
+  target: win-cpu (default), win-gpu, linux-cpu, linux-gpu, macos,
+          win-cpu-installer, win-gpu-installer, linux-cpu-bundle,
+          linux-gpu-bundle, macos-installer
 
 Build X-AnyLabeling executable artifacts with PyInstaller.
 EOF
@@ -28,6 +31,43 @@ require_command() {
 
 require_file() {
     [ -f "$1" ] || fail "Required file '$1' was not found."
+}
+
+windows_ps_module_path() {
+    printf '%s;%s;%s' \
+        "$SystemRoot\\System32\\WindowsPowerShell\\v1.0\\Modules" \
+        "$ProgramFiles\\WindowsPowerShell\\Modules" \
+        "$USERPROFILE\\Documents\\WindowsPowerShell\\Modules"
+}
+
+app_version() {
+    local version
+    version=$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$ROOT_DIR/anylabeling/app_info.py" | head -n 1)
+    [ -n "$version" ] || fail "Unable to read application version."
+    printf '%s\n' "$version"
+}
+
+clear_windows_artifact_acls() {
+    local target=$1 helper win_target win_root
+    require_file "$target"
+    require_command powershell.exe
+    require_command cygpath
+    helper="$SCRIPT_DIR/clear_windows_sandbox_acls.ps1"
+    require_file "$helper"
+    win_target=$(cygpath -w "$target")
+    win_root=$(cygpath -w "$DIST_DIR")
+    PSModulePath="$(windows_ps_module_path)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$helper")" -Path "$win_target" -AllowRoot "$win_root"
+}
+
+prepare_windows_build() {
+    local helper win_dist
+    require_command powershell.exe
+    require_command cygpath
+    helper="$SCRIPT_DIR/prepare_windows_build.ps1"
+    require_file "$helper"
+    mkdir -p "$DIST_DIR"
+    win_dist=$(cygpath -w "$DIST_DIR")
+    PSModulePath="$(windows_ps_module_path)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$helper")" -DistDir "$win_dist"
 }
 
 build_with_spec() {
@@ -105,6 +145,7 @@ package_macos_dmg() {
 case "${system}" in
     win-cpu-installer|win-gpu-installer)
         export X_ANYLABELING_PACKAGE_MODE=onedir
+        prepare_windows_build
         variant=${X_ANYLABELING_VARIANT:-CPU}
         if [ "${system}" = win-gpu-installer ]; then
             variant=${X_ANYLABELING_VARIANT:-CUDA12}
@@ -116,7 +157,7 @@ case "${system}" in
         fi
         prepare_update_bundle "${DIST_DIR}/X-AnyLabeling" "${variant}"
         require_command powershell.exe
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${SCRIPT_DIR}/package_windows.ps1" -Variant "${variant}"
+        PSModulePath="$(windows_ps_module_path)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${SCRIPT_DIR}/package_windows.ps1" -Variant "${variant}"
         version=$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "${ROOT_DIR}/anylabeling/app_info.py")
         package_update_bundle "${DIST_DIR}/X-AnyLabeling" "${DIST_DIR}/X-AnyLabeling-v${version}-Windows-${variant}-Setup.exe"
         ;;
@@ -142,10 +183,18 @@ case "${system}" in
         package_update_bundle "${DIST_DIR}/X-AnyLabeling.app" "${DIST_DIR}/X-AnyLabeling-v${version}-macOS-$(uname -m)-unsigned.dmg"
         ;;
     win-cpu)
-        build_with_spec "Windows CPU" "CPU" "${SPEC_DIR}/x-anylabeling-win-cpu.spec"
+        unset X_ANYLABELING_PACKAGE_MODE
+        prepare_windows_build
+        build_with_spec "Windows CPU" "CPU" "$SPEC_DIR/x-anylabeling-win-cpu.spec"
+        version=$(app_version)
+        clear_windows_artifact_acls "$DIST_DIR/X-AnyLabeling-v$version-CPU.exe"
         ;;
     win-gpu)
-        build_with_spec "Windows GPU" "GPU" "${SPEC_DIR}/x-anylabeling-win-gpu.spec"
+        unset X_ANYLABELING_PACKAGE_MODE
+        prepare_windows_build
+        build_with_spec "Windows GPU" "GPU" "$SPEC_DIR/x-anylabeling-win-gpu.spec"
+        version=$(app_version)
+        clear_windows_artifact_acls "$DIST_DIR/X-AnyLabeling-v$version-GPU.exe"
         ;;
     linux-cpu|linux-gpu)
         export X_ANYLABELING_PACKAGE_MODE=onefile
@@ -171,10 +220,6 @@ case "${system}" in
         ;;
     -h|--help|help)
         usage
-        ;;
-    "")
-        usage
-        fail "Missing system value."
         ;;
     *)
         usage

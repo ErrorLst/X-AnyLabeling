@@ -3,6 +3,7 @@
 import os
 from types import SimpleNamespace
 
+import PIL.Image
 import pytest
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -422,6 +423,98 @@ class TestParameters:
 
     def test_small_image_warning_text(self):
         assert ct_dialog.SMALL_IMAGE_TEXT == "图片小于裁切框，右侧/下侧填 0"
+
+
+class TestSaveSize:
+    """The two saved size boxes decide the size of the file."""
+
+    def test_defaults_and_ranges(self, ct_store):
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings)
+        assert dialog.save_width_box.value() == 0
+        assert dialog.save_height_box.value() == 0
+        assert dialog.save_width_box.minimum() == 0
+        assert dialog.save_width_box.maximum() == core.SIZE_MAX
+        assert dialog.save_height_box.minimum() == 0
+        assert dialog.save_height_box.maximum() == core.SIZE_MAX
+
+    def test_stored_values_are_loaded(self, ct_store):
+        settings, _ini = ct_store
+        settings.set_save_width(320)
+        settings.set_save_height(240)
+        dialog = _make_dialog(settings)
+        assert dialog.save_width_box.value() == 320
+        assert dialog.save_height_box.value() == 240
+
+    def test_the_boxes_write_back(self, ct_store):
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings)
+        dialog.save_width_box.setValue(320)
+        dialog.save_height_box.setValue(240)
+        assert settings.save_width() == 320
+        assert settings.save_height() == 240
+
+    def test_the_crop_uses_the_saved_size(self, ct_dir, ct_out, ct_store):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.set_output_dir(ct_out)
+        dialog.width_box.setValue(BOX[0])
+        dialog.height_box.setValue(BOX[1])
+        dialog.save_width_box.setValue(6)
+        dialog.save_height_box.setValue(4)
+        path = dialog.crop_current()
+        assert path is not None
+        with PIL.Image.open(path) as opened:
+            assert opened.size == (6, 4)
+        record = core.parse_crop_name(os.path.basename(path), ct_out)
+        assert (record.w, record.h) == BOX
+        assert dialog.marks_of_current() == [
+            (record.x, record.y, record.w, record.h)
+        ]
+
+    def test_a_zero_axis_follows_the_crop(self, ct_dir, ct_out, ct_store):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.set_output_dir(ct_out)
+        dialog.width_box.setValue(BOX[0])
+        dialog.height_box.setValue(BOX[1])
+        dialog.save_width_box.setValue(6)
+        path = dialog.crop_current()
+        with PIL.Image.open(path) as opened:
+            assert opened.size == (6, BOX[1])
+
+    def test_the_default_pair_keeps_the_box_size(
+        self, ct_dir, ct_out, ct_store
+    ):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.set_output_dir(ct_out)
+        dialog.width_box.setValue(BOX[0])
+        dialog.height_box.setValue(BOX[1])
+        path = dialog.crop_current()
+        with PIL.Image.open(path) as opened:
+            assert opened.size == BOX
+
+    def test_a_failed_save_size_warns_and_writes_nothing(
+        self, ct_dir, ct_out, ct_store, monkeypatch
+    ):
+        write_pil(ct_dir, "img.png", SIZE)
+        settings, _ini = ct_store
+        dialog = _make_dialog(settings, ct_dir)
+        dialog.set_output_dir(ct_out)
+        dialog.width_box.setValue(1)
+        dialog.height_box.setValue(1)
+        dialog.save_width_box.setValue(3)
+        dialog.save_height_box.setValue(3)
+        seen = _warning(monkeypatch)
+        monkeypatch.setattr(core, "MAX_CROP_PIXELS", 4)
+        assert dialog.crop_current() is None
+        assert len(seen) == 1
+        assert "保存尺寸过大" in seen[0][2]
+        assert os.listdir(ct_out) == []
 
 
 class TestSmallImageHint:
@@ -1432,6 +1525,8 @@ class TestKeyboard:
             dialog.height_box,
             dialog.pad_x_box,
             dialog.pad_y_box,
+            dialog.save_width_box,
+            dialog.save_height_box,
         ):
             for key, start, expected in (
                 (QtCore.Qt.Key.Key_D, 1, 2),
@@ -1498,7 +1593,11 @@ class TestKeyboard:
         dialog.width_box.setValue(BOX[0])
         dialog.height_box.setValue(BOX[1])
         before = snapshot(ct_out)
-        for box in (dialog.width_box, dialog.pad_y_box):
+        for box in (
+            dialog.width_box,
+            dialog.pad_y_box,
+            dialog.save_width_box,
+        ):
             for key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
                 _press(box, key)
         assert snapshot(ct_out) == before

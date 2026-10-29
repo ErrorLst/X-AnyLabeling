@@ -33,7 +33,10 @@ Key rules:
   sequence suffix one step further, so nothing is ever overwritten;
 * padding is the width of the bars painted on the four sides of a
   crop, clamped to half of its width and height, and it is part of
-  the file name.
+  the file name;
+* the saved size is applied after the padding: a zero axis follows
+  the crop axis and a nonzero pair resamples the crop with a fixed
+  Lanczos filter, so the file is written at exactly that size.
 """
 
 from .dialog import CropDialog, install_crop_tool

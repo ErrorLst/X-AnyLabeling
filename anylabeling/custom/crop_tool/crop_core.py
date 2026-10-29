@@ -31,6 +31,13 @@ Naming rules:
 * every number is written and read as an ASCII decimal, so a full
   width digit can never make the parser raise.
 
+The crop is composed at its W×H size and then, when the saved size
+differs, resampled to exactly that size with a fixed Lanczos filter
+before it is encoded. An axis of the saved size that is zero follows
+the crop axis, so the default pair (0, 0) keeps the composed crop as
+it is. The saved size is a rendering parameter and, like the fill
+value, it is not encoded into the file name.
+
 Writing is atomic per crop: the bytes go to <name>.part first and are
 moved over the final name with os.replace once the encoder is done. A
 failure leaves the .part file in place on purpose and deletes nothing.
@@ -61,6 +68,7 @@ __all__ = [
     "OUTPUT_SUBDIR",
     "PART_SUFFIX",
     "PASSTHROUGH_MODES",
+    "RESAMPLE",
     "SAVE_FORMATS",
     "SIZE_MAX",
     "CropError",
@@ -77,6 +85,7 @@ __all__ = [
     "output_extension",
     "parse_crop_name",
     "program_dir",
+    "resolve_save_size",
     "save_format",
     "scan_crops",
     "scan_directory",
@@ -124,6 +133,14 @@ FILL = 0
 
 #: Modes that are kept as they are when a crop is composed.
 PASSTHROUGH_MODES = ("L", "RGB", "RGBA", "I;16", "I;16B", "I;16L")
+
+#: Resampling filter of the saved size. It is fixed for both
+#: directions on purpose: the tool exposes the target size, not the
+#: filter, so the same source and the same size give the same bytes.
+try:
+    RESAMPLE = PIL.Image.Resampling.LANCZOS
+except AttributeError:  # Pillow < 9.1
+    RESAMPLE = PIL.Image.LANCZOS
 
 #: Source extension (lower case) -> (output extension, PIL format,
 #: allowed modes). None means every mode of that format is accepted.
@@ -205,9 +222,10 @@ class CropRecord:
 class CropResult:
     """The outcome of one crop: the file, its record and its image.
 
-    mode is the mode of the image that was handed to the encoder, so
-    it is the mode a reader of the file sees after the format of the
-    source has been honoured.
+    size is the size of the file that was written, so it is the saved
+    size after the optional resampling. mode is the mode of the image
+    that was handed to the encoder, so it is the mode a reader of the
+    file sees after the format of the source has been honoured.
     """
 
     path: str
@@ -296,6 +314,41 @@ def save_format(
 
     ext = os.path.splitext(source_path)[1].lower()
     return SAVE_FORMATS.get(ext, DEFAULT_SAVE)
+
+
+def resolve_save_size(
+    crop_width,
+    crop_height,
+    save_width=0,
+    save_height=0,
+) -> Tuple[int, int]:
+    """Return the exact size a crop is written with.
+
+    An axis of zero follows the crop axis, so the default pair (0, 0)
+    saves the composed crop untouched. A negative or a non-integer
+    value, and a saved size above MAX_CROP_PIXELS, are a CropError:
+    none of them can come from the spin boxes of the window, and a
+    silent fallback would write a file of the wrong size.
+    """
+
+    try:
+        want_width = int(save_width)
+        want_height = int(save_height)
+    except (TypeError, ValueError) as exc:
+        raise CropError("保存尺寸不是整数：{}".format(exc)) from exc
+    if want_width < 0 or want_height < 0:
+        raise CropError(
+            "保存尺寸不能为负：{}x{}".format(want_width, want_height)
+        )
+    out_width = want_width or int(crop_width)
+    out_height = want_height or int(crop_height)
+    if out_width * out_height > MAX_CROP_PIXELS:
+        raise CropError(
+            "保存尺寸过大：{}x{} 超过上限 {} 像素".format(
+                out_width, out_height, MAX_CROP_PIXELS
+            )
+        )
+    return out_width, out_height
 
 
 def _same_dir(left: str, right: str) -> bool:
@@ -653,6 +706,23 @@ def _save_options(fmt: str) -> dict:
     return {}
 
 
+def _resample(image, width, height):
+    """Return a crop resampled to the exact size it is saved with.
+
+    The filter is the module constant, so no call can change the
+    result behind the back of the window. A mode the installed Pillow
+    can not resample is reported as a CropError instead of a traceback
+    inside the GUI slot.
+    """
+
+    try:
+        return image.resize((width, height), RESAMPLE)
+    except (OSError, ValueError) as exc:
+        raise CropError(
+            "缩放裁切结果失败：{}x{}（{}）".format(width, height, exc)
+        ) from exc
+
+
 def crop_image(
     source_path: str,
     x: int,
@@ -664,15 +734,21 @@ def crop_image(
     pad_y: int = 0,
     fill: int = FILL,
     output_dir: str = "",
+    save_width: int = 0,
+    save_height: int = 0,
 ) -> CropResult:
     """Crop one rectangle out of an image and save it as a new file.
 
     The crop is composed on a background of the fill value first, then
     the visible part of the source is pasted into its top left corner,
-    then the four padding bands are painted. The result is encoded to
-    a .part file and moved over its final name, so a name is never
-    half written and an existing file is never overwritten: a taken
-    name only moves the sequence number one step further.
+    then the four padding bands are painted. When the saved size
+    differs from the crop size the composed image is resampled to
+    exactly that size before it is encoded; an axis of zero follows
+    the crop axis, so the default pair (0, 0) saves the composed crop
+    untouched. The result is encoded to a .part file and moved over
+    its final name, so a name is never half written and an existing
+    file is never overwritten: a taken name only moves the sequence
+    number one step further.
 
     The crop is written flat into output_dir, or into
     default_output_dir() when output_dir is empty, never into a
@@ -690,6 +766,9 @@ def crop_image(
     _ensure_output_dir(target_dir)
     source = _read_source(source_path)
     crop_w, crop_h = _crop_size(width, height)
+    save_w, save_h = resolve_save_size(
+        crop_w, crop_h, save_width, save_height
+    )
     mode = _working_mode(source.mode)
     if mode != source.mode:
         source = source.convert(mode)
@@ -713,6 +792,8 @@ def crop_image(
         band = PIL.Image.new(mode, (crop_w, pad_top), value)
         image.paste(band, (0, 0))
         image.paste(band, (0, crop_h - pad_top))
+    if (save_w, save_h) != (crop_w, crop_h):
+        image = _resample(image, save_w, save_h)
     out_ext, fmt, allowed = save_format(source_path)
     if allowed is not None and image.mode not in allowed:
         image = image.convert("RGB")
@@ -766,7 +847,7 @@ def crop_image(
         return CropResult(
             path=final,
             record=record,
-            size=(crop_w, crop_h),
+            size=(save_w, save_h),
             mode=saved_mode,
         )
     raise CropError(

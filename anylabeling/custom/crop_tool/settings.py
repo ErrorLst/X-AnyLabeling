@@ -33,6 +33,8 @@ DEFAULTS = {
     "height": 640,
     "pad_width": 0,
     "pad_height": 0,
+    "save_width": 0,
+    "save_height": 0,
 }
 
 
@@ -97,6 +99,20 @@ class CropSettings:
             "pad_height", DEFAULTS["pad_height"], 0, crop_core.SIZE_MAX
         )
 
+    def save_width(self) -> int:
+        """Return the width a crop is saved with, 0 follows the crop."""
+
+        return self._read_int(
+            "save_width", DEFAULTS["save_width"], 0, crop_core.SIZE_MAX
+        )
+
+    def save_height(self) -> int:
+        """Return the height a crop is saved with, 0 follows the crop."""
+
+        return self._read_int(
+            "save_height", DEFAULTS["save_height"], 0, crop_core.SIZE_MAX
+        )
+
     def output_dir(self) -> str:
         """Return the output directory, program/crop when none is set."""
 
@@ -123,6 +139,16 @@ class CropSettings:
         """Store the vertical padding width in pixels."""
 
         self._write_int("pad_height", value)
+
+    def set_save_width(self, value) -> None:
+        """Store the width a crop is saved with."""
+
+        self._write_int("save_width", value)
+
+    def set_save_height(self, value) -> None:
+        """Store the height a crop is saved with."""
+
+        self._write_int("save_height", value)
 
     def set_output_dir(self, value) -> None:
         """Keep the output directory for this window only."""

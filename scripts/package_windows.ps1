@@ -27,5 +27,10 @@ if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE
 
 $baseName = "X-AnyLabeling-v$appVersion-Windows-$Variant"
 $artifact = Join-Path $distDir "$baseName-Setup.exe"
+$clearScript = Join-Path $rootDir 'scripts/clear_windows_sandbox_acls.ps1'
+if (-not (Test-Path -LiteralPath $clearScript)) {
+    throw "Missing permission cleanup helper: $clearScript"
+}
+& $clearScript -Path $artifact -AllowRoot $distDir
 $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $(Split-Path $artifact -Leaf)" | Set-Content "$artifact.sha256" -Encoding ASCII

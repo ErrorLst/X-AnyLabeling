@@ -229,12 +229,5 @@ else:
         upx=False,
         runtime_tmpdir=None,
         console=False,
-        icon=_p('anylabeling', 'resources', 'images', 'icon.icns'),
-    )
-    app = BUNDLE(
-        exe,
-        name='X-AnyLabeling.app',
-        icon=_p('anylabeling', 'resources', 'images', 'icon.icns'),
-        bundle_identifier=None,
-        info_plist={'NSHighResolutionCapable': 'True'},
+        icon=_p('anylabeling', 'resources', 'images', 'icon.ico'),
     )

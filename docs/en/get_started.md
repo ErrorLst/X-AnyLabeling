@@ -307,13 +307,22 @@ To facilitate users running `X-AnyLabeling` on different platforms, this tool pr
 
 ### 3.2 Build Commands
 
-```bash
-# Windows-CPU
-bash scripts/build_executable.sh win-cpu
+Windows uses PowerShell; Bash is not required:
+
+```powershell
+# Windows-CPU (default)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_executable.ps1
+
+# Or the batch wrapper:
+scripts\build_windows.bat
 
 # Windows-GPU
-bash scripts/build_executable.sh win-gpu
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_executable.ps1 -Target win-gpu -Variant CUDA12
+```
 
+Linux and macOS use Bash:
+
+```bash
 # Linux-CPU
 bash scripts/build_executable.sh linux-cpu
 
@@ -325,10 +334,9 @@ bash scripts/build_executable.sh macos
 ```
 
 > [!TIP]
-> If you encounter permission issues when executing the above commands on Windows, after ensuring the above preparation steps are completed, you can directly execute the following commands:
-> ```bash
-> pyinstaller --noconfirm packaging/pyinstaller/specs/x-anylabeling-win-cpu.spec
-> pyinstaller --noconfirm packaging/pyinstaller/specs/x-anylabeling-win-gpu.spec
-> ```
+> On Windows, use `scripts\build_executable.ps1` (or `scripts\build_windows.bat`) instead of calling
+> PyInstaller directly: it runs the Low-integrity permission preflight before the build and
+> clears sandbox ACL/integrity markers from the output exe afterwards. Inside DSH, run this
+> from a normal Windows terminal or switch the session to full access first.
 
 </details>

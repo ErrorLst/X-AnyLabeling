@@ -32,6 +32,11 @@ Nothing else is written: no json side car, no temporary file, no
 settings next to the images. The input folder is opened read only and
 never changes.
 
+The two saved size spin boxes sit on a row of their own. They decide
+the pixel size the crop file is written with: a zero axis follows the
+crop axis and a nonzero pair resamples the composed crop with a fixed
+Lanczos filter, so the file is exactly as large as the parameter says.
+
 The keyboard is handled in one place, CropDialog.keyPressEvent, which
 is also fed by an event filter so that the shortcuts work wherever the
 focus sits: A and D switch images (Left and Right are aliases),
@@ -82,6 +87,10 @@ __all__ = [
     "NO_IMAGES_TEXT",
     "NO_IMAGE_TEXT",
     "SAVED_FORMAT",
+    "SAVE_HEIGHT_TIP",
+    "SAVE_HINT_TEXT",
+    "SAVE_LABEL_TEXT",
+    "SAVE_WIDTH_TIP",
     "SMALL_IMAGE_TEXT",
     "WINDOW_SIZE",
     "WINDOW_TITLE",
@@ -122,6 +131,11 @@ DELETED_FORMAT = "已删除 %d 个裁切子图"
 DELETED_SKIPPED_FORMAT = "已删除 %d 个裁切子图，跳过 %d 个：%s"
 SAVED_FORMAT = "已保存: %s"
 SMALL_IMAGE_TEXT = "图片小于裁切框，右侧/下侧填 0"
+
+SAVE_LABEL_TEXT = "保存尺寸:"
+SAVE_HINT_TEXT = "0 = 与裁切尺寸相同（不缩放）"
+SAVE_WIDTH_TIP = "裁切后缩放到的保存宽度（像素），0 = 与裁切宽度相同"
+SAVE_HEIGHT_TIP = "裁切后缩放到的保存高度（像素），0 = 与裁切高度相同"
 
 COORD_FORMAT = "坐标: (%d, %d)"
 COUNT_FORMAT = "已裁切: %d 次"
@@ -272,6 +286,7 @@ class CropDialog(QtWidgets.QDialog):
         root = QtWidgets.QVBoxLayout(self)
         root.setSpacing(6)
         root.addLayout(self._build_top_row())
+        root.addLayout(self._build_save_row())
         self.hint_label = QtWidgets.QLabel(HINT_TEXT)
         root.addWidget(self.hint_label)
         self._build_splitter(root)
@@ -296,6 +311,8 @@ class CropDialog(QtWidgets.QDialog):
             self.height_box,
             self.pad_x_box,
             self.pad_y_box,
+            self.save_width_box,
+            self.save_height_box,
         ):
             box.installEventFilter(self)
             editor = box.findChild(QtWidgets.QLineEdit)
@@ -330,6 +347,29 @@ class CropDialog(QtWidgets.QDialog):
         self.output_label = QtWidgets.QLabel(OUTPUT_LABEL_TEXT)
         self.output_label.setMinimumWidth(LABEL_MIN_WIDTH)
         row.addWidget(self.output_label, stretch=1)
+        return row
+
+    def _build_save_row(self) -> QtWidgets.QHBoxLayout:
+        """Build the row of the two saved size spin boxes.
+
+        The pair lives on a row of its own because the top row is
+        already as wide as the default window. A zero axis follows the
+        crop axis, so the default pair (0, 0) saves the composed crop
+        untouched.
+        """
+
+        row = QtWidgets.QHBoxLayout()
+        self.save_width_box = _spin(0, crop_core.SIZE_MAX)
+        self.save_height_box = _spin(0, crop_core.SIZE_MAX)
+        self.save_width_box.setToolTip(SAVE_WIDTH_TIP)
+        self.save_height_box.setToolTip(SAVE_HEIGHT_TIP)
+        row.addWidget(QtWidgets.QLabel(SAVE_LABEL_TEXT))
+        row.addWidget(QtWidgets.QLabel("W:"))
+        row.addWidget(self.save_width_box)
+        row.addWidget(QtWidgets.QLabel("H:"))
+        row.addWidget(self.save_height_box)
+        row.addWidget(QtWidgets.QLabel(SAVE_HINT_TEXT))
+        row.addStretch(1)
         return row
 
     def _build_splitter(self, root) -> None:
@@ -392,6 +432,8 @@ class CropDialog(QtWidgets.QDialog):
             (self.height_box, self._settings.height()),
             (self.pad_x_box, self._settings.pad_width()),
             (self.pad_y_box, self._settings.pad_height()),
+            (self.save_width_box, self._settings.save_width()),
+            (self.save_height_box, self._settings.save_height()),
         ):
             box.blockSignals(True)
             box.setValue(value)
@@ -409,6 +451,12 @@ class CropDialog(QtWidgets.QDialog):
         self.height_box.valueChanged.connect(self._on_height_changed)
         self.pad_x_box.valueChanged.connect(self._on_pad_x_changed)
         self.pad_y_box.valueChanged.connect(self._on_pad_y_changed)
+        self.save_width_box.valueChanged.connect(
+            self._on_save_width_changed
+        )
+        self.save_height_box.valueChanged.connect(
+            self._on_save_height_changed
+        )
 
     # ------------------------------------------------------------ 目录
 
@@ -751,6 +799,8 @@ class CropDialog(QtWidgets.QDialog):
                 height,
                 pad_x=pad_x,
                 pad_y=pad_y,
+                save_width=self.save_width_box.value(),
+                save_height=self.save_height_box.value(),
                 output_dir=self.output_dir(),
             )
         except crop_core.CropError as error:
@@ -944,6 +994,16 @@ class CropDialog(QtWidgets.QDialog):
 
         self._settings.set_pad_height(value)
         self._sync_pad()
+
+    def _on_save_width_changed(self, value) -> None:
+        """Store the new saved width; the crop reads it on use."""
+
+        self._settings.set_save_width(value)
+
+    def _on_save_height_changed(self, value) -> None:
+        """Store the new saved height; the crop reads it on use."""
+
+        self._settings.set_save_height(value)
 
     # ------------------------------------------------------------ 拖放
 
