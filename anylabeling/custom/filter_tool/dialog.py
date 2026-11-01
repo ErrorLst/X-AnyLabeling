@@ -18,9 +18,10 @@ import os.path as osp
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from . import core
+from . import core, export
 from .display import (
     FilterDisplayController,
+    VIEW_HINT,
     qimage_to_rgba,
     rgba_to_qimage,
 )
@@ -42,6 +43,8 @@ RIGHT_MIN_WIDTH = 360
 HINT_TEXT = (
     "列表从上到下依次执行；勾选控制启用；确认后当前图与之后打开的"
     "所有图片都会应用。只改变显示，不修改图片与标注文件。"
+    "滤镜生效后可在 Tool 菜单或左侧工具栏" + VIEW_HINT + "。"
+    "「导出...」可把当前链套到所有图像并输出到新目录（不改原图）。"
 )
 EMPTY_LIST_TEXT = "无滤镜（显示原图）"
 NO_SOURCE_TEXT = "主窗口没有打开图片"
@@ -52,8 +55,15 @@ STATUS_FORMAT = "%s · 滤镜：%s"
 STATUS_COUNT = "%d 个（生效 %d 个）"
 STATUS_NONE = "无"
 STATUS_ERROR_FORMAT = "%s · 错误：%s"
-APPLIED_FORMAT = "滤镜已应用：%d 个（仅影响显示）"
+APPLIED_FORMAT = (
+    "滤镜已应用：%d 个（仅影响显示；" + VIEW_HINT + "）"
+)
 CLEARED_TEXT = "滤镜已关闭（显示原图）"
+EXPORT_TEXT = "导出..."
+EXPORT_TIP = (
+    "把当前滤镜链应用到当前图片列表中的所有图像，导出到新目录；"
+    "只读取原图，不修改原图与标注"
+)
 
 
 class FilterDialog(QtWidgets.QDialog):
@@ -196,6 +206,7 @@ class FilterDialog(QtWidgets.QDialog):
             core.KIND_PIXEL,
             core.KIND_EQUALIZE,
             core.KIND_GAUSSIAN,
+            core.KIND_GRADIENT,
         ):
             action = add_menu.addAction(core.KIND_LABELS[kind])
             action.triggered.connect(
@@ -232,11 +243,19 @@ class FilterDialog(QtWidgets.QDialog):
 
         layout.addStretch(1)
         footer = QtWidgets.QHBoxLayout()
+        self.export_button = QtWidgets.QPushButton(EXPORT_TEXT)
+        self.export_button.setAutoDefault(False)
+        self.export_button.setToolTip(EXPORT_TIP)
+        self.export_button.clicked.connect(self.export_filtered_images)
+        footer.addWidget(self.export_button)
         footer.addStretch(1)
         self.cancel_button = QtWidgets.QPushButton("取消")
         self.confirm_button = QtWidgets.QPushButton("确认")
         self.cancel_button.setAutoDefault(False)
         self.confirm_button.setAutoDefault(False)
+        self.confirm_button.setToolTip(
+            "滤镜生效后可在 Tool 菜单或左侧工具栏" + VIEW_HINT
+        )
         self.cancel_button.clicked.connect(self.cancel)
         self.confirm_button.clicked.connect(self.confirm)
         footer.addWidget(self.cancel_button)
@@ -255,10 +274,12 @@ class FilterDialog(QtWidgets.QDialog):
         self.param_stack.addWidget(self._build_pixel_page())
         self.param_stack.addWidget(self._build_equalize_page())
         self.param_stack.addWidget(self._build_gaussian_page())
+        self.param_stack.addWidget(self._build_gradient_page())
         self._page_index = {
             core.KIND_PIXEL: 1,
             core.KIND_EQUALIZE: 2,
             core.KIND_GAUSSIAN: 3,
+            core.KIND_GRADIENT: 4,
         }
         self.param_stack.setCurrentIndex(0)
 
@@ -339,6 +360,56 @@ class FilterDialog(QtWidgets.QDialog):
         layout.addRow(note)
         self.blur_kernel.valueChanged.connect(self._on_gaussian_changed)
         self.blur_sigma.valueChanged.connect(self._on_gaussian_changed)
+        return page
+
+    def _build_gradient_page(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(page)
+        self.gradient_mode = QtWidgets.QComboBox()
+        for mode, label in core.GRADIENT_MODE_LABELS.items():
+            self.gradient_mode.addItem(label, mode)
+        self.gradient_mode.setToolTip(
+            "叠加原图用橙红色标出高梯度；梯度图输出灰度梯度"
+        )
+        self.gradient_smooth = QtWidgets.QDoubleSpinBox()
+        self.gradient_smooth.setRange(0.0, 10.0)
+        self.gradient_smooth.setDecimals(2)
+        self.gradient_smooth.setSingleStep(0.5)
+        self.gradient_smooth.setValue(1.0)
+        self.gradient_smooth.setKeyboardTracking(False)
+        self.gradient_smooth.setToolTip(
+            "Sobel 前的高斯平滑，0 表示关闭"
+        )
+        self.gradient_gain = QtWidgets.QDoubleSpinBox()
+        self.gradient_gain.setRange(0.0, 10.0)
+        self.gradient_gain.setDecimals(2)
+        self.gradient_gain.setSingleStep(0.5)
+        self.gradient_gain.setValue(3.0)
+        self.gradient_gain.setKeyboardTracking(False)
+        self.gradient_gain.setToolTip("梯度强度倍率")
+        self.gradient_threshold = self._spin(0, 255, 0)
+        self.gradient_threshold.setToolTip(
+            "低于该值的梯度不显示，用于抑制噪声"
+        )
+        layout.addRow("模式", self.gradient_mode)
+        layout.addRow("平滑 σ", self.gradient_smooth)
+        layout.addRow("强度", self.gradient_gain)
+        layout.addRow("阈值", self.gradient_threshold)
+        note = QtWidgets.QLabel(
+            "在亮度通道上算 Sobel 梯度；叠加模式用橙红色标出边缘。"
+        )
+        note.setWordWrap(True)
+        layout.addRow(note)
+        self.gradient_mode.currentIndexChanged.connect(
+            self._on_gradient_changed
+        )
+        self.gradient_smooth.valueChanged.connect(
+            self._on_gradient_changed
+        )
+        self.gradient_gain.valueChanged.connect(self._on_gradient_changed)
+        self.gradient_threshold.valueChanged.connect(
+            self._on_gradient_changed
+        )
         return page
 
     # ------------------------------------------------------------ state
@@ -581,6 +652,25 @@ class FilterDialog(QtWidgets.QDialog):
                     self.blur_kernel.setValue(spec.params["kernel"])
                 with QtCore.QSignalBlocker(self.blur_sigma):
                     self.blur_sigma.setValue(spec.params["sigma"])
+            elif spec.kind == core.KIND_GRADIENT:
+                mode = spec.params.get(
+                    "mode", core.GRADIENT_OVERLAY
+                )
+                index = self.gradient_mode.findData(mode)
+                with QtCore.QSignalBlocker(self.gradient_mode):
+                    self.gradient_mode.setCurrentIndex(
+                        index if index >= 0 else 0
+                    )
+                with QtCore.QSignalBlocker(self.gradient_smooth):
+                    self.gradient_smooth.setValue(
+                        spec.params["smooth"]
+                    )
+                with QtCore.QSignalBlocker(self.gradient_gain):
+                    self.gradient_gain.setValue(spec.params["gain"])
+                with QtCore.QSignalBlocker(self.gradient_threshold):
+                    self.gradient_threshold.setValue(
+                        spec.params["threshold"]
+                    )
             self.param_stack.setCurrentIndex(
                 self._page_index.get(spec.kind, 0)
             )
@@ -639,6 +729,24 @@ class FilterDialog(QtWidgets.QDialog):
         spec.params = {
             "kernel": kernel,
             "sigma": float(self.blur_sigma.value()),
+        }
+        self._update_current_item_text()
+        self._schedule_preview()
+
+    def _on_gradient_changed(self, _value=None):
+        if self._binding_params:
+            return
+        spec = self.current_spec()
+        if spec is None or spec.kind != core.KIND_GRADIENT:
+            return
+        mode = self.gradient_mode.currentData()
+        if mode not in core.GRADIENT_MODE_LABELS:
+            mode = core.GRADIENT_OVERLAY
+        spec.params = {
+            "mode": mode,
+            "smooth": float(self.gradient_smooth.value()),
+            "gain": float(self.gradient_gain.value()),
+            "threshold": int(self.gradient_threshold.value()),
         }
         self._update_current_item_text()
         self._schedule_preview()
@@ -755,6 +863,141 @@ class FilterDialog(QtWidgets.QDialog):
             text = STATUS_ERROR_FORMAT % (text, self._status_error)
         self.status_label.setText(text)
 
+    # ----------------------------------------------------------- export
+
+    def export_filtered_images(self):
+        """Apply the working chain to every image and export copies."""
+
+        paths = export.collect_image_paths(self.widget)
+        if not paths:
+            self._export_warning("当前没有可导出的图像。")
+            return False
+        try:
+            specs = core.normalize_specs(self._specs)
+        except core.FilterParamError as exc:
+            self._export_warning("滤镜参数错误：%s" % exc)
+            return False
+        if not any(spec.enabled for spec in specs):
+            self._export_warning("当前没有启用滤镜，无法导出。")
+            return False
+        try:
+            root = export.common_root(paths)
+        except export.ExportError as exc:
+            self._export_warning(str(exc))
+            return False
+        output_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择滤镜导出目录",
+            osp.join(root, export.EXPORT_SUBDIR),
+            QtWidgets.QFileDialog.Option.ShowDirsOnly,
+        )
+        if not output_dir:
+            return False
+        output_dir = osp.abspath(output_dir)
+        try:
+            targets = export.plan_export(paths, output_dir)
+        except export.ExportError as exc:
+            self._export_warning(str(exc))
+            return False
+        existing = export.existing_targets(targets)
+        overwrite = False
+        if existing:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "导出会覆盖同名文件",
+                "目标目录已有 %d 个同名文件，是否覆盖？"
+                % len(existing),
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if (
+                answer
+                != QtWidgets.QMessageBox.StandardButton.Yes
+            ):
+                return False
+            overwrite = True
+        self.export_button.setEnabled(False)
+        try:
+            result = self._run_export(targets, specs, overwrite)
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(
+                self, "导出失败", str(exc)
+            )
+            return False
+        finally:
+            self.export_button.setEnabled(True)
+        self._show_export_result(result, output_dir)
+        return True
+
+    def _run_export(self, targets, specs, overwrite):
+        progress = QtWidgets.QProgressDialog(
+            "正在导出滤镜图像...", "取消", 0, len(targets), self
+        )
+        progress.setWindowTitle("导出滤镜图像")
+        progress.setWindowModality(
+            QtCore.Qt.WindowModality.WindowModal
+        )
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        cancelled = {"value": False}
+
+        def on_cancel():
+            cancelled["value"] = True
+
+        def on_progress(done, total):
+            progress.setMaximum(max(int(total), 1))
+            progress.setValue(int(done))
+            progress.setLabelText(
+                "正在导出：%d / %d" % (done, total)
+            )
+            QtWidgets.QApplication.processEvents()
+
+        progress.canceled.connect(on_cancel)
+        progress.show()
+        QtWidgets.QApplication.processEvents()
+        try:
+            return export.export_images(
+                targets,
+                specs,
+                progress=on_progress,
+                cancelled=lambda: cancelled["value"],
+                overwrite=overwrite,
+            )
+        finally:
+            progress.close()
+
+    def _show_export_result(self, result, output_dir):
+        written = len(result.written)
+        failed = len(result.failed)
+        if result.cancelled:
+            title = "导出已取消"
+            text = "已取消导出：成功 %d 张" % written
+        elif failed:
+            title = "导出完成（有失败）"
+            text = "成功 %d 张，失败 %d 张" % (written, failed)
+        else:
+            title = "导出完成"
+            text = "已导出 %d 张图像" % written
+        text += "\n目录：%s\n原图未修改。" % output_dir
+        if result.failed:
+            details = "\n".join(
+                "%s：%s" % (osp.basename(source), error)
+                for source, error in result.failed[:5]
+            )
+            text += "\n\n失败详情：\n" + details
+        if result.cancelled or failed:
+            QtWidgets.QMessageBox.warning(self, title, text)
+        else:
+            QtWidgets.QMessageBox.information(self, title, text)
+        self.status_label.setText(
+            "导出：成功 %d，失败 %d" % (written, failed)
+        )
+
+    def _export_warning(self, message):
+        QtWidgets.QMessageBox.warning(self, "滤镜导出", message)
+
     # ---------------------------------------------------------- confirm
 
     def confirm(self):
@@ -773,6 +1016,7 @@ class FilterDialog(QtWidgets.QDialog):
         message = APPLIED_FORMAT % enabled if enabled else CLEARED_TEXT
         self._notify_widget(message)
         self.accept()
+        self._focus_canvas()
         return True
 
     def cancel(self):
@@ -780,6 +1024,14 @@ class FilterDialog(QtWidgets.QDialog):
 
         self._preview_timer.stop()
         self.reject()
+        self._focus_canvas()
+
+    def _focus_canvas(self):
+        """Return the keyboard focus to the main canvas."""
+
+        canvas = getattr(self.widget, "canvas", None)
+        if canvas is not None:
+            canvas.setFocus()
 
     def _notify_widget(self, message):
         if self.widget is None:

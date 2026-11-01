@@ -252,7 +252,7 @@
       }
     },
     "filter_tool": {
-      "summary": "Tool 菜单「滤镜工具」：像素值过滤 / 直方图均衡化 / 高斯滤波按列表顺序叠加；仅改画布显示，不改原图与标注；确认后当前图与后续所有图片自动应用；原图/预览双窗格缩放与拖拽同步。",
+      "summary": "Tool 菜单「滤镜工具」：像素值过滤 / 直方图均衡化 / 高斯滤波 / Sobel 梯度增强（叠加或灰度）按列表顺序叠加；仅改画布显示，不改原图与标注；确认后当前图与后续所有图片自动应用；原图/预览双窗格缩放与拖拽同步；可在 Tool 菜单或左侧工具栏点击「显示原图」切换；可把当前链导出到新目录（不修改原图）。",
       "code": ["anylabeling/custom/filter_tool/"],
       "tests": ["tests/custom/filter_tool/"],
       "enter": [
@@ -266,11 +266,11 @@
         {"file": "anylabeling/views/labeling/label_widget.py", "line": 2735, "anchor": "install_filter_tool(self)", "matcher": "startswith", "form": "call", "owner": "LabelingWidget.__init__"}
       ],
       "soft_mounts": [
-        {"target": "Canvas.paintEvent", "wrapped_by": "FilterDisplayController", "install_site": "anylabeling/custom/filter_tool/display.py:208"},
+        {"target": "Canvas.paintEvent", "wrapped_by": "FilterDisplayController", "install_site": "anylabeling/custom/filter_tool/display.py:268"},
         {"target": "widget._filter_tool_dialog", "wrapped_by": "launch_filter_tool", "install_site": "anylabeling/custom/filter_tool/launcher.py:27"}
       ],
       "upstream": {
-        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["menus", "canvas", "filename", "image"],
+        "anylabeling/views/labeling/label_widget.py:LabelingWidget": ["menus", "canvas", "filename", "image", "image_list", "tools"],
         "anylabeling/views/labeling/widgets/canvas.py:Canvas": ["pixmap", "compare_pixmap", "paintEvent"],
         "anylabeling/views/labeling/utils/qt.py:@module": ["new_action", "new_icon_path"]
       }

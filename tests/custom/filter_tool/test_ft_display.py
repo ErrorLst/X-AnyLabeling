@@ -62,6 +62,18 @@ class TestQImageConversion:
         assert result.pixelColor(0, 0).getRgb()[3] == 64
         assert result.pixelColor(1, 0).getRgb()[3] == 255
 
+    def test_filtered_qimage_keeps_alpha_with_gradient(self):
+        rgb = np.full((8, 8, 3), 40, dtype=np.uint8)
+        rgb[:, 4:] = 200
+        alpha = np.full((8, 8), 64, dtype=np.uint8)
+        alpha[:, 0] = 255
+        image = display.rgba_to_qimage(rgb, alpha)
+        result = display.filtered_qimage(
+            image, [core.default_spec(core.KIND_GRADIENT)]
+        )
+        assert result.pixelColor(0, 0).getRgb()[3] == 255
+        assert result.pixelColor(1, 1).getRgb()[3] == 64
+
     def test_filtered_qimage_applies_the_chain(self):
         rgb = np.array([[[5, 5, 5], [200, 200, 200]]], dtype=np.uint8)
         image = display.rgba_to_qimage(rgb)
@@ -139,6 +151,18 @@ class TestPaintHook:
         assert inside is not raw
         assert inside_compare is None
         assert widget.canvas.pixmap is raw
+
+    def test_bypass_paints_the_raw_pixmap_until_released(self):
+        widget, controller = self._installed()
+        raw = widget.canvas.pixmap
+        assert controller.set_bypass(True) is True
+        assert controller.bypassed() is True
+        widget.canvas.paintEvent(None)
+        assert widget.canvas.seen[-1][0] is raw
+        assert controller.set_bypass(False) is False
+        assert controller.bypassed() is False
+        widget.canvas.paintEvent(None)
+        assert widget.canvas.seen[-1][0] is not raw
 
     def test_compare_pixmap_is_filtered_too(self):
         widget, controller = self._installed()
@@ -232,7 +256,7 @@ class TestMount:
         wrapper = widget.canvas.paintEvent
         second = installer.install_filter_tool(widget)
         assert first is second
-        assert len(widget.menus.tool.actions()) == 1
+        assert len(widget.menus.tool.actions()) == 2
         assert widget.canvas.paintEvent == wrapper
 
     def test_install_without_menu_returns_none(self):

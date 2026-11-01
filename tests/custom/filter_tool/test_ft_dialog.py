@@ -5,7 +5,11 @@ from __future__ import annotations
 from PyQt6 import QtCore, QtGui
 
 from anylabeling.custom.filter_tool import core, installer
-from anylabeling.custom.filter_tool.dialog import FilterDialog
+from anylabeling.custom.filter_tool.dialog import (
+    FilterDialog,
+    HINT_TEXT,
+)
+from anylabeling.custom.filter_tool.display import VIEW_HINT
 
 from conftest import (
     FakeWidget,
@@ -44,6 +48,11 @@ class TestLayout:
         assert dialog.preview_view.zoom_level() == dialog.original_view.zoom_level()
         assert dialog.preview_view.transform() == dialog.original_view.transform()
 
+    def test_view_toggle_is_documented(self):
+        widget, dialog = _dialog()
+        assert "显示原图" in dialog.confirm_button.toolTip()
+        assert VIEW_HINT in HINT_TEXT
+
     def test_canvas_pixmap_falls_back_to_widget_image(self):
         image = make_image(make_rgb())
         widget = keep(FakeWidget(image=image))
@@ -68,18 +77,21 @@ class TestChainEditing:
         dialog.add_filter(core.KIND_PIXEL)
         dialog.add_filter(core.KIND_EQUALIZE)
         dialog.add_filter(core.KIND_GAUSSIAN)
+        dialog.add_filter(core.KIND_GRADIENT)
         assert [spec.kind for spec in dialog.specs()] == [
             core.KIND_PIXEL,
             core.KIND_EQUALIZE,
             core.KIND_GAUSSIAN,
+            core.KIND_GRADIENT,
         ]
-        assert dialog.filter_list.count() == 3
+        assert dialog.filter_list.count() == 4
         texts = [
-            dialog.filter_list.item(row).text() for row in range(3)
+            dialog.filter_list.item(row).text() for row in range(4)
         ]
         assert "像素值过滤" in texts[0]
         assert "直方图均衡化" in texts[1]
         assert "高斯滤波" in texts[2]
+        assert "梯度增强" in texts[3]
 
     def test_move_up_and_down_reorders(self):
         widget, dialog = _dialog()
@@ -159,6 +171,42 @@ class TestParameters:
         assert dialog.set_current_params(kernel=7, sigma=0.0)
         assert dialog.specs()[0].params == {"kernel": 7, "sigma": 0.0}
 
+    def test_gradient_parameters_and_mode(self):
+        widget, dialog = _dialog()
+        dialog.add_filter(core.KIND_GRADIENT)
+        assert dialog.specs()[0].params == {
+            "mode": "overlay",
+            "smooth": 1.0,
+            "gain": 3.0,
+            "threshold": 0,
+        }
+        assert dialog.gradient_mode.currentData() == "overlay"
+        assert dialog.set_current_params(
+            mode="gradient", smooth=0.5, gain=3.0, threshold=20
+        )
+        assert dialog.specs()[0].params == {
+            "mode": "gradient",
+            "smooth": 0.5,
+            "gain": 3.0,
+            "threshold": 20,
+        }
+        text = dialog.filter_list.item(0).text()
+        assert "梯度增强" in text
+        assert "梯度图" in text
+        assert dialog.param_stack.currentIndex() == dialog._page_index[
+            core.KIND_GRADIENT
+        ]
+        dialog.gradient_gain.setValue(4.0)
+        assert dialog.specs()[0].params["gain"] == 4.0
+        dialog.gradient_mode.setCurrentIndex(0)
+        assert dialog.specs()[0].params["mode"] == "overlay"
+
+    def test_invalid_gradient_mode_is_rejected(self):
+        widget, dialog = _dialog()
+        dialog.add_filter(core.KIND_GRADIENT)
+        assert dialog.set_current_params(mode="bogus") is False
+        assert "错误" in dialog.status_label.text()
+
     def test_invalid_parameters_are_rejected(self):
         widget, dialog = _dialog()
         dialog.add_filter(core.KIND_PIXEL)
@@ -208,6 +256,7 @@ class TestConfirm:
         messages = widget._status_bar.messages
         assert messages
         assert "滤镜已应用" in messages[-1]
+        assert "显示原图" in messages[-1]
 
     def test_cancel_does_not_change_the_controller(self):
         widget, dialog = _dialog()
@@ -280,4 +329,4 @@ def test_install_adds_one_tool_action():
     assert action is not None
     assert action.text() == "滤镜工具"
     assert action.toolTip() == installer.ACTION_TIP
-    assert len(widget.menus.tool.actions()) == 1
+    assert len(widget.menus.tool.actions()) == 2

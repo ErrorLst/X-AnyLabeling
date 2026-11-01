@@ -118,6 +118,142 @@ class TestGaussianBlur:
         assert np.array_equal(even, odd)
 
 
+class TestGradientEnhancement:
+    def test_constant_image_overlay_is_unchanged(self):
+        rgb = np.full((8, 8, 3), 42, dtype=np.uint8)
+        result = core.apply_gradient_enhancement(rgb)
+        assert np.array_equal(result, rgb)
+
+    def test_constant_image_gradient_mode_is_black(self):
+        rgb = np.full((8, 8, 3), 42, dtype=np.uint8)
+        result = core.apply_gradient_enhancement(
+            rgb, mode=core.GRADIENT_GRAY
+        )
+        assert result.tolist() == np.zeros_like(rgb).tolist()
+
+    def test_vertical_step_is_highlighted(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 200
+        gradient = core.apply_gradient_enhancement(
+            rgb,
+            mode=core.GRADIENT_GRAY,
+            smooth=0.0,
+            gain=1.0,
+        )
+        edge = gradient[:, :, 0]
+        assert int(edge.max()) > 0
+        assert int(edge[4, 0]) == 0
+        assert int(edge[4, 11]) == 0
+        y, x = np.unravel_index(int(edge.argmax()), edge.shape)
+        overlay = core.apply_gradient_enhancement(
+            rgb, smooth=0.0, gain=2.0
+        )
+        assert int(overlay[y, x, 0]) > int(rgb[y, x, 0])
+
+    def test_flat_regions_stay_unchanged_in_overlay_mode(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 200
+        result = core.apply_gradient_enhancement(
+            rgb, smooth=0.0, gain=2.0
+        )
+        assert np.array_equal(result[:, :2], rgb[:, :2])
+        assert np.array_equal(result[:, 10:], rgb[:, 10:])
+
+    def test_gradient_mode_is_grayscale(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 200
+        result = core.apply_gradient_enhancement(
+            rgb, mode=core.GRADIENT_GRAY
+        )
+        assert np.array_equal(result[:, :, 0], result[:, :, 1])
+        assert np.array_equal(result[:, :, 1], result[:, :, 2])
+
+    def test_threshold_suppresses_weak_edges(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 41
+        result = core.apply_gradient_enhancement(
+            rgb,
+            mode=core.GRADIENT_GRAY,
+            smooth=0.0,
+            gain=1.0,
+            threshold=20,
+        )
+        assert int(result.max()) == 0
+
+    def test_zero_gain_leaves_overlay_unchanged(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 200
+        overlay = core.apply_gradient_enhancement(
+            rgb, smooth=0.0, gain=0.0
+        )
+        assert np.array_equal(overlay, rgb)
+        gradient = core.apply_gradient_enhancement(
+            rgb,
+            mode=core.GRADIENT_GRAY,
+            smooth=0.0,
+            gain=0.0,
+        )
+        assert int(gradient.max()) == 0
+
+    def test_tiny_images_do_not_crash(self):
+        for shape in ((1, 1), (2, 2)):
+            rgb = np.full(shape + (3,), 42, dtype=np.uint8)
+            overlay = core.apply_gradient_enhancement(rgb)
+            assert np.array_equal(overlay, rgb)
+            gray = core.apply_gradient_enhancement(
+                rgb, mode=core.GRADIENT_GRAY
+            )
+            assert int(gray.max()) == 0
+
+    def test_invalid_mode_is_rejected(self):
+        rgb = np.full((4, 4, 3), 10, dtype=np.uint8)
+        with pytest.raises(core.FilterParamError):
+            core.apply_gradient_enhancement(rgb, mode="bogus")
+        with pytest.raises(core.FilterParamError):
+            core.normalize_specs(
+                [{"kind": core.KIND_GRADIENT, "params": {"mode": "bogus"}}]
+            )
+
+    def test_input_is_not_modified(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 200
+        original = rgb.copy()
+        core.apply_gradient_enhancement(rgb)
+        assert np.array_equal(rgb, original)
+
+    def test_chain_dispatches_gradient(self):
+        rgb = np.full((9, 12, 3), 40, dtype=np.uint8)
+        rgb[:, 6:] = 200
+        result = core.apply_chain(
+            rgb, [core.default_spec(core.KIND_GRADIENT)]
+        )
+        expected = core.apply_gradient_enhancement(
+            rgb, **core.DEFAULT_PARAMS[core.KIND_GRADIENT]
+        )
+        assert np.array_equal(result, expected)
+
+    def test_gradient_params_are_normalized(self):
+        normalized = core.normalize_specs(
+            [
+                {
+                    "kind": core.KIND_GRADIENT,
+                    "params": {
+                        "mode": "gradient",
+                        "smooth": "2",
+                        "gain": "3",
+                        "threshold": "7",
+                    },
+                }
+            ]
+        )[0]
+        assert normalized.params == {
+            "mode": "gradient",
+            "smooth": 2.0,
+            "gain": 3.0,
+            "threshold": 7,
+        }
+
+
 class TestChain:
     def test_order_changes_the_result(self):
         rgb = np.zeros((9, 9, 3), dtype=np.uint8)
@@ -179,4 +315,10 @@ def test_default_specs_are_neutral():
     assert core.default_spec(core.KIND_GAUSSIAN).params == {
         "kernel": 5,
         "sigma": 0.0,
+    }
+    assert core.default_spec(core.KIND_GRADIENT).params == {
+        "mode": "overlay",
+        "smooth": 1.0,
+        "gain": 3.0,
+        "threshold": 0,
     }

@@ -1,4 +1,4 @@
-"""Pure display filter chain: pixel clamp, equalization and blur.
+"""Pure display filter chain: clamp, equalization, blur and gradient.
 
 The module is deliberately free of Qt and of file IO. It works on a
 uint8 RGB array and is reused by the canvas paint hook and by the
@@ -17,12 +17,15 @@ import numpy as np
 __all__ = [
     "FilterParamError",
     "FilterSpec",
+    "GRADIENT_MODE_LABELS",
     "KIND_EQUALIZE",
     "KIND_GAUSSIAN",
+    "KIND_GRADIENT",
     "KIND_LABELS",
     "KIND_PIXEL",
     "apply_chain",
     "apply_gaussian_blur",
+    "apply_gradient_enhancement",
     "apply_histogram_equalization",
     "apply_pixel_filter",
     "default_spec",
@@ -32,17 +35,33 @@ __all__ = [
 KIND_PIXEL = "pixel"
 KIND_EQUALIZE = "equalize"
 KIND_GAUSSIAN = "gaussian"
+KIND_GRADIENT = "gradient"
+
+GRADIENT_OVERLAY = "overlay"
+GRADIENT_GRAY = "gradient"
+GRADIENT_MODE_LABELS = {
+    GRADIENT_OVERLAY: "叠加原图",
+    GRADIENT_GRAY: "梯度图（灰度）",
+}
+GRADIENT_COLOR = (255, 64, 0)
 
 KIND_LABELS = {
     KIND_PIXEL: "像素值过滤",
     KIND_EQUALIZE: "直方图均衡化",
     KIND_GAUSSIAN: "高斯滤波",
+    KIND_GRADIENT: "梯度增强",
 }
 
 DEFAULT_PARAMS = {
     KIND_PIXEL: {"low": 0, "high": 255, "fill": 0},
     KIND_EQUALIZE: {"exclude": None},
     KIND_GAUSSIAN: {"kernel": 5, "sigma": 0.0},
+    KIND_GRADIENT: {
+        "mode": GRADIENT_OVERLAY,
+        "smooth": 1.0,
+        "gain": 3.0,
+        "threshold": 0,
+    },
 }
 
 MAX_CHANNEL = 255
@@ -109,6 +128,15 @@ class FilterSpec:
             return "高斯滤波：{kernel}×{kernel}，σ={sigma:g}".format(
                 **self.params
             )
+        if self.kind == KIND_GRADIENT:
+            mode = GRADIENT_MODE_LABELS.get(
+                self.params.get("mode"), str(self.params.get("mode"))
+            )
+            return "梯度增强：{}，强度 {:g}，阈值 {}".format(
+                mode,
+                float(self.params.get("gain", 0.0)),
+                int(self.params.get("threshold", 0)),
+            )
         return str(self.kind)
 
 
@@ -172,6 +200,23 @@ def _normalize_params(kind: str, params) -> Dict:
             kernel += 1
         sigma = _non_negative_float(params.get("sigma", 0.0), "sigma")
         return {"kernel": kernel, "sigma": sigma}
+    if kind == KIND_GRADIENT:
+        mode = str(params.get("mode", GRADIENT_OVERLAY))
+        if mode not in GRADIENT_MODE_LABELS:
+            raise FilterParamError("unknown gradient mode: %r" % (mode,))
+        smooth = _non_negative_float(
+            params.get("smooth", 1.0), "smooth"
+        )
+        gain = _non_negative_float(params.get("gain", 2.0), "gain")
+        threshold = _uint8_channel(
+            params.get("threshold", 0), "threshold"
+        )
+        return {
+            "mode": mode,
+            "smooth": smooth,
+            "gain": gain,
+            "threshold": threshold,
+        }
     raise FilterParamError("unknown filter kind: %r" % (kind,))
 
 
@@ -284,6 +329,55 @@ def apply_gaussian_blur(rgb, kernel=5, sigma=0.0):
     )
 
 
+def apply_gradient_enhancement(
+    rgb,
+    mode=GRADIENT_OVERLAY,
+    smooth=1.0,
+    gain=3.0,
+    threshold=0,
+):
+    """Highlight pixels whose luminance gradient is large.
+
+    The gradient is computed on the luminance channel with a 3x3 Sobel
+    kernel, optionally after a Gaussian pre-blur. The magnitude is
+    scaled by gain and clipped to 0..255; values below threshold are
+    dropped to suppress noise. In overlay mode the high gradient pixels
+    are mixed towards the fixed edge colour, in gradient mode the
+    magnitude itself is returned as a three channel gray image.
+    """
+
+    array = _rgb_array(rgb)
+    mode_value = str(mode)
+    if mode_value not in GRADIENT_MODE_LABELS:
+        raise FilterParamError(
+            "unknown gradient mode: %r" % (mode_value,)
+        )
+    smooth_value = _non_negative_float(smooth, "smooth")
+    gain_value = _non_negative_float(gain, "gain")
+    threshold_value = _uint8_channel(threshold, "threshold")
+
+    gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+    if smooth_value > 0:
+        gray = cv2.GaussianBlur(gray, (0, 0), smooth_value)
+    gradient_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude = cv2.magnitude(gradient_x, gradient_y)
+    magnitude = np.clip(
+        magnitude * (gain_value / 4.0), 0.0, 255.0
+    )
+    if threshold_value > 0:
+        magnitude[magnitude < threshold_value] = 0.0
+
+    if mode_value == GRADIENT_GRAY:
+        edge = magnitude.astype(np.uint8)
+        return np.repeat(edge[:, :, None], 3, axis=2)
+
+    alpha = (magnitude / 255.0)[:, :, None]
+    color = np.array(GRADIENT_COLOR, dtype=np.float32)
+    mixed = array.astype(np.float32) * (1.0 - alpha) + color * alpha
+    return np.clip(mixed, 0.0, 255.0).astype(np.uint8)
+
+
 def apply_chain(rgb, specs: Iterable):
     """Apply every enabled spec in list order and return a new array."""
 
@@ -299,6 +393,8 @@ def apply_chain(rgb, specs: Iterable):
             )
         elif spec.kind == KIND_GAUSSIAN:
             result = apply_gaussian_blur(result, **spec.params)
+        elif spec.kind == KIND_GRADIENT:
+            result = apply_gradient_enhancement(result, **spec.params)
         else:  # pragma: no cover - normalize_specs already guards this
             raise FilterParamError(
                 "unknown filter kind: %r" % (spec.kind,)

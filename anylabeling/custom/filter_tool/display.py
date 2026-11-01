@@ -19,12 +19,16 @@ from . import core
 
 __all__ = [
     "FilterDisplayController",
+    "VIEW_HINT",
     "filtered_qimage",
     "qimage_to_rgba",
     "rgba_to_qimage",
 ]
 
 LOGGER = logging.getLogger(__name__)
+
+#: Hint appended to the filter tooltip and the dialog status.
+VIEW_HINT = "点击「显示原图」切换"
 
 #: Number of filtered pixmaps kept for the canvas and its compare image.
 CACHE_LIMIT = 2
@@ -119,7 +123,10 @@ class FilterDisplayController:
         self._cache = OrderedDict()
         self._action = None
         self._base_tip = ""
+        self._bypass_action = None
+        self._bypass_action_tip = ""
         self._painting = False
+        self._bypass = False
         self.attach()
 
     # ------------------------------------------------------------ chain
@@ -141,8 +148,10 @@ class FilterDisplayController:
         self._chain = normalized
         self._version += 1
         self._cache.clear()
+        self._bypass = False
         self.last_error = ""
         self._refresh_action_tip()
+        self._refresh_bypass_action()
         canvas = self.attach()
         if canvas is not None:
             canvas.update()
@@ -161,6 +170,32 @@ class FilterDisplayController:
             return "无滤镜"
         return "、".join(spec.summary() for spec in enabled)
 
+    # ----------------------------------------------------------- bypass
+
+    def bypassed(self):
+        """Return True while the canvas paints the raw image."""
+
+        return self._bypass
+
+    def set_bypass(self, bypass):
+        """Toggle between the raw image and the filtered image."""
+
+        bypass = bool(bypass) and self.active()
+        if self._bypass == bypass:
+            self._refresh_bypass_action()
+            return self._bypass
+        self._bypass = bypass
+        self._refresh_bypass_action()
+        canvas = self.attach()
+        if canvas is not None:
+            canvas.update()
+        return self._bypass
+
+    def toggle_bypass(self):
+        """Flip the raw/filtered display and return the new state."""
+
+        return self.set_bypass(not self._bypass)
+
     # ----------------------------------------------------------- action
 
     def bind_action(self, action, tip=""):
@@ -176,10 +211,35 @@ class FilterDisplayController:
         enabled = sum(1 for spec in self._chain if spec.enabled)
         if enabled:
             self._action.setToolTip(
-                "%s（生效中：%d 个，仅显示）" % (self._base_tip, enabled)
+                "%s（生效中：%d 个，仅显示；%s）"
+                % (self._base_tip, enabled, VIEW_HINT)
             )
         else:
             self._action.setToolTip(self._base_tip)
+
+    def bind_bypass_action(self, action, tip=""):
+        """Remember the checkable raw-view action and sync its state."""
+
+        self._bypass_action = action
+        self._bypass_action_tip = str(tip or "")
+        self._refresh_bypass_action()
+
+    def _refresh_bypass_action(self):
+        action = self._bypass_action
+        if action is None:
+            return
+        active = self.active()
+        blocked = action.blockSignals(True)
+        try:
+            action.setEnabled(active)
+            action.setChecked(bool(self._bypass and active))
+            tip = self._bypass_action_tip
+            if active and self._bypass:
+                tip = "当前显示原图，点击恢复滤镜"
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
+        finally:
+            action.blockSignals(blocked)
 
     # ---------------------------------------------------------- attach
 
@@ -210,7 +270,7 @@ class FilterDisplayController:
 
     def _paint(self, canvas, event, original):
         self.attach()
-        if self._painting or not self.active():
+        if self._painting or self._bypass or not self.active():
             return original(event)
         source = getattr(canvas, "pixmap", None)
         if source is None or source.isNull():
