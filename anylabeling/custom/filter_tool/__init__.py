@@ -14,7 +14,7 @@ Modules:
 * display - the QImage conversion helpers and the canvas paint hook;
 * viewer - the two read only image panes;
 * dialog - the window and its filter editor;
-* export - plan and write filtered copies of the current file list;
+* export - plan and write filtered copies plus sidecar json;
 * installer / launcher - the Tool menu and toolbar entries and one
   window per widget.
 
@@ -32,8 +32,8 @@ Key rules:
 * the chain lives for the session only, nothing is persisted;
 * the checkable 显示原图 action in the Tool menu and the Tools
   toolbar toggles between the raw image and the filtered image;
-* export reads the source files and writes new copies; it never
-  overwrites an original image;
+* export reads the source images and json, writes new copies under
+  <source dir>_filtered; it never overwrites an original file;
 * a new image needs no extra work: it replaces Canvas.pixmap, the
   cache key changes and the next paint filters it automatically.
 """

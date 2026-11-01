@@ -128,7 +128,7 @@ FEATURES.md 的「代码与体量」）；该目录同样有并发会话在途�
 | 固定框裁图（数据集逐张裁切） | `anylabeling/custom/crop_tool/`（Tool 菜单「裁图工具」：拖入目录（含子目录）、左侧目录树 + 文件、W×H 固定框、右键裁切后停留在当前图（换图靠 A/D，同尺寸换图保持缩放/视图位置与裁切框）、第二行「保存尺寸」可按指定像素尺寸上下采样（0 = 跟随裁切尺寸）、文件名即记录、裁切全部直接落在输出目录根（不建子目录）、窗口可最大化、Del 经确认删自己的裁切子图；默认输出 = `<程序所在目录>/crop`，输出目录不持久化） |
 | 按标签分类过滤文件列表 | `anylabeling/custom/label_filter/`（Tool 菜单「标签过滤」运行时追加，实例级包装 `import_image_folder` 做二道过滤） |
 | 图片目录（含子目录）快速预览 / 标注叠加 / 按得分·尺寸·类别筛选 / 扁平拷进输出目录与移入 dsh-trash / 处理后自动跳下一张 | `anylabeling/custom/preview_tool/`（Tool 菜单「预览工具」，QDialog 独立窗口、可最大化、启动空窗口（不自动打开上次目录），左侧目录树 + 文件；同尺寸换图保留缩放/视图位置；过滤语义见 `core.filter_images`，扁平输出、输出==输入守卫与扫描口径见 `pick_core.py`，按图 toggle 与移除口径、输出目录不持久化（默认 `<程序所在目录>/picked`）见 FEATURES.md） |
-| 画布显示滤镜（像素值过滤 / 直方图均衡化 / 高斯滤波 / Sobel 梯度增强，按列表顺序） | `anylabeling/custom/filter_tool/`（Tool 菜单「滤镜工具」，QDialog 独立窗口、左侧原图与预览、右侧有序滤镜链；确认后当前图与之后所有图片仅显示层生效，不改原图/标注/导出；可点击 Tool 菜单/左侧工具栏「显示原图」切换原图与滤镜；可把当前链导出到新目录（不改原图）；paint 期临时替换 Canvas.pixmap，软挂载见 contract.json） |
+| 画布显示滤镜（像素值过滤 / 直方图均衡化 / 高斯滤波 / Sobel 梯度增强，按列表顺序） | `anylabeling/custom/filter_tool/`（Tool 菜单「滤镜工具」，QDialog 独立窗口、左侧原图与预览、右侧有序滤镜链；确认后当前图与之后所有图片仅显示层生效，不改原图/标注；可点击 Tool 菜单/左侧工具栏「显示原图」切换原图与滤镜；可把当前链导出到所选目录下的「原目录名_filtered」并复制边车 json（不改原数据）；paint 期临时替换 Canvas.pixmap，软挂载见 contract.json） |
 | 崩溃 / 运行日志（无控制台取证） | `anylabeling/custom/crash_log/`（挂载 `anylabeling/app.py:23-24`；日志 `~/.xanylabeling/logs/xany-YYYYMMDD.log`，保留 14 份；`XANY_LOG_DIR` 改目录、`XANY_LOG_DISABLE=1` 关闭） |
 | 快捷键 | `anylabeling/views/labeling/label_widget.py` 的动作定义（快捷键表取自 `self._config["shortcuts"]`，即 `.xanylabelingrc`） |
 | 标注文件读写（json / LabelFile） | `anylabeling/views/labeling/label_file.py`；保存入口是 `label_widget.py` 的 `save_labels` |

@@ -44,7 +44,8 @@ HINT_TEXT = (
     "列表从上到下依次执行；勾选控制启用；确认后当前图与之后打开的"
     "所有图片都会应用。只改变显示，不修改图片与标注文件。"
     "滤镜生效后可在 Tool 菜单或左侧工具栏" + VIEW_HINT + "。"
-    "「导出...」可把当前链套到所有图像并输出到新目录（不改原图）。"
+    "「导出...」可在所选目录下生成「原目录名_filtered」，"
+    "并连同边车 json 一起导出（不改原图）。"
 )
 EMPTY_LIST_TEXT = "无滤镜（显示原图）"
 NO_SOURCE_TEXT = "主窗口没有打开图片"
@@ -61,8 +62,8 @@ APPLIED_FORMAT = (
 CLEARED_TEXT = "滤镜已关闭（显示原图）"
 EXPORT_TEXT = "导出..."
 EXPORT_TIP = (
-    "把当前滤镜链应用到当前图片列表中的所有图像，导出到新目录；"
-    "只读取原图，不修改原图与标注"
+    "把当前滤镜链应用到当前图片列表中的所有图像，在所选目录下"
+    "生成「原目录名_filtered」，并复制边车 json；只读取原图"
 )
 
 
@@ -887,15 +888,22 @@ class FilterDialog(QtWidgets.QDialog):
             return False
         output_dir = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "选择滤镜导出目录",
-            osp.join(root, export.EXPORT_SUBDIR),
+            "选择导出目录（将在其下创建 原目录名_filtered）",
+            osp.dirname(root) or root,
             QtWidgets.QFileDialog.Option.ShowDirsOnly,
         )
         if not output_dir:
             return False
         output_dir = osp.abspath(output_dir)
+        labels = {
+            path: export.label_file_for(
+                path, getattr(self.widget, "output_dir", "") or ""
+            )
+            for path in paths
+        }
         try:
-            targets = export.plan_export(paths, output_dir)
+            export_dir = export.export_directory(output_dir, root)
+            targets = export.plan_export(paths, export_dir, labels)
         except export.ExportError as exc:
             self._export_warning(str(exc))
             return False
@@ -927,14 +935,18 @@ class FilterDialog(QtWidgets.QDialog):
             return False
         finally:
             self.export_button.setEnabled(True)
-        self._show_export_result(result, output_dir)
+        self._show_export_result(result, export_dir)
         return True
 
     def _run_export(self, targets, specs, overwrite):
         progress = QtWidgets.QProgressDialog(
-            "正在导出滤镜图像...", "取消", 0, len(targets), self
+            "正在导出滤镜图像与 json...",
+            "取消",
+            0,
+            len(targets),
+            self,
         )
-        progress.setWindowTitle("导出滤镜图像")
+        progress.setWindowTitle("导出滤镜图像与 json")
         progress.setWindowModality(
             QtCore.Qt.WindowModality.WindowModal
         )
@@ -970,16 +982,31 @@ class FilterDialog(QtWidgets.QDialog):
 
     def _show_export_result(self, result, output_dir):
         written = len(result.written)
+        labels = len(result.labels_written)
         failed = len(result.failed)
         if result.cancelled:
             title = "导出已取消"
-            text = "已取消导出：成功 %d 张" % written
+            text = "已取消导出：图像 %d 张、json %d 个" % (
+                written,
+                labels,
+            )
         elif failed:
             title = "导出完成（有失败）"
-            text = "成功 %d 张，失败 %d 张" % (written, failed)
+            text = "成功图像 %d 张、json %d 个，失败 %d 项" % (
+                written,
+                labels,
+                failed,
+            )
         else:
             title = "导出完成"
-            text = "已导出 %d 张图像" % written
+            text = "已导出图像 %d 张、json %d 个" % (
+                written,
+                labels,
+            )
+        if result.label_missing:
+            text += "\n%d 张图像没有边车 json，仅导出图像。" % (
+                result.label_missing
+            )
         text += "\n目录：%s\n原图未修改。" % output_dir
         if result.failed:
             details = "\n".join(
@@ -992,7 +1019,8 @@ class FilterDialog(QtWidgets.QDialog):
         else:
             QtWidgets.QMessageBox.information(self, title, text)
         self.status_label.setText(
-            "导出：成功 %d，失败 %d" % (written, failed)
+            "导出：图像 %d，json %d，失败 %d"
+            % (written, labels, failed)
         )
 
     def _export_warning(self, message):

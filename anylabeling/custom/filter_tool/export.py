@@ -4,13 +4,15 @@ The module is Qt free: it plans the source/target pairs, applies the
 same pure filter chain to every image and writes new files. Source files
 are only read; plan_export rejects a target that is one of the sources,
 so an export can never overwrite an original image. Files are written
-as 8-bit RGB or RGBA, matching the display pipeline.
+as 8-bit RGB or RGBA, matching the display pipeline. Each image
+can carry its sidecar label json; the json is copied untouched.
 """
 
 from __future__ import annotations
 
 import os
 import os.path as osp
+import shutil
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -21,19 +23,21 @@ import PIL.ImageOps
 from . import core
 
 __all__ = [
-    "EXPORT_SUBDIR",
+    "EXPORT_DIR_SUFFIX",
     "ExportError",
     "ExportResult",
     "ExportTarget",
     "collect_image_paths",
     "common_root",
     "existing_targets",
+    "export_directory",
     "export_images",
     "filter_image_file",
+    "label_file_for",
     "plan_export",
 ]
 
-EXPORT_SUBDIR = "filtered"
+EXPORT_DIR_SUFFIX = "_filtered"
 JPEG_QUALITY = 95
 ALPHA_FORMATS = {"PNG", "WEBP", "TIFF", "TGA", "ICO", "HEIF"}
 
@@ -44,11 +48,13 @@ class ExportError(Exception):
 
 @dataclass(frozen=True)
 class ExportTarget:
-    """One source image and the output file it is written to."""
+    """One source image, its output and its optional sidecar json."""
 
     source: str
     target: str
     relative: str
+    label_source: str = ""
+    label_target: str = ""
 
 
 @dataclass
@@ -56,6 +62,8 @@ class ExportResult:
     """Outcome of one export run."""
 
     written: List[str] = field(default_factory=list)
+    labels_written: List[str] = field(default_factory=list)
+    label_missing: int = 0
     failed: List[Tuple[str, str]] = field(default_factory=list)
     cancelled: bool = False
 
@@ -99,12 +107,49 @@ def common_root(paths):
         raise ExportError("图像不在同一个磁盘或根目录下") from exc
 
 
-def plan_export(paths, output_dir):
+def export_directory(base_dir, source_root):
+    """Return <selected dir>/<source dir name>_filtered."""
+
+    if not str(base_dir or "").strip():
+        raise ExportError("导出目录为空")
+    name = osp.basename(osp.normpath(osp.abspath(source_root)))
+    if not name:
+        name = "images"
+    return osp.abspath(osp.join(base_dir, name + EXPORT_DIR_SUFFIX))
+
+
+def label_file_for(image_path, output_dir=""):
+    """Return the sidecar json of one image, or an empty string.
+
+    The app can store labels next to the image or, when an output_dir
+    is configured, in that directory under the image's basename.
+    """
+
+    image_path = osp.abspath(image_path)
+    stem = osp.splitext(image_path)[0]
+    candidates = []
+    if output_dir:
+        candidates.append(
+            osp.join(
+                osp.abspath(output_dir),
+                osp.basename(stem) + ".json",
+            )
+        )
+    candidates.append(stem + ".json")
+    for candidate in candidates:
+        if osp.isfile(candidate):
+            return candidate
+    return ""
+
+
+def plan_export(paths, output_dir, label_paths=None):
     """Build the source/target pairs of an export.
 
     The relative directory structure below the common source root is
     preserved. A target equal to one of the sources is rejected, so the
-    source data can never be overwritten by this plan.
+    source data can never be overwritten by this plan. label_paths maps
+    source image paths to their sidecar json paths; when it is omitted
+    the sidecar next to each image is used.
     """
 
     paths = [osp.abspath(path) for path in paths]
@@ -116,6 +161,10 @@ def plan_export(paths, output_dir):
     if osp.exists(output_dir) and not osp.isdir(output_dir):
         raise ExportError("导出路径不是目录: %s" % output_dir)
     root = common_root(paths)
+    labels = {}
+    for key, value in dict(label_paths or {}).items():
+        if value:
+            labels[osp.normcase(osp.abspath(key))] = osp.abspath(value)
     sources = {osp.normcase(path): path for path in paths}
     targets = []
     seen = set()
@@ -134,14 +183,36 @@ def plan_export(paths, output_dir):
         if key in seen:
             raise ExportError("导出目标重名: %s" % target)
         seen.add(key)
-        targets.append(ExportTarget(source, target, relative))
+        label_source = labels.get(osp.normcase(source), "")
+        if label_source and not osp.isfile(label_source):
+            label_source = ""
+        if not label_source:
+            label_source = label_file_for(source)
+        label_target = ""
+        if label_source:
+            label_target = osp.splitext(target)[0] + ".json"
+        targets.append(
+            ExportTarget(
+                source,
+                target,
+                relative,
+                label_source,
+                label_target,
+            )
+        )
     return targets
 
 
 def existing_targets(targets):
-    """Return the targets whose output file already exists."""
+    """Return the output paths that already exist (image or json)."""
 
-    return [item for item in targets if osp.exists(item.target)]
+    existing = []
+    for item in targets:
+        if osp.exists(item.target):
+            existing.append(item.target)
+        if item.label_target and osp.exists(item.label_target):
+            existing.append(item.label_target)
+    return existing
 
 
 def _image_format(source, image_format):
@@ -233,6 +304,9 @@ def export_images(
     """
 
     result = ExportResult()
+    result.label_missing = sum(
+        1 for item in targets if not item.label_source
+    )
     total = len(targets)
     for index, item in enumerate(targets, start=1):
         if cancelled is not None and cancelled():
@@ -243,6 +317,19 @@ def export_images(
                 raise ExportError("目标文件已存在: %s" % item.target)
             filter_image_file(item.source, item.target, specs)
             result.written.append(item.target)
+            if item.label_source:
+                if (
+                    osp.exists(item.label_target)
+                    and not overwrite
+                ):
+                    raise ExportError(
+                        "目标 json 已存在: %s" % item.label_target
+                    )
+                os.makedirs(
+                    osp.dirname(item.label_target), exist_ok=True
+                )
+                shutil.copy2(item.label_source, item.label_target)
+                result.labels_written.append(item.label_target)
         except Exception as exc:  # noqa: BLE001
             result.failed.append((item.source, str(exc)))
         if progress is not None:

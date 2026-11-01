@@ -32,7 +32,7 @@
 | reset_view_on_switch | 换到另一张图片时画布缩放/滚动复位成首图初始态（有意压过 keep_prev_scale；同文件重载不复位） | `anylabeling/custom/reset_view_on_switch/` | 同目录 `tests/custom/reset_view_on_switch/` | 1 个（1 行 import + 1 行调用） | 1 |
 | crop_tool | 拖入目录（含子目录）后用固定 W×H 裁切框逐张裁图（第二行可指定保存尺寸做上下采样）：左侧目录树 + 文件、右键裁切后停留在当前图（换图靠 A/D）、文件名即记录、裁切全部直接落在输出目录根（不建子目录）、窗口可最大化、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 | preview_tool | 拖入图片目录（含子目录）按目录树顺序预览并叠加 LabelMe 标注；左侧目录树 + 文件；按得分/尺寸/类别过滤（总开关）；把当前图与边车 json 直接拷进所选输出目录（扁平、不建子目录）或把同 stem 副本移入 dsh-trash，输出目录不得等于输入目录，单文件处理后自动跳下一张（跨目录连续）；窗口可最大化；启动空窗口、输出目录不持久化 | `anylabeling/custom/preview_tool/` | `tests/custom/preview_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
-| filter_tool | Tool 菜单「滤镜工具」：像素值过滤 / 直方图均衡化 / 高斯滤波 / Sobel 梯度增强按右侧列表顺序叠加，左侧并排显示原图与滤镜预览；确认后当前图与之后所有图片自动应用；只改画布显示，不修改原图与标注；可点击 Tool 菜单或左侧工具栏「显示原图」切换；可把当前滤镜链导出到新目录（新文件） | `anylabeling/custom/filter_tool/` | `tests/custom/filter_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
+| filter_tool | Tool 菜单「滤镜工具」：像素值过滤 / 直方图均衡化 / 高斯滤波 / Sobel 梯度增强按右侧列表顺序叠加，左侧并排显示原图与滤镜预览；确认后当前图与之后所有图片自动应用；只改画布显示，不修改原图与标注；可点击 Tool 菜单或左侧工具栏「显示原图」切换；可把当前滤镜链导出到所选目录下的「原目录名_filtered」并复制边车 json | `anylabeling/custom/filter_tool/` | `tests/custom/filter_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
 | yolo_to_labelme | Tool 菜单「YOLO 转 LabelMe」：把导出的 YOLO 数据集（图片 + 同名 txt，或 images/ + labels/）按 class.txt 还原成图片旁的 labelme json；已有同名 json 默认跳过，可勾选覆盖 | `anylabeling/custom/yolo_to_labelme/` | `tests/custom/yolo_to_labelme/` | 1 个（1 行 import + 1 行调用） | 1 |
 
 依赖分类的含义（下表每行都标一个）：
@@ -2138,12 +2138,13 @@ Tool 菜单「滤镜工具」打开一个非模态窗口：左侧并排显示「
 强度、阈值）。确认后链立即作用于当前画布，之后每次切换图片都自动套用；取消/关闭
 丢弃本次编辑。链只存在会话内，不写配置。滤镜生效后可在 Tool 菜单或左侧工具栏
 点击「显示原图」切换原图/滤镜显示。「导出...」把当前工作链应用到当前文件列表
-中的全部图像，输出到新目录；只读取原图，不修改原图与标注。
+中的全部图像，输出到所选目录下的「原目录名_filtered」，并复制边车 json；
+只读取原图与 json，不修改原数据。
 
 ### 代码与体量
 
-`anylabeling/custom/filter_tool/`（8 个文件 2591 行）；测试 `tests/custom/filter_tool/`
-（7 个文件 1543 行）。
+`anylabeling/custom/filter_tool/`（8 个文件 2706 行）；测试 `tests/custom/filter_tool/`
+（7 个文件 1625 行）。
 
 ### 入口符号
 
@@ -2194,10 +2195,11 @@ Tool 菜单「滤镜工具」打开一个非模态窗口：左侧并排显示「
   action，勾选时 `set_bypass(True)` 让 paint 直接画 `canvas.pixmap` 原图，取消勾选恢复
   滤镜；无生效滤镜时 action 禁用；清空或替换滤镜链会自动取消原图状态；仍不写回
   `Canvas.pixmap`。
-- **导出所有图像**：窗口「导出...」使用当前工作链（未确认的编辑也生效），处理
-  `widget.image_list` 的全部图像；默认建议源根下 `filtered/`，保留相对子目录；
-  只读取源文件、写新文件，目标等于任一源文件时拒绝；目标已存在时先确认覆盖。
-  输出为 8-bit RGB/RGBA，JPEG 质量 95，不写标注。
+- **导出所有图像与 json**：窗口「导出...」使用当前工作链（未确认的编辑也生效），
+  处理 `widget.image_list` 的全部图像；在所选目录下创建
+  `<源根目录名>_filtered/`，保留相对子目录，并把每张图的边车 json 复制到
+  对应位置；只读取源文件，目标等于任一源文件时拒绝；目标已存在时先确认覆盖。
+  输出为 8-bit RGB/RGBA，JPEG 质量 95；没有 json 的图像只导出图像并汇总提示。
 - **像素值过滤**：逐通道，边界含；`low <= v <= high` 保留，否则置 `fill`；默认 0/255/0
   是无操作；UI 保证 `low <= high`。
 - **直方图均衡化**：RGB→YCrCb 只均衡 Y，保留 Cb/Cr，灰度图输出仍精确灰度；直方图只统计
@@ -2220,8 +2222,8 @@ Tool 菜单「滤镜工具」打开一个非模态窗口：左侧并排显示「
 
 `python -m pytest -p no:cacheprovider tests/custom/filter_tool -v`（PyQt6 offscreen）。
 纯算法、QImage 转换、paint 钩子、真实 Canvas 渲染、「显示原图」action 的点击切换与
-状态同步、梯度增强的叠加/灰度/阈值/非法模式、导出计划/批量写入/取消/冲突/对话框
-流程、窗口列表/参数/确认与 launcher 均有覆盖。
+状态同步、梯度增强的叠加/灰度/阈值/非法模式、导出目录命名/批量写入/边车 json
+复制/取消/冲突/对话框流程、窗口列表/参数/确认与 launcher 均有覆盖。
 
 ### 已知坑
 
@@ -2241,9 +2243,13 @@ Tool 菜单「滤镜工具」打开一个非模态窗口：左侧并排显示「
 - 无生效滤镜时「显示原图」action 禁用；清空或替换滤镜链会自动取消原图显示，
   避免按钮勾选但没有滤镜生效。
 - 导出会按 EXIF 方向摆正后重编码（GIF 只写首帧），因此输出像素方向/编码可能与源文件
-  的原始字节不同；源文件本身只读。导出不会复制边车 json。
-- 导出目录已有同名文件时询问覆盖；目标路径等于任一源文件时永远拒绝。同步执行并
-  逐张 `processEvents`，超大数据集期间界面仍可能阶段性忙。
+  的原始字节不同；源文件本身只读。边车 json 只复制、不改写；没有 json 的图只导出
+  图像，并在完成提示中给出缺失数量。
+- 导出的 json 来自磁盘上的边车文件（或 `output_dir` 中的同名 json）；当前尚未保存
+  的标注不会被自动写入，导出前请先保存。
+- 导出在所选目录下创建 `<源根目录名>_filtered/`；已有同名文件（图像或 json）时
+  询问覆盖；目标路径等于任一源文件时永远拒绝。同步执行并逐张 `processEvents`，
+  超大数据集期间界面仍可能阶段性忙。
 
 ## yolo_to_labelme
 

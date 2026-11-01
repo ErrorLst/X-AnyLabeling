@@ -90,6 +90,42 @@ class TestPlanning:
         with pytest.raises(export.ExportError):
             export.plan_export([str(source)], str(source.parent))
 
+    def test_export_directory_uses_source_name_and_suffix(
+        self, export_tmp
+    ):
+        source_root = export_tmp / "data"
+        base = export_tmp / "out"
+        result = export.export_directory(str(base), str(source_root))
+        assert result == osp.abspath(
+            base / (source_root.name + export.EXPORT_DIR_SUFFIX)
+        )
+
+    def test_label_file_for_uses_the_configured_output_dir(
+        self, export_tmp
+    ):
+        image = export_tmp / "data" / "a.png"
+        labels = export_tmp / "labels"
+        labels.mkdir()
+        label = labels / "a.json"
+        label.write_text("{}", encoding="utf-8")
+        assert export.label_file_for(str(image), str(labels)) == str(
+            label
+        )
+
+    def test_plan_attaches_sidecar_json(self, export_tmp):
+        source_root = export_tmp / "data"
+        source_root.mkdir()
+        source = source_root / "a.png"
+        label = source.with_suffix(".json")
+        label.write_text("{}", encoding="utf-8")
+        targets = export.plan_export(
+            [str(source)], str(export_tmp / "out")
+        )
+        assert targets[0].label_source == str(label)
+        assert targets[0].label_target == osp.splitext(
+            targets[0].target
+        )[0] + ".json"
+
     def test_plan_rejects_an_empty_list(self, export_tmp):
         with pytest.raises(export.ExportError):
             export.plan_export([], str(export_tmp))
@@ -129,6 +165,41 @@ class TestWriting:
         output = PIL.Image.open(targets[0].target).convert("RGBA")
         assert output.getpixel((1, 1))[3] == 64
         assert source.read_bytes() == before
+
+    def test_export_copies_sidecar_json_and_keeps_sources(
+        self, export_tmp
+    ):
+        source = export_tmp / "source.png"
+        label = source.with_suffix(".json")
+        _write_png(source, make_rgb(8, 8))
+        label.write_text('{"shapes": []}', encoding="utf-8")
+        image_before = source.read_bytes()
+        label_before = label.read_bytes()
+        targets = export.plan_export(
+            [str(source)], str(export_tmp / "out")
+        )
+        result = export.export_images(targets, _black_spec())
+        assert result.failed == []
+        assert result.labels_written == [targets[0].label_target]
+        assert result.label_missing == 0
+        assert source.read_bytes() == image_before
+        assert label.read_bytes() == label_before
+        assert osp.isfile(targets[0].label_target)
+        with open(
+            targets[0].label_target, encoding="utf-8"
+        ) as handle:
+            assert handle.read() == label.read_text(encoding="utf-8")
+
+    def test_missing_json_is_counted(self, export_tmp):
+        source = export_tmp / "source.png"
+        _write_png(source, make_rgb(8, 8))
+        targets = export.plan_export(
+            [str(source)], str(export_tmp / "out")
+        )
+        result = export.export_images(targets, _black_spec())
+        assert result.failed == []
+        assert result.labels_written == []
+        assert result.label_missing == 1
 
     def test_export_writes_jpeg_with_its_own_format(self, export_tmp):
         source = export_tmp / "photo.jpg"
@@ -203,7 +274,9 @@ def test_dialog_export_button_runs_the_export(
     export_tmp, monkeypatch
 ):
     source = export_tmp / "source.png"
+    label = source.with_suffix(".json")
     _write_png(source, make_rgb(8, 8))
+    label.write_text('{"shapes": []}', encoding="utf-8")
     widget = keep(FakeWidget(image=make_image(make_rgb())))
     widget.image_list = [str(source)]
     widget.filename = str(source)
@@ -229,11 +302,20 @@ def test_dialog_export_button_runs_the_export(
         lambda *args, **kwargs: messages.append(args[2]),
     )
     before = source.read_bytes()
+    label_before = label.read_bytes()
     assert dialog.export_button.text() == "导出..."
     assert dialog.export_filtered_images() is True
-    target = output / "source.png"
+    target_dir = output / (
+        export_tmp.name + export.EXPORT_DIR_SUFFIX
+    )
+    target = target_dir / "source.png"
     assert target.exists()
+    json_target = target.with_suffix(".json")
+    assert json_target.exists()
+    assert json_target.read_bytes() == label_before
     output_pixels = np.array(PIL.Image.open(target).convert("RGB"))
     assert int(output_pixels.max()) == 0
     assert source.read_bytes() == before
+    assert label.read_bytes() == label_before
+    assert "json 1" in messages[-1]
     assert messages
