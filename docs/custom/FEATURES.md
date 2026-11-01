@@ -33,6 +33,7 @@
 | crop_tool | 拖入目录（含子目录）后用固定 W×H 裁切框逐张裁图（第二行可指定保存尺寸做上下采样）：左侧目录树 + 文件、右键裁切后停留在当前图（换图靠 A/D）、文件名即记录、裁切全部直接落在输出目录根（不建子目录）、窗口可最大化、Del 经确认删自己的裁切子图 | `anylabeling/custom/crop_tool/` | `tests/custom/crop_tool/` | 1 个（1 行 import + 1 行调用） | 1 |
 | preview_tool | 拖入图片目录（含子目录）按目录树顺序预览并叠加 LabelMe 标注；左侧目录树 + 文件；按得分/尺寸/类别过滤（总开关）；把当前图与边车 json 直接拷进所选输出目录（扁平、不建子目录）或把同 stem 副本移入 dsh-trash，输出目录不得等于输入目录，单文件处理后自动跳下一张（跨目录连续）；窗口可最大化；启动空窗口、输出目录不持久化 | `anylabeling/custom/preview_tool/` | `tests/custom/preview_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
 | filter_tool | Tool 菜单「滤镜工具」：像素值过滤 / 直方图均衡化 / 高斯滤波按右侧列表顺序叠加，左侧并排显示原图与滤镜预览；确认后当前图与之后所有图片自动应用；只改画布显示，不改原图、标注与导出 | `anylabeling/custom/filter_tool/` | `tests/custom/filter_tool/` | 1 个（1 行 import + 1 行调用） | 2 |
+| yolo_to_labelme | Tool 菜单「YOLO 转 LabelMe」：把导出的 YOLO 数据集（图片 + 同名 txt，或 images/ + labels/）按 class.txt 还原成图片旁的 labelme json；已有同名 json 默认跳过，可勾选覆盖 | `anylabeling/custom/yolo_to_labelme/` | `tests/custom/yolo_to_labelme/` | 1 个（1 行 import + 1 行调用） | 1 |
 
 依赖分类的含义（下表每行都标一个）：
 
@@ -2209,6 +2210,89 @@ Tool 菜单「滤镜工具」打开一个非模态窗口：左侧并排显示「
 - navigator 缩略图、预览/裁图工具窗口、文件列表缩略图不套滤镜（各自有独立显示管线）。
 - 16-bit 图片按 Qt 显示层的 8-bit 处理；原始 16-bit 数据不变。
 - 链不持久化；重启应用后默认无滤镜，避免下次启动意外带滤镜。
+
+## yolo_to_labelme
+
+### 职责
+
+Tool 菜单「YOLO 转 LabelMe」：选一个导出的 YOLO 数据集目录 + 一个 class.txt，
+把每张图对应的同名 .txt（`class cx cy w h` 归一化检测框，或成对坐标的多边形）
+还原成图片旁的 labelme json。
+
+输入是 **YOLO**，不是 COCO：最初的需求写的是 COCO，用户随后用
+`C:/Users/zhoujin/Desktop/dataset/五轴/finished/side_collapse/labels`
+（图片 + 同名 txt，类别名在 `label.txt`）澄清，本轮按 YOLO 落地；COCO 仍由
+Upload 菜单的 Upload COCO Annotation 与 CLI 的 `coco2xlabel` 任务处理。
+
+### 代码与体量
+
+`anylabeling/custom/yolo_to_labelme/`（6 个文件 1186 行：`yolo_core.py` 450、
+`dialog.py` 494、`conversion.py` 105、`installer.py` 64、`__init__.py` 40、
+`launcher.py` 33）；测试 `tests/custom/yolo_to_labelme/`（5 个文件 1017 行）。
+（口径：目录内全部 `*.py`，wc -l，2026-10-30。）
+
+### 入口符号
+
+`anylabeling.custom.yolo_to_labelme.install_yolo_to_labelme`（幂等）、
+`launch_yolo_to_labelme`（每 widget 复用一个窗口）、
+`yolo_core.scan_dataset` / `load_class_names`、`conversion.convert_pairs`、
+`dialog.YoloToLabelmeDialog`。
+
+### 挂载点（锚点原文，行号见 contract.json）与软挂载
+
+- `anylabeling/views/labeling/label_widget.py`：
+  `from anylabeling.custom.yolo_to_labelme import install_yolo_to_labelme`
+- `anylabeling/views/labeling/label_widget.py`（`LabelingWidget.__init__`）：
+  `install_yolo_to_labelme(self)  # YOLO 转 LabelMe`
+- 软挂载：`widget._yolo_to_labelme_dialog` 由 `launch_yolo_to_labelme` 持有，
+  `destroyed` 时清空；Tool 菜单 action 由 installer 在运行时追加
+  （`menus.tool.addAction`），不进入上游菜单元组。
+
+### 依赖的上游状态
+
+| 上游 | 分类 | 用途 |
+|---|---|---|
+| `LabelingWidget.menus` | direct | Tool 菜单挂载 |
+| `anylabeling.views.labeling.utils.qt.new_action` | direct | 创建 QAction |
+| `LabelConverter.classes` | direct | 写入 class.txt 解析出的类名表 |
+| `LabelConverter.yolo_to_custom` | direct | 检测框 / 分割多边形的转换与落盘 |
+| `LabelConverter.yolo_obb_to_custom` | direct | OBB 的转换 |
+| `LabelConverter.get_image_size`、`save_json`、`reset` | transitive | 由 `yolo_to_custom` 内部调用 |
+
+### 行为级契约（不可机器校验）
+
+- **布局**：根目录的 images 与 labels 子目录 -> split；选中的目录名为 `images`
+  且同级有 `labels` -> split；其余递归平铺，先找同目录同名 txt，再把最近的
+  `images` 路径段换成 `labels` 找。split 里忽略 `labels/` 下的图片。
+- **配对**：一图一 txt（同 stem）；没有 txt 的图片只计数；只有 txt 没有图片的
+  只计数；同一目录两个图片同 stem（`a.jpg` / `a.png`）-> 输出冲突，整批禁用。
+- **class.txt**：`utf-8-sig`、逐行 strip、空行丢弃、允许重名、全空报错；行号即
+  YOLO 的 class index。
+- **格式**：自动 = 5 列为检测框、>5 且坐标成对为多边形；显式模式与列数不符的
+  文件记为无效；OBB 必须手选（9 列与 4 点多边形在自动模式下无法区分）。
+- **输出**：`<图片目录>/<stem>.json`；已存在默认跳过，勾选「覆盖」才改写；
+  空 txt 写成空 shapes；缺 txt / 非法行 / 类别越界 / 图片读不了 -> 该文件失败，
+  其它文件继续；已完成的部分不回滚、不删除。
+- **执行**：不启线程，逐张转换 + `processEvents`；转换期间禁用窗口并拒绝关闭；
+  不写 QSettings、不记上次目录、不复制图片、不修改源图片。
+- **复用上游**：标签文件结构、坐标换算和落盘全部交给
+  `anylabeling/views/labeling/label_converter.py` 的 `LabelConverter`，本功能只
+  做扫描、校验、调度与展示；不新增 schema。
+
+### 测试
+
+`python -m pytest -p no:cacheprovider tests/custom/yolo_to_labelme -q`
+（需 PyQt6、Pillow、cv2/numpy：转换测试会走真实的 `LabelConverter`）。
+本机 75 例全绿（core 34 / convert 11 / dialog 16 / install 14）。
+
+### 已知坑
+
+- 多空格或 Tab 分隔的 txt 会被扫描判为无效：上游 `yolo_to_custom` 按单个空格
+  切分，本工具不做静默纠正。
+- OBB 与 4 点多边形都是 9 列；自动模式按多边形处理，OBB 必须手选。
+- split 只认 `images` / `labels` 这两个目录名，`images_processed` 之类不会自动配对。
+- 覆盖已有 json 时上游 `save_json` 直接写盘（非原子）；中途失败可能留下半文件。
+- 大数据集在主线程跑，每张之间 `processEvents`，超大目录期间界面仍可能阶段性忙。
 
 ## 变更台账
 

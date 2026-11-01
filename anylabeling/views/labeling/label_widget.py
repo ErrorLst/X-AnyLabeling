@@ -46,6 +46,7 @@ from anylabeling.custom import reset_view_on_switch
 from anylabeling.custom.preview_tool import install_preview_tool
 from anylabeling.custom.crop_tool import install_crop_tool
 from anylabeling.custom.filter_tool import install_filter_tool
+from anylabeling.custom.yolo_to_labelme import install_yolo_to_labelme
 
 from ...app_info import (
     __appname__,
@@ -2732,6 +2733,7 @@ class LabelingWidget(LabelDialog):
         install_preview_tool(self)
         install_crop_tool(self)  # 裁图工具
         install_filter_tool(self)  # 滤镜工具
+        install_yolo_to_labelme(self)  # YOLO 转 LabelMe
 
         self.set_text_editing(False)
 

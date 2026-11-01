@@ -35,7 +35,7 @@
 
 自研功能的挂载点绝大多数落在这条链的两个地方：`LabelingWidget.__init__`（1 行 import + 1 行调用）
 与 `Canvas` 的实例级包装（事件过滤器 / 方法包装）；例外有五处：模型验证的菜单动作与
-方法定义、重命名工具与裁图工具的 Tool 菜单动作追加、预览工具与标签过滤的 Tool 菜单运行时追加
+方法定义、重命名工具与裁图工具的 Tool 菜单动作追加、YOLO 转 LabelMe 与预览工具与标签过滤的 Tool 菜单运行时追加
 （`menus.tool.addAction`）与 `LabelingWidget.import_image_folder` 的实例级包装，
 换图复位视图的 `load_file` 实例级包装，
 以及崩溃日志的第五处——`anylabeling/app.py` **模块顶层**挂载（1 行 import + 1 行调用，
@@ -77,7 +77,7 @@ URL 在 `anylabeling/services/auto_labeling/remote_server.py` 里由 `server_url
 - `anylabeling/services/auto_labeling/`：101 个顶层 .py + 8 个子包；一个模型一个文件。
 - `anylabeling/services/auto_training/`：11 个 .py（ultralytics 训练链）。
 - `anylabeling/custom/`：88 个 .py / 46310 行（目录内全部 .py；FEATURES.md 登记其中
-  10 个自研功能；快照 2026-09-15 14:00 +0800，
+  12 个自研功能；快照 2026-09-15 14:00 +0800，
   有并发会话在途写入，重测命令见下）。
 - `anylabeling/custom/model_validation/`：26 个 .py / 15368 行（关键文件：`ui/` 下的
   `dialog.py` 1789、`results_page.py` 2237、`image_view.py` 1609，以及
@@ -122,6 +122,7 @@ FEATURES.md 的「代码与体量」）；该目录同样有并发会话在途�
 | 画布交互与滚轮缩放 | `anylabeling/views/labeling/widgets/canvas.py`；普通滚轮缩放由 `anylabeling/custom/edit_extras/` 以事件过滤器接管 |
 | 切换图片时画布缩放/滚动回到默认 | `anylabeling/custom/reset_view_on_switch/`（实例级包装 `load_file`，换图复位成首图初始态、同文件重载不复位、有意压过 `keep_prev_scale`；软挂载见 contract.json） |
 | 数据集按主分类批量重命名 | `anylabeling/custom/rename_tool/`（Tool 菜单「重命名」，先打包备份 zip、再在源目录内直接改名，json imagePath 同步更新；备份与回滚口径见 FEATURES.md） |
+| 导出的 YOLO 标注还原成 labelme json | `anylabeling/custom/yolo_to_labelme/`（Tool 菜单「YOLO 转 LabelMe」：选数据集目录 + class.txt，扫描后按同名 txt 生成图片旁 json；已有 json 默认跳过；布局 / 格式口径见 FEATURES.md） |
 | 增强参数（单图） | `anylabeling/custom/model_validation/app_config.py`（`AugmentParams` / `plan_aug_counts` / `selectable_fields` / `draw_selection`）、`anylabeling/custom/model_validation/augment.py`（`build_transforms` / `augment_sample_with_reason`）、`anylabeling/custom/model_validation/ui/config_page.py`（增强参数网格 9 项：对比度 / 亮度 / 旋转 / 平移 / 缩放 / 两个翻转 / 种子；选中概率 p 与比例 r 同处数量行） |
 | 结果页列（增强列）/ 右键预览提示行 | `anylabeling/custom/model_validation/ui/results_page.py`（`COLUMN_AUGMENT` + `AUGMENT_FIELD_LABELS`、`PreviewNoteLabel`；两者只改界面，不改报告与导出） |
 | 固定框裁图（数据集逐张裁切） | `anylabeling/custom/crop_tool/`（Tool 菜单「裁图工具」：拖入目录（含子目录）、左侧目录树 + 文件、W×H 固定框、右键裁切后停留在当前图（换图靠 A/D，同尺寸换图保持缩放/视图位置与裁切框）、第二行「保存尺寸」可按指定像素尺寸上下采样（0 = 跟随裁切尺寸）、文件名即记录、裁切全部直接落在输出目录根（不建子目录）、窗口可最大化、Del 经确认删自己的裁切子图；默认输出 = `<程序所在目录>/crop`，输出目录不持久化） |
